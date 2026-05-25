@@ -108,7 +108,9 @@ export function createChartManager(
     syncing = true;
     for (const c of allCharts) {
       if (c !== source) {
-        try { c.timeScale().setVisibleLogicalRange(range); } catch (_) { /* */ }
+        try { c.timeScale().setVisibleLogicalRange(range); } catch (e) {
+          console.warn('timeScale sync failed:', e);
+        }
       }
     }
     if (allKlines.length > 0 && !suppressEdgeCheck) {
@@ -134,6 +136,7 @@ export function createChartManager(
       const target = allCharts[i];
       if (i === 0) {
         // target is main chart → use candleSeries
+        // price=0 is a dummy: we only need the vertical line position
         target.setCrosshairPosition(0, time, candleSeries);
       } else {
         // target is a sub-pane → use its first series

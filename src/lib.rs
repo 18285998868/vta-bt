@@ -44,15 +44,14 @@ fn setup_cors() -> CorsLayer {
         .allow_headers(Any)
 }
 
-pub async fn run(args: Args) {
+pub async fn run(args: Args) -> anyhow::Result<()> {
     let data_dir = args
         .data_dir
         .map(PathBuf::from)
         .unwrap_or_else(get_default_data_dir);
 
     if !data_dir.exists() {
-        eprintln!("数据目录不存在: {:?}", data_dir);
-        std::process::exit(1);
+        anyhow::bail!("数据目录不存在: {:?}", data_dir);
     }
 
     let app_state = AppState::new(data_dir);
@@ -65,9 +64,7 @@ pub async fn run(args: Args) {
         .layer(setup_cors())
         .fallback_service(ServeDir::new(frontend_dir).append_index_html_on_directories(true));
 
-    let addr: SocketAddr = format!("{}:{}", args.host, args.port)
-        .parse()
-        .expect("Invalid address");
+    let addr: SocketAddr = format!("{}:{}", args.host, args.port).parse()?;
 
     tracing::info!("TradingView Backend starting on http://{}", addr);
     tracing::info!("API Endpoints:");
@@ -78,6 +75,7 @@ pub async fn run(args: Args) {
     tracing::info!("  GET /api/klines?market_type=...&pair=...&timeframe=...&limit=...");
     tracing::info!("Frontend: http://{}", addr);
 
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    axum::serve(listener, app).await?;
+    Ok(())
 }

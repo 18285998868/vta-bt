@@ -322,9 +322,16 @@ export class App {
   }
 
   private onTimeJump(input: HTMLInputElement) {
-    if (!this.chart || !input.value) return;
+    if (!this.chart) {
+      this.infoEl.textContent = '请先加载数据';
+      return;
+    }
+    if (!input.value) return;
     const ms = new Date(input.value).getTime();
-    if (isNaN(ms)) return;
+    if (isNaN(ms)) {
+      this.infoEl.textContent = '无效日期格式';
+      return;
+    }
     this.chart.jumpToTime(ms);
   }
 }

@@ -10,5 +10,8 @@ async fn main() {
         .init();
 
     let args = tradingview_backend::Args::parse();
-    tradingview_backend::run(args).await;
+    if let Err(e) = tradingview_backend::run(args).await {
+        eprintln!("Fatal error: {e:#}");
+        std::process::exit(1);
+    }
 }

@@ -6,7 +6,7 @@
 //! $data_dir/spot/daily/klines/{pair}/{timeframe}/*.parquet
 
 use std::fs::File;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use arrow::array::{Float64Array, Int64Array};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -142,16 +142,6 @@ impl DataLoader {
         Ok(timeframes)
     }
 
-    /// 加载K线数据
-    pub fn load_klines(
-        &self,
-        market_type: MarketType,
-        pair: &str,
-        timeframe: &str,
-    ) -> anyhow::Result<Vec<Kline>> {
-        self.load_all_klines(market_type, pair, timeframe)
-    }
-
     /// 加载K线数据，支持 before/after 过滤和 limit
     pub fn load_klines_filtered(
         &self,
@@ -207,7 +197,7 @@ impl DataLoader {
             match load_klines_from_parquet(&path) {
                 Ok(klines) => all_klines.extend(klines),
                 Err(e) => {
-                    eprintln!("Skipping {:?}: {}", path, e);
+                    tracing::warn!("Skipping {:?}: {}", path, e);
                 }
             }
         }
@@ -220,7 +210,7 @@ impl DataLoader {
 }
 
 /// 从单个 Parquet 文件加载 K 线
-fn load_klines_from_parquet(path: &PathBuf) -> anyhow::Result<Vec<Kline>> {
+fn load_klines_from_parquet(path: &Path) -> anyhow::Result<Vec<Kline>> {
     let file = File::open(path)?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
     let reader = builder.build()?;
@@ -281,7 +271,10 @@ fn load_klines_from_parquet(path: &PathBuf) -> anyhow::Result<Vec<Kline>> {
             }
         }
 
-        let ts = open_time.unwrap_or_default();
+        let ts = open_time.unwrap_or_else(|| {
+            tracing::warn!("Missing timestamp column in {:?}", path);
+            vec![]
+        });
         let opens = open.unwrap_or_default();
         let highs = high.unwrap_or_default();
         let lows = low.unwrap_or_default();

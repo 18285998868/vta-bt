@@ -102,10 +102,10 @@ fn parse_market_type(market_type: &Option<String>) -> MarketType {
 async fn health_handler() -> impl IntoResponse {
     (
         StatusCode::OK,
-        Json(serde_json::json!({
+        Json(ApiResponse::ok(serde_json::json!({
             "status": "ok",
             "timestamp": chrono::Utc::now().to_rfc3339()
-        })),
+        }))),
     )
 }
 
