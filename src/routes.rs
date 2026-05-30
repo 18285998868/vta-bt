@@ -8,9 +8,8 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::data_loader::{DataLoader, MarketType};
+use crate::data_loader::{DataError, DataLoader, MarketType, ParseMarketTypeError};
 
-/// 应用程序共享状态
 #[derive(Clone)]
 pub struct AppState {
     data_loader: Arc<DataLoader>,
@@ -24,7 +23,6 @@ impl AppState {
     }
 }
 
-/// API 响应包装
 #[derive(Serialize)]
 struct ApiResponse<T: Serialize> {
     success: bool,
@@ -51,47 +49,37 @@ impl<T: Serialize> ApiResponse<T> {
     }
 }
 
-/// /api/market-types 返回值
 #[derive(Serialize)]
 struct MarketTypesResponse {
     types: Vec<String>,
 }
 
-/// /api/pairs 查询参数
 #[derive(Debug, Deserialize)]
 pub struct PairsQuery {
     #[serde(default)]
     pub market_type: Option<String>,
 }
 
-/// /api/timeframes 查询参数
 #[derive(Debug, Deserialize)]
 pub struct TimeframesQuery {
     pub market_type: Option<String>,
     pub pair: String,
 }
 
-/// /api/klines 查询参数
 #[derive(Debug, Deserialize)]
 pub struct KlinesQuery {
     pub market_type: Option<String>,
     pub pair: String,
     pub timeframe: String,
     pub limit: Option<usize>,
-    /// Return only klines before this timestamp (ms).
     pub before: Option<i64>,
-    /// Return only klines after this timestamp (ms).
     pub after: Option<i64>,
 }
 
-fn parse_market_type(market_type: &Option<String>) -> MarketType {
-    market_type
-        .as_ref()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or_default()
+fn parse_market_type(market_type: &Option<String>) -> Result<MarketType, ParseMarketTypeError> {
+    market_type.as_ref().map_or(Ok(MarketType::default()), |s| s.parse())
 }
 
-/// GET /api/health
 async fn health_handler() -> impl IntoResponse {
     (
         StatusCode::OK,
@@ -102,7 +90,6 @@ async fn health_handler() -> impl IntoResponse {
     )
 }
 
-/// GET /api/market-types
 async fn market_types_handler() -> impl IntoResponse {
     (
         StatusCode::OK,
@@ -112,20 +99,33 @@ async fn market_types_handler() -> impl IntoResponse {
     )
 }
 
-fn handle_error(
-    status: StatusCode,
-    e: impl std::fmt::Display,
+fn handle_data_error(
+    e: DataError,
 ) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
-    tracing::error!(error = %e, "request failed");
-    (status, Json(ApiResponse::err("internal error")))
+    match &e {
+        DataError::NotFound(_) => {
+            tracing::warn!(error = ?e, "resource not found");
+            (StatusCode::NOT_FOUND, Json(ApiResponse::err(e.to_string())))
+        }
+        _ => {
+            tracing::error!(error = ?e, "request failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::err("internal error")))
+        }
+    }
 }
 
-/// GET /api/pairs
+fn bad_request(msg: impl Into<String>) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
+    (StatusCode::BAD_REQUEST, Json(ApiResponse::err(msg)))
+}
+
 async fn pairs_handler(
     State(state): State<AppState>,
     Query(query): Query<PairsQuery>,
 ) -> impl IntoResponse {
-    let market_type = parse_market_type(&query.market_type);
+    let market_type = match parse_market_type(&query.market_type) {
+        Ok(mt) => mt,
+        Err(e) => return bad_request(e.to_string()),
+    };
 
     match state.data_loader.list_pairs(market_type) {
         Ok(pairs) => (
@@ -135,16 +135,18 @@ async fn pairs_handler(
                 "pairs": pairs
             }))),
         ),
-        Err(e) => handle_error(StatusCode::INTERNAL_SERVER_ERROR, e),
+        Err(e) => handle_data_error(e),
     }
 }
 
-/// GET /api/timeframes
 async fn timeframes_handler(
     State(state): State<AppState>,
     Query(query): Query<TimeframesQuery>,
 ) -> impl IntoResponse {
-    let market_type = parse_market_type(&query.market_type);
+    let market_type = match parse_market_type(&query.market_type) {
+        Ok(mt) => mt,
+        Err(e) => return bad_request(e.to_string()),
+    };
 
     match state.data_loader.list_timeframes(market_type, &query.pair) {
         Ok(timeframes) => (
@@ -155,16 +157,18 @@ async fn timeframes_handler(
                 "timeframes": timeframes
             }))),
         ),
-        Err(e) => handle_error(StatusCode::INTERNAL_SERVER_ERROR, e),
+        Err(e) => handle_data_error(e),
     }
 }
 
-/// GET /api/klines
 async fn klines_handler(
     State(state): State<AppState>,
     Query(query): Query<KlinesQuery>,
 ) -> impl IntoResponse {
-    let market_type = parse_market_type(&query.market_type);
+    let market_type = match parse_market_type(&query.market_type) {
+        Ok(mt) => mt,
+        Err(e) => return bad_request(e.to_string()),
+    };
 
     match state.data_loader.load_klines_filtered(
         market_type,
@@ -184,11 +188,10 @@ async fn klines_handler(
                 "klines": klines
             }))),
         ),
-        Err(e) => handle_error(StatusCode::INTERNAL_SERVER_ERROR, e),
+        Err(e) => handle_data_error(e),
     }
 }
 
-/// 创建所有路由。
 pub fn create_router(app_state: AppState) -> Router {
     Router::new()
         .route("/api/health", axum::routing::get(health_handler))
@@ -208,18 +211,15 @@ mod tests {
 
     #[test]
     fn test_parse_market_type_default() {
-        assert_eq!(parse_market_type(&None), MarketType::Futures);
+        assert_eq!(parse_market_type(&None).unwrap(), MarketType::Futures);
         assert_eq!(
-            parse_market_type(&Some("futures".to_string())),
+            parse_market_type(&Some("futures".to_string())).unwrap(),
             MarketType::Futures
         );
         assert_eq!(
-            parse_market_type(&Some("spot".to_string())),
+            parse_market_type(&Some("spot".to_string())).unwrap(),
             MarketType::Spot
         );
-        assert_eq!(
-            parse_market_type(&Some("invalid".to_string())),
-            MarketType::Futures
-        );
+        assert!(parse_market_type(&Some("invalid".to_string())).is_err());
     }
 }

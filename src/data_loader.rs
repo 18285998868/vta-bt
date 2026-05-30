@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::instrument;
 
-/// 市场类型
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MarketType {
@@ -37,12 +36,10 @@ impl std::str::FromStr for MarketType {
     }
 }
 
-/// 市场类型解析错误
 #[derive(Debug, Clone, Error)]
 #[error("unknown market type: {0}")]
 pub struct ParseMarketTypeError(pub String);
 
-/// 数据加载器错误
 #[derive(Debug, Error)]
 pub enum DataError {
     #[error("I/O error: {0}")]
@@ -58,40 +55,24 @@ pub enum DataError {
     MissingColumn(String),
 }
 
-/// K 线数据结构 (前端友好格式)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Kline {
-    /// 开盘时间 (毫秒时间戳)
     pub time: i64,
-    /// 开盘价
     pub open: f64,
-    /// 最高价
     pub high: f64,
-    /// 最低价
     pub low: f64,
-    /// 收盘价
     pub close: f64,
-    /// 成交量
     pub volume: f64,
 }
 
 type CacheKey = (MarketType, String, String);
 
-/// 本地 K 线数据加载器，带内存缓存。
-///
-/// 从 Parquet 文件加载 K 线数据，支持 futures 和 spot 两种市场类型。
-/// 目录结构:
-/// - `$data_dir/futures/um/daily/klines/{pair}/{timeframe}/*.parquet`
-/// - `$data_dir/spot/daily/klines/{pair}/{timeframe}/*.parquet`
-///
-/// 使用 `moka` 内存缓存避免重复读取磁盘，缓存 TTL 5 分钟。
 pub struct DataLoader {
     data_dir: PathBuf,
     klines_cache: moka::sync::Cache<CacheKey, Arc<Vec<Kline>>>,
 }
 
 impl DataLoader {
-    /// 创建新的数据加载器。
     pub fn new(data_dir: PathBuf) -> Self {
         Self {
             data_dir,
@@ -114,7 +95,6 @@ impl DataLoader {
         }
     }
 
-    /// 获取指定市场的所有交易对。
     pub fn list_pairs(&self, market_type: MarketType) -> Result<Vec<String>, DataError> {
         let base = self.base_path(market_type);
         if !base.exists() {
@@ -129,7 +109,6 @@ impl DataLoader {
         Ok(pairs)
     }
 
-    /// 获取指定交易对的所有时间周期（仅包含有 parquet 文件的目录）。
     pub fn list_timeframes(
         &self,
         market_type: MarketType,
@@ -149,9 +128,6 @@ impl DataLoader {
         Ok(timeframes)
     }
 
-    /// 加载 K 线数据，支持 `before` / `after` 时间戳过滤和 `limit` 条数限制。
-    ///
-    /// `limit` 取倒数 N 条（即时间上最新的 N 条）。结果按时间升序排列。
     pub fn load_klines_filtered(
         &self,
         market_type: MarketType,
@@ -168,17 +144,11 @@ impl DataLoader {
             .filter(|k| before.is_none_or(|t| k.time < t))
             .filter(|k| after.is_none_or(|t| k.time > t));
 
-        let result: Vec<Kline> = match limit {
-            Some(n) => iter
-                .rev()
-                .take(n)
-                .cloned()
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect(),
-            None => iter.cloned().collect(),
-        };
+        let mut result: Vec<Kline> = iter.cloned().collect();
+        if let Some(n) = limit {
+            let start = result.len().saturating_sub(n);
+            result = result.split_off(start);
+        }
 
         Ok(result)
     }
@@ -218,13 +188,11 @@ impl DataLoader {
         Ok(result)
     }
 
-    /// 清空内存缓存。
     pub fn invalidate_cache(&self) {
         self.klines_cache.invalidate_all();
     }
 }
 
-/// Check if a directory contains at least one `.parquet` file.
 fn has_parquet_files(dir: &Path) -> bool {
     std::fs::read_dir(dir)
         .map(|rd| {
@@ -234,7 +202,6 @@ fn has_parquet_files(dir: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// List all `.parquet` files in a directory, sorted by name.
 fn list_parquet_files(dir: &Path) -> Result<Vec<PathBuf>, DataError> {
     let mut files: Vec<PathBuf> = std::fs::read_dir(dir)?
         .filter_map(|e| e.ok())
@@ -245,19 +212,22 @@ fn list_parquet_files(dir: &Path) -> Result<Vec<PathBuf>, DataError> {
     Ok(files)
 }
 
-/// Try to find a column by any of the given names and return it as `Int64Chunked`.
 fn get_i64_col(df: &DataFrame, names: &[&str]) -> Result<Int64Chunked, DataError> {
     for name in names {
-        if let Ok(col) = df.column(name)
-            && let Ok(chunked) = col.i64()
-        {
-            return Ok(chunked.clone());
+        if let Ok(col) = df.column(name) {
+            if let Ok(chunked) = col.i64() {
+                return Ok(chunked.clone());
+            }
+            if let Ok(cast) = col.cast(&DataType::Int64)
+                && let Ok(chunked) = cast.i64()
+            {
+                return Ok(chunked.clone());
+            }
         }
     }
     Err(DataError::MissingColumn(names.join("/")))
 }
 
-/// Try to find a column by any of the given names and return it as `Float64Chunked`.
 fn get_f64_col(df: &DataFrame, names: &[&str]) -> Result<Float64Chunked, DataError> {
     for name in names {
         if let Ok(col) = df.column(name)
@@ -269,10 +239,6 @@ fn get_f64_col(df: &DataFrame, names: &[&str]) -> Result<Float64Chunked, DataErr
     Err(DataError::MissingColumn(names.join("/")))
 }
 
-/// Read and merge multiple parquet files into a single sorted `Vec<Kline>`.
-///
-/// Uses polars lazy scanning for efficient predicate pushdown and diagonal
-/// concatenation for files with different column sets.
 #[instrument(skip(files))]
 fn read_parquet_files(files: &[PathBuf]) -> Result<Vec<Kline>, DataError> {
     tracing::debug!(count = files.len(), "reading parquet files");
@@ -306,6 +272,10 @@ fn read_parquet_files(files: &[PathBuf]) -> Result<Vec<Kline>, DataError> {
 
     tracing::debug!(rows = df.height(), "parquet data loaded");
 
+    if df.height() > 500_000 {
+        tracing::warn!(rows = df.height(), "large kline dataset loaded — consider using before/after filters to reduce memory");
+    }
+
     let ts = get_i64_col(&df, &["open_time", "time", "timestamp"])?;
     let open = get_f64_col(&df, &["open"])?;
     let high = get_f64_col(&df, &["high"])?;
@@ -315,16 +285,15 @@ fn read_parquet_files(files: &[PathBuf]) -> Result<Vec<Kline>, DataError> {
 
     let mut klines = Vec::with_capacity(df.height());
     for i in 0..df.height() {
-        let (Some(o), Some(h), Some(l), Some(c)) =
-            (open.get(i), high.get(i), low.get(i), close.get(i))
+        let (Some(o), Some(h), Some(l), Some(c), Some(v)) =
+            (open.get(i), high.get(i), low.get(i), close.get(i), volume.get(i))
         else {
             continue;
         };
-        if o.is_nan() || h.is_nan() || l.is_nan() || c.is_nan() {
+        if o.is_nan() || h.is_nan() || l.is_nan() || c.is_nan() || v.is_nan() {
             continue;
         }
         let t = ts.get(i).unwrap_or(0);
-        let v = volume.get(i).unwrap_or(0.0);
         klines.push(Kline {
             time: t,
             open: o,
@@ -340,7 +309,6 @@ fn read_parquet_files(files: &[PathBuf]) -> Result<Vec<Kline>, DataError> {
     Ok(klines)
 }
 
-/// Map a timeframe string to a numeric ordering key (lower = earlier).
 fn timeframe_order(tf: &str) -> u32 {
     match tf {
         "1s" => 1,
@@ -506,7 +474,6 @@ mod tests {
             "1d",
             &test_rows(),
         );
-        // create empty directory without parquet
         let empty_dir = dir
             .path()
             .join("futures")
@@ -608,7 +575,6 @@ mod tests {
             .load_klines_filtered(MarketType::Futures, "BTCUSDT", "1h", None, None, Some(2))
             .unwrap();
         assert_eq!(klines.len(), 2);
-        // limit takes the last N (latest)
         assert_eq!(klines[0].time, 2_000_000);
     }
 
@@ -632,7 +598,6 @@ mod tests {
     #[test]
     fn test_load_klines_dedup() {
         let dir = TempDir::new().unwrap();
-        // Write same data across two parquet files
         write_test_parquet(
             dir.path(),
             MarketType::Futures,
@@ -668,13 +633,11 @@ mod tests {
 
         let loader = DataLoader::new(dir.path().to_path_buf());
 
-        // First call loads from disk
         let klines1 = loader
             .load_klines_filtered(MarketType::Futures, "BTCUSDT", "1h", None, None, None)
             .unwrap();
         assert_eq!(klines1.len(), 3);
 
-        // Second call should hit cache (removing files wouldn't affect cached result)
         std::fs::remove_dir_all(
             dir.path()
                 .join("futures")
@@ -716,7 +679,6 @@ mod tests {
             .unwrap();
         loader.invalidate_cache();
 
-        // After invalidation, remove the data, expect error
         std::fs::remove_dir_all(
             dir.path()
                 .join("futures")
