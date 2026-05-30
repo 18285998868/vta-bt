@@ -8,15 +8,21 @@ name = "tradingview"
 path = "src/main.rs"
 
 [dependencies]
-axum = "0.8"
-tower-http = { version = "0.6", features = ["cors", "fs"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-chrono = { version = "0.4", features = ["serde"] }
-tokio = { version = "1", features = ["full"] }
-anyhow = "1"
-clap = { version = "4", features = ["derive", "env"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-arrow = "58"
-parquet = "58"
+axum.workspace = true
+tower-http.workspace = true
+clap = { workspace = true, features = ["derive", "env"] }
+
+# moka not in workspace deps yet; TODO: move to workspace Cargo.toml
+moka = { version = "0.12", features = ["sync"] }
+polars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

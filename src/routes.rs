@@ -1,11 +1,3 @@
-//! API 路由模块
-//!
-//! 提供以下 REST API:
-//! - GET /api/market-types  - 返回可用市场类型 ["futures", "spot"]
-//! - GET /api/pairs?market_type={futures|spot}  - 返回指定市场的交易对列表
-//! - GET /api/timeframes?market_type={...}&pair={...}  - 返回指定交易对的时间周期
-//! - GET /api/klines?market_type={...}&pair={...}&timeframe={...}  - 返回K线数据
-
 use axum::{
     Json, Router,
     extract::{Query, State},
@@ -34,9 +26,10 @@ impl AppState {
 
 /// API 响应包装
 #[derive(Serialize)]
-struct ApiResponse<T> {
+struct ApiResponse<T: Serialize> {
     success: bool,
     data: Option<T>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
 }
 
@@ -119,6 +112,14 @@ async fn market_types_handler() -> impl IntoResponse {
     )
 }
 
+fn handle_error(
+    status: StatusCode,
+    e: impl std::fmt::Display,
+) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
+    tracing::error!(error = %e, "request failed");
+    (status, Json(ApiResponse::err("internal error")))
+}
+
 /// GET /api/pairs
 async fn pairs_handler(
     State(state): State<AppState>,
@@ -134,10 +135,7 @@ async fn pairs_handler(
                 "pairs": pairs
             }))),
         ),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::<serde_json::Value>::err(e.to_string())),
-        ),
+        Err(e) => handle_error(StatusCode::INTERNAL_SERVER_ERROR, e),
     }
 }
 
@@ -157,10 +155,7 @@ async fn timeframes_handler(
                 "timeframes": timeframes
             }))),
         ),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::<serde_json::Value>::err(e.to_string())),
-        ),
+        Err(e) => handle_error(StatusCode::INTERNAL_SERVER_ERROR, e),
     }
 }
 
@@ -189,14 +184,11 @@ async fn klines_handler(
                 "klines": klines
             }))),
         ),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::<serde_json::Value>::err(e.to_string())),
-        ),
+        Err(e) => handle_error(StatusCode::INTERNAL_SERVER_ERROR, e),
     }
 }
 
-/// 创建所有路由
+/// 创建所有路由。
 pub fn create_router(app_state: AppState) -> Router {
     Router::new()
         .route("/api/health", axum::routing::get(health_handler))
