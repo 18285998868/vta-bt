@@ -77,7 +77,9 @@ pub struct KlinesQuery {
 }
 
 fn parse_market_type(market_type: &Option<String>) -> Result<MarketType, ParseMarketTypeError> {
-    market_type.as_ref().map_or(Ok(MarketType::default()), |s| s.parse())
+    market_type
+        .as_ref()
+        .map_or(Ok(MarketType::default()), |s| s.parse())
 }
 
 async fn health_handler() -> impl IntoResponse {
@@ -99,9 +101,7 @@ async fn market_types_handler() -> impl IntoResponse {
     )
 }
 
-fn handle_data_error(
-    e: DataError,
-) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
+fn handle_data_error(e: DataError) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
     match &e {
         DataError::NotFound(_) => {
             tracing::warn!(error = ?e, "resource not found");
@@ -109,7 +109,10 @@ fn handle_data_error(
         }
         _ => {
             tracing::error!(error = ?e, "request failed");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::err("internal error")))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse::err("internal error")),
+            )
         }
     }
 }

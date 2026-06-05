@@ -40,8 +40,7 @@ pub async fn run(config: &Config) -> Result<(), error::AppError> {
         .layer(setup_cors())
         .fallback_service(ServeDir::new(&frontend_dir).append_index_html_on_directories(true));
 
-    let addr = format!("{}:{}", config.host, config.port)
-        .parse::<std::net::SocketAddr>()?;
+    let addr = format!("{}:{}", config.host, config.port).parse::<std::net::SocketAddr>()?;
 
     tracing::info!("TradingView Backend starting on http://{}", addr);
     tracing::info!("Data dir: {:?}", data_dir);

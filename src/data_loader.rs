@@ -273,7 +273,10 @@ fn read_parquet_files(files: &[PathBuf]) -> Result<Vec<Kline>, DataError> {
     tracing::debug!(rows = df.height(), "parquet data loaded");
 
     if df.height() > 500_000 {
-        tracing::warn!(rows = df.height(), "large kline dataset loaded — consider using before/after filters to reduce memory");
+        tracing::warn!(
+            rows = df.height(),
+            "large kline dataset loaded — consider using before/after filters to reduce memory"
+        );
     }
 
     let ts = get_i64_col(&df, &["open_time", "time", "timestamp"])?;
@@ -285,9 +288,13 @@ fn read_parquet_files(files: &[PathBuf]) -> Result<Vec<Kline>, DataError> {
 
     let mut klines = Vec::with_capacity(df.height());
     for i in 0..df.height() {
-        let (Some(o), Some(h), Some(l), Some(c), Some(v)) =
-            (open.get(i), high.get(i), low.get(i), close.get(i), volume.get(i))
-        else {
+        let (Some(o), Some(h), Some(l), Some(c), Some(v)) = (
+            open.get(i),
+            high.get(i),
+            low.get(i),
+            close.get(i),
+            volume.get(i),
+        ) else {
             continue;
         };
         if o.is_nan() || h.is_nan() || l.is_nan() || c.is_nan() || v.is_nan() {
