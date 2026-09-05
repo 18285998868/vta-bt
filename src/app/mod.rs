@@ -32,7 +32,7 @@ fn combo_parquet_path(
     std::path::Path::new(temps_dir).join(format!("{}_{}_{}.parquet", symbol, tf, strategy))
 }
 
-pub fn run(config: &Config) -> anyhow::Result<()> {
+pub fn run(config: &Config) -> crate::error::Result<()> {
     let strategies = build_strategies(&config.strategy);
     let detail = config.output.as_ref().is_some_and(|o| o.detail);
     let overwrite = config.output.as_ref().is_some_and(|o| o.overwrite);

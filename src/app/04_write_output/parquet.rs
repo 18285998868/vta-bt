@@ -6,6 +6,7 @@ use arrow::record_batch::RecordBatch;
 
 use crate::app::RunResult;
 use crate::engine::SummaryMetrics;
+use crate::error::Result;
 
 fn params_to_json(params: &str) -> String {
     let clean = params.replace(' ', "");
@@ -219,7 +220,7 @@ fn build_parquet(results: &[RunResult], balance: f64) -> RecordBatch {
     RecordBatch::try_new(Arc::new(schema), cols).expect("Parquet schema/column count mismatch")
 }
 
-pub fn write_parquet(path: &str, results: &[RunResult], balance: f64) -> anyhow::Result<()> {
+pub fn write_parquet(path: &str, results: &[RunResult], balance: f64) -> Result<()> {
     use parquet::arrow::ArrowWriter;
     use parquet::file::properties::WriterProperties;
     use std::fs::File;
@@ -239,11 +240,7 @@ pub fn write_parquet(path: &str, results: &[RunResult], balance: f64) -> anyhow:
     Ok(())
 }
 
-pub fn write_individual_parquet(
-    results: &[RunResult],
-    dir: &str,
-    balance: f64,
-) -> anyhow::Result<()> {
+pub fn write_individual_parquet(results: &[RunResult], dir: &str, balance: f64) -> Result<()> {
     use std::collections::HashMap;
     let mut groups: HashMap<(String, String, String), Vec<RunResult>> = HashMap::new();
     for r in results {
@@ -266,7 +263,7 @@ pub fn write_individual_parquet(
     Ok(())
 }
 
-pub fn write_detail_parquet(details: &[crate::app::DetailResult], dir: &str) -> anyhow::Result<()> {
+pub fn write_detail_parquet(details: &[crate::app::DetailResult], dir: &str) -> Result<()> {
     use parquet::arrow::ArrowWriter;
     use parquet::file::properties::WriterProperties;
     use std::collections::HashMap;
@@ -404,7 +401,7 @@ fn u32_col(batch: &RecordBatch, idx: usize) -> Vec<u32> {
     (0..batch.num_rows()).map(|i| arr.value(i)).collect()
 }
 
-pub fn read_parquet(path: &str) -> anyhow::Result<Vec<RunResult>> {
+pub fn read_parquet(path: &str) -> Result<Vec<RunResult>> {
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
     use std::fs::File;
 
@@ -496,14 +493,14 @@ pub fn write_single_parquet(
     results: &[RunResult],
     path: &std::path::Path,
     balance: f64,
-) -> anyhow::Result<()> {
+) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     write_parquet(path.to_str().expect("non-UTF-8 path"), results, balance)
 }
 
-pub fn merge_parquet_files(temps_dir: &str, output_path: &str) -> anyhow::Result<()> {
+pub fn merge_parquet_files(temps_dir: &str, output_path: &str) -> Result<()> {
     let dir = std::path::Path::new(temps_dir);
     if !dir.exists() {
         return Ok(());

@@ -28,7 +28,7 @@ period = { start = 1, end = 1000, step = 1 }
 ## 用法
 
 ```bash
-cargo run -p vta --release
+cargo run -p vta --release -- -c config/config.toml
 ```
 
 ## License

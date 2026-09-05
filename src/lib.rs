@@ -1,7 +1,13 @@
 pub mod app;
 pub mod cli;
+#[path = "app/01_config.rs"]
 pub mod config;
+#[path = "app/02_load_data.rs"]
 pub mod data;
+#[path = "app/03_run_backtest.rs"]
 pub mod engine;
+pub mod error;
+#[path = "app/04_write_output/mod.rs"]
 pub mod output;
+#[path = "app/05_strategies/mod.rs"]
 pub mod strategies;

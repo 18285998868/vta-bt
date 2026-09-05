@@ -101,7 +101,7 @@ pub struct RangeParam<T: PartialOrd + Copy> {
     pub step: T,
 }
 
-pub fn load_config(path: &str) -> anyhow::Result<Config> {
+pub fn load_config(path: &str) -> crate::error::Result<Config> {
     let content = std::fs::read_to_string(path)?;
     let config: Config = toml::from_str(&content)?;
     Ok(config)
