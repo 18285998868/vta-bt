@@ -65,6 +65,6 @@ mod tests {
             step: 1,
         });
         let sig = s.generate_signals(&close, &[], 0);
-        assert!(sig.iter().any(|&s| s == Signal::Buy));
+        assert!(sig.contains(&Signal::Buy));
     }
 }

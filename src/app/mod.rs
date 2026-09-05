@@ -43,34 +43,40 @@ fn combo_parquet_path(temps_dir: &str, symbol: &str, tf: &str, strategy: &str, f
     PathBuf::from(temps_dir).join(format!("{symbol}_{tf}_{strategy}_{fp:016x}.parquet"))
 }
 
+/// 单个组合执行所需的运行期上下文: 由 run() 一次性构建, 全部组合共享。
+struct ComboCtx {
+    balance: f64,
+    bpy: f64,
+    detail: bool,
+    overwrite: bool,
+    temps_dir: String,
+    detail_dir: String,
+}
+
 /// 执行单个 (symbol, timeframe, strategy) 组合:
 /// 1. 若 overwrite=false 且缓存文件(含参数指纹)已存在且可读, 直接返回(跳过)
 /// 2. 该策略的 n 个参数并行执行 信号生成+回测; detail 模式收集 trades/equity_curve
 /// 3. 计算完成即写入 temps/(及 detail/)
+///
 /// 返回 (组合文件路径, 是否本次计算; false 表示命中缓存被跳过)。
 fn run_combo(
     strategy: &dyn crate::strategies::Strategy,
     symbol: &str,
     tf: &str,
     cols: &lib_reader::KlineColumns,
-    balance: f64,
-    bpy: f64,
-    detail: bool,
-    overwrite: bool,
-    temps_dir: &str,
-    detail_dir: &str,
+    ctx: &ComboCtx,
 ) -> crate::error::Result<(PathBuf, bool)> {
     let n = strategy.param_count();
 
     let combo_path = combo_parquet_path(
-        temps_dir,
+        &ctx.temps_dir,
         symbol,
         tf,
         strategy.name(),
         params_fingerprint(strategy, n),
     );
 
-    if !overwrite && combo_path.exists() {
+    if !ctx.overwrite && combo_path.exists() {
         match output::read_parquet(combo_path.to_str().expect("non-UTF-8 path")) {
             Ok(results) => {
                 println!(
@@ -88,7 +94,7 @@ fn run_combo(
 
     use rayon::prelude::*;
 
-    if detail {
+    if ctx.detail {
         let sims: Vec<(String, crate::engine::SimResult)> = (0..n)
             .into_par_iter()
             .map(|i| {
@@ -97,8 +103,8 @@ fn run_combo(
                     &cols.time,
                     &cols.close,
                     &signals,
-                    balance,
-                    bpy,
+                    ctx.balance,
+                    ctx.bpy,
                 );
                 (strategy.param_str(i), sim)
             })
@@ -129,14 +135,14 @@ fn run_combo(
             });
         }
 
-        output::write_single_parquet(&run_rows, &combo_path, balance)?;
-        output::write_detail_parquet(&detail_rows, detail_dir)?;
+        output::write_single_parquet(&run_rows, &combo_path, ctx.balance)?;
+        output::write_detail_parquet(&detail_rows, &ctx.detail_dir)?;
     } else {
         let run_rows: Vec<RunResult> = (0..n)
             .into_par_iter()
             .map(|i| {
                 let signals = strategy.generate_signals(&cols.close, &cols.volume, i);
-                let metrics = crate::engine::simulate(&cols.close, &signals, balance, bpy);
+                let metrics = crate::engine::simulate(&cols.close, &signals, ctx.balance, ctx.bpy);
                 RunResult {
                     symbol: symbol.to_string(),
                     timeframe: tf.to_string(),
@@ -147,14 +153,14 @@ fn run_combo(
             })
             .collect();
 
-        output::write_single_parquet(&run_rows, &combo_path, balance)?;
+        output::write_single_parquet(&run_rows, &combo_path, ctx.balance)?;
     }
 
     Ok((combo_path, true))
 }
 
 /// 整体逻辑编排(与代码实际结构逐行对应):
-/// ```
+/// ```text
 /// 1.  加载配置并校验: config.validate()?; build_strategies → strategies
 /// 2.  for symbol in symbols                          // 品种层
 /// 3.    for timeframe in timeframes                 // 时间帧层
@@ -204,20 +210,17 @@ pub fn run(config: &Config) -> crate::error::Result<()> {
             };
             println!("  数据: {} bars\n", cols.len());
             let bpy = bars_per_year(tf);
+            let ctx = ComboCtx {
+                balance,
+                bpy,
+                detail,
+                overwrite,
+                temps_dir: temps_dir.clone(),
+                detail_dir: detail_dir.clone(),
+            };
 
             for strategy in &strategies {
-                let (combo_path, computed) = run_combo(
-                    strategy.as_ref(),
-                    symbol,
-                    tf,
-                    &cols,
-                    balance,
-                    bpy,
-                    detail,
-                    overwrite,
-                    &temps_dir,
-                    &detail_dir,
-                )?;
+                let (combo_path, computed) = run_combo(strategy.as_ref(), symbol, tf, &cols, &ctx)?;
                 if computed {
                     ran += 1;
                 } else {
