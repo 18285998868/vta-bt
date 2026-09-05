@@ -1,0 +1,138 @@
+# ========================================
+# 数据源配置
+# ========================================
+[data]
+# 必须, 数据源类型: "binance" | "dukascopy"
+type = "binance"
+# 必须, K线数据目录
+dir = "/data/nutilustrader/data/futures/um/daily/klines"
+# 必须, 回测品种列表
+symbol = [
+    "AAVEUSDT", "ADAUSDT", "APTUSDT", "ARBUSDT", "ARKMUSDT",
+    "ATOMUSDT", "AVAXUSDT", "BICOUSDT", "BNBUSDT", "BTCUSDT",
+    "CAKEUSDT", "CRVUSDT", "DEXEUSDT", "DOGEUSDT", "DOTUSDT",
+    "ETHUSDT", "FETUSDT", "FILUSDT", "HYPEUSDT", "INJUSDT",
+    "LINKUSDT", "LTCUSDT", "MUSDT", "NEARUSDT", "OPUSDT",
+    "RAVEUSDT", "RENDERUSDT", "SEIUSDT", "SIRENUSDT", "SOLUSDT",
+    "SUIUSDT", "TAOUSDT", "TONUSDT", "TRXUSDT", "UNIUSDT",
+    "WIFUSDT", "XRPUSDT", "ZECUSDT"
+]
+# 必须, 回测时间帧列表
+# 可选值: "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d"
+timeframes = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d"]
+# 可选, 数据起始日期 (格式: "YYYY-MM-DD"), 默认: None (全部数据)
+# start_date = "2024-01-01"
+# 可选, 数据结束日期 (格式: "YYYY-MM-DD"), 默认: None (全部数据)
+# end_date = "2024-12-31"
+
+# ========================================
+# 回测配置
+# ========================================
+[backtest]
+# 必须, 初始资金
+initial_balance = 10000.0
+
+# ========================================
+# 输出配置
+# ========================================
+[output]
+# 可选, 输出目录, 默认: "reports"
+dir = "/data/nutilustrader/reports/vta"
+# 可选, 是否导出逐笔交易详细数据, 默认: false
+detail = false
+# 可选, 是否覆盖已存在的回测结果, 默认: false (跳过已完成的组合)
+overwrite = false
+
+# ========================================
+# 策略配置
+# 每个 [[strategy]] 块定义一个策略
+# type: 必须, 策略类型 (见下方列表)
+# period: 必须, 参数范围
+#   单值: period = 20
+#   范围: period = { start = 1, end = 1000, step = 1 }
+#
+# 支持的策略类型:
+#   sma, ema, dema, tema, hma, zlma, alma, fwma, jma,
+#   kama, lin_reg, mc_ginley, pwma, sin_wma, swma,
+#   tilson, trima, vidya, vwma, wilders, wma, ssf, ssf_st
+# ========================================
+
+[[strategy]]
+type = "alma"
+period = { start = 1, end = 1000, step = 1 }
+
+[[strategy]]
+type = "dema"
+period = { start = 1, end = 1000, step = 1 }
+
+[[strategy]]
+type = "ema"
+period = { start = 1, end = 1000, step = 1 }
+
+[[strategy]]
+type = "fwma"
+period = { start = 1, end = 1000, step = 1 }
+
+[[strategy]]
+type = "hma"
+period = { start = 1, end = 1000, step = 1 }
+
+[[strategy]]
+type = "jma"
+period = { start = 1, end = 1000, step = 1 }
+
+[[strategy]]
+type = "kama"
+period = { start = 1, end = 1000, step = 1 }
+
+[[strategy]]
+type = "lin_reg"
+period = { start = 1, end = 1000, step = 1 }
+
+[[strategy]]
+type = "mc_ginley"
+period = { start = 1, end = 1000, step = 1 }
+
+[[strategy]]
+type = "pwma"
+period = { start = 1, end = 1000, step = 1 }
+
+[[strategy]]
+type = "sin_wma"
+period = { start = 1, end = 1000, step = 1 }
+
+[[strategy]]
+type = "sma"
+period = { start = 1, end = 1000, step = 1 }
+
+[[strategy]]
+type = "ssf"
+period = { start = 1, end = 1000, step = 1 }
+
+[[strategy]]
+type = "ssf_st"
+period = { start = 1, end = 1000, step = 1 }
+
+[[strategy]]
+type = "swma"
+period = { start = 1, end = 1000, step = 1 }
+
+[[strategy]]
+type = "tema"
+period = { start = 1, end = 1000, step = 1 }
+
+[[strategy]]
+type = "vidya"
+period = { start = 1, end = 1000, step = 1 }
+
+[[strategy]]
+type = "vwma"
+period = { start = 1, end = 1000, step = 1 }
+
+[[strategy]]
+type = "wma"
+period = { start = 1, end = 1000, step = 1 }
+
+[[strategy]]
+type = "zlma"
+period = { start = 1, end = 1000, step = 1 }
