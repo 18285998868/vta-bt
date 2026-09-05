@@ -5,7 +5,7 @@ use crate::strategies::ssf_st::SsfStConfig;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
-    pub data: reader::DataConfig,
+    pub data: lib_reader::DataConfig,
     pub backtest: BacktestConfig,
     pub output: Option<OutputConfig>,
     pub strategy: Vec<StrategyConfig>,

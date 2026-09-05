@@ -1080,6 +1080,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "lib-reader"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "csv",
+ "lzma-rs",
+ "rayon",
+ "serde",
+ "thiserror",
+ "tracing",
+ "zip",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1367,20 +1381,6 @@ checksum = "22e18b0f0062d30d4230b2e85ff77fdfe4326feb054b9783a3460d8435c8ab91"
 dependencies = [
  "crossbeam-deque",
  "crossbeam-utils",
-]
-
-[[package]]
-name = "reader"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "csv",
- "lzma-rs",
- "rayon",
- "serde",
- "thiserror",
- "tracing",
- "zip",
 ]
 
 [[package]]
@@ -1762,9 +1762,9 @@ dependencies = [
  "arrow",
  "chrono",
  "clap",
+ "lib-reader",
  "parquet",
  "rayon",
- "reader",
  "serde",
  "thiserror",
  "toml",

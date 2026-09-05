@@ -1,11 +1,11 @@
 use std::path::PathBuf;
 
 pub fn load_columns(
-    config: &reader::DataConfig,
+    config: &lib_reader::DataConfig,
     symbol: &str,
     timeframe: &str,
-) -> anyhow::Result<reader::KlineColumns> {
-    let spec = reader::DataSpec {
+) -> anyhow::Result<lib_reader::KlineColumns> {
+    let spec = lib_reader::DataSpec {
         source: config.source_type,
         dir: PathBuf::from(&config.dir),
         symbol: symbol.to_string(),
@@ -13,11 +13,11 @@ pub fn load_columns(
         start_date: config.start_date.clone(),
         end_date: config.end_date.clone(),
     };
-    Ok(reader::load_columns(&spec)?)
+    Ok(lib_reader::load_columns(&spec)?)
 }
 
 pub fn load_close(
-    config: &reader::DataConfig,
+    config: &lib_reader::DataConfig,
     symbol: &str,
     timeframe: &str,
 ) -> anyhow::Result<Vec<f64>> {
