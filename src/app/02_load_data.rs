@@ -15,12 +15,3 @@ pub fn load_columns(
     };
     Ok(lib_reader::load_columns(&spec)?)
 }
-
-pub fn load_close(
-    config: &lib_reader::DataConfig,
-    symbol: &str,
-    timeframe: &str,
-) -> crate::error::Result<Vec<f64>> {
-    let cols = load_columns(config, symbol, timeframe)?;
-    Ok(cols.close)
-}

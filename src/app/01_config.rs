@@ -1,9 +1,11 @@
 use serde::Deserialize;
 
+use crate::error::AppError;
 use crate::strategies::ssf::SsfConfig;
 use crate::strategies::ssf_st::SsfStConfig;
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub data: lib_reader::DataConfig,
     pub backtest: BacktestConfig,
@@ -11,14 +13,36 @@ pub struct Config {
     pub strategy: Vec<StrategyConfig>,
 }
 
+impl Config {
+    pub fn validate(&self) -> crate::error::Result<()> {
+        if self.backtest.initial_balance <= 0.0 {
+            return Err(AppError::Msg(
+                "初始资金 backtest.initial_balance 必须大于 0".into(),
+            ));
+        }
+        if self.data.symbol.is_empty() {
+            return Err(AppError::Msg("data.symbol 不能为空".into()));
+        }
+        if self.data.timeframes.is_empty() {
+            return Err(AppError::Msg("data.timeframes 不能为空".into()));
+        }
+        if self.strategy.is_empty() {
+            return Err(AppError::Msg("strategy 不能为空".into()));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BacktestConfig {
     pub initial_balance: f64,
 }
 
-/// 输出配置。`dir` 为输出根目录，合并结果写入 `{dir}/result.parquet`，逐品种写入 `{dir}/temps/`。
+/// 输出配置。`dir` 为输出根目录，合并结果写入 `{dir}/result.parquet`，逐组合写入 `{dir}/temps/`。
 /// 若未设置，默认使用当前目录 `./reports/`。
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OutputConfig {
     pub dir: Option<String>,
     /// 是否导出逐笔交易和权益曲线详细数据
@@ -31,12 +55,13 @@ pub struct OutputConfig {
 
 /// Config for single-MA price-cross strategies.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MaGridCfg {
     pub period: PeriodParam,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum StrategyConfig {
     Sma(MaGridCfg),
     Ema(MaGridCfg),
@@ -95,6 +120,7 @@ impl PeriodParam {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RangeParam<T: PartialOrd + Copy> {
     pub start: T,
     pub end: T,
@@ -105,4 +131,51 @@ pub fn load_config(path: &str) -> crate::error::Result<Config> {
     let content = std::fs::read_to_string(path)?;
     let config: Config = toml::from_str(&content)?;
     Ok(config)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_toml(balance: f64, symbol: bool, strategy: bool) -> String {
+        format!(
+            "{}\n[data]\ntype = \"binance\"\ndir = \"/tmp\"\nsymbol = {}\ntimeframes = [\"1d\"]\n\n[backtest]\ninitial_balance = {balance}\n",
+            if strategy {
+                "[[strategy]]\ntype = \"sma\"\nperiod = 20"
+            } else {
+                "strategy = []"
+            },
+            if symbol { "[\"BTCUSDT\"]" } else { "[]" },
+        )
+    }
+
+    #[test]
+    fn validate_accepts_full_config() {
+        let cfg: Config = toml::from_str(&make_toml(10000.0, true, true)).unwrap();
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_zero_balance() {
+        let cfg: Config = toml::from_str(&make_toml(0.0, true, true)).unwrap();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_empty_symbols() {
+        let cfg: Config = toml::from_str(&make_toml(10000.0, false, true)).unwrap();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_empty_strategy() {
+        let cfg: Config = toml::from_str(&make_toml(10000.0, true, false)).unwrap();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn unknown_field_is_rejected() {
+        let toml = format!("{}\nbacktest_typo = 1\n", make_toml(10000.0, true, true));
+        assert!(toml::from_str::<Config>(&toml).is_err());
+    }
 }

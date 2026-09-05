@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use arrow::array::*;
@@ -240,29 +241,6 @@ pub fn write_parquet(path: &str, results: &[RunResult], balance: f64) -> Result<
     Ok(())
 }
 
-pub fn write_individual_parquet(results: &[RunResult], dir: &str, balance: f64) -> Result<()> {
-    use std::collections::HashMap;
-    let mut groups: HashMap<(String, String, String), Vec<RunResult>> = HashMap::new();
-    for r in results {
-        groups
-            .entry((r.symbol.clone(), r.timeframe.clone(), r.strategy.clone()))
-            .or_default()
-            .push(r.clone());
-    }
-    let path = std::path::Path::new(dir);
-    std::fs::create_dir_all(path)?;
-    for ((symbol, tf, strategy), group) in &groups {
-        let filename = format!("{}_{}_{}.parquet", symbol, tf, strategy);
-        let filepath = path.join(filename);
-        write_parquet(
-            filepath.to_str().expect("non-UTF-8 output path"),
-            group,
-            balance,
-        )?;
-    }
-    Ok(())
-}
-
 pub fn write_detail_parquet(details: &[crate::app::DetailResult], dir: &str) -> Result<()> {
     use parquet::arrow::ArrowWriter;
     use parquet::file::properties::WriterProperties;
@@ -500,24 +478,20 @@ pub fn write_single_parquet(
     write_parquet(path.to_str().expect("non-UTF-8 path"), results, balance)
 }
 
-pub fn merge_parquet_files(temps_dir: &str, output_path: &str) -> Result<()> {
-    let dir = std::path::Path::new(temps_dir);
-    if !dir.exists() {
-        return Ok(());
-    }
-    let mut all = Vec::new();
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension().is_some_and(|e| e == "parquet") {
-            match read_parquet(path.to_str().expect("non-UTF-8 path")) {
-                Ok(mut results) => all.append(&mut results),
-                Err(e) => eprintln!("  [警告] 读取失败 {}: {e}", path.display()),
-            }
+/// 合并本次运行产生的组合文件 (含跳过的缓存文件), 输出为最终的 result.parquet。
+/// 仅读取显式传入的路径, 避免聚合 `temps/` 中遗留的旧参数文件。
+/// 返回合并的总行数。
+pub fn merge_parquet_files(paths: &[PathBuf], output_path: &str, balance: f64) -> Result<u64> {
+    let mut all: Vec<RunResult> = Vec::new();
+    for path in paths {
+        match read_parquet(path.to_str().expect("non-UTF-8 path")) {
+            Ok(mut results) => all.append(&mut results),
+            Err(e) => eprintln!("  [警告] 读取失败 {}: {e}", path.display()),
         }
     }
+    let total = all.len() as u64;
     if !all.is_empty() {
-        write_parquet(output_path, &all, 10000.0)?;
+        write_parquet(output_path, &all, balance)?;
     }
-    Ok(())
+    Ok(total)
 }
