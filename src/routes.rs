@@ -82,6 +82,21 @@ fn parse_market_type(market_type: &Option<String>) -> Result<MarketType, ParseMa
         .map_or(Ok(MarketType::default()), |s| s.parse())
 }
 
+const PAIR_ALLOWED: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_";
+const TIMEFRAME_ALLOWED: &str = "0123456789abcdefghijklmnopqrstuvwxyz_";
+
+fn is_allowed(s: &str, allowed: &str) -> bool {
+    !s.is_empty() && s.bytes().all(|b| allowed.contains(b as char))
+}
+
+fn valid_pair(s: &str) -> bool {
+    is_allowed(s, PAIR_ALLOWED)
+}
+
+fn valid_timeframe(s: &str) -> bool {
+    is_allowed(s, TIMEFRAME_ALLOWED)
+}
+
 async fn health_handler() -> impl IntoResponse {
     (
         StatusCode::OK,
@@ -151,6 +166,10 @@ async fn timeframes_handler(
         Err(e) => return bad_request(e.to_string()),
     };
 
+    if !valid_pair(&query.pair) {
+        return bad_request("invalid pair");
+    }
+
     match state.data_loader.list_timeframes(market_type, &query.pair) {
         Ok(timeframes) => (
             StatusCode::OK,
@@ -172,6 +191,13 @@ async fn klines_handler(
         Ok(mt) => mt,
         Err(e) => return bad_request(e.to_string()),
     };
+
+    if !valid_pair(&query.pair) {
+        return bad_request("invalid pair");
+    }
+    if !valid_timeframe(&query.timeframe) {
+        return bad_request("invalid timeframe");
+    }
 
     match state.data_loader.load_klines_filtered(
         market_type,
@@ -211,6 +237,9 @@ pub fn create_router(app_state: AppState) -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
 
     #[test]
     fn test_parse_market_type_default() {
@@ -224,5 +253,92 @@ mod tests {
             MarketType::Spot
         );
         assert!(parse_market_type(&Some("invalid".to_string())).is_err());
+    }
+
+    #[test]
+    fn test_valid_pair_timeframe_pure() {
+        assert!(valid_pair("BTCUSDT"));
+        assert!(valid_pair("BTC_USDT"));
+        assert!(!valid_pair(""));
+        assert!(!valid_pair(".."));
+        assert!(!valid_pair("../../etc"));
+        assert!(!valid_pair("a/b"));
+        assert!(!valid_pair("a\\b"));
+        assert!(!valid_pair("a b"));
+        assert!(!valid_pair("btcusdt"));
+        assert!(!valid_pair(".hidden"));
+
+        assert!(valid_timeframe("1h"));
+        assert!(valid_timeframe("15m"));
+        assert!(valid_timeframe("1_2h"));
+        assert!(!valid_timeframe(""));
+        assert!(!valid_timeframe(".."));
+        assert!(!valid_timeframe("1/h"));
+        assert!(!valid_timeframe("1h "));
+        assert!(!valid_timeframe("1H"));
+    }
+
+    fn test_app() -> Router {
+        create_router(AppState::new(PathBuf::new()))
+    }
+
+    #[tokio::test]
+    async fn test_klines_rejects_traversal_pair() {
+        let app = test_app();
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/klines?market_type=futures&pair=..%2F..%2Fetc&timeframe=1h")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_klines_rejects_absolute_timeframe() {
+        let app = test_app();
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/klines?market_type=futures&pair=BTCUSDT&timeframe=%2Fetc%2Fpasswd")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_timeframes_rejects_invalid_pair() {
+        let app = test_app();
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/timeframes?market_type=futures&pair=..%2F..")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_klines_accepts_valid_input() {
+        let app = test_app();
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/klines?market_type=futures&pair=BTCUSDT&timeframe=1h")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
     }
 }

@@ -230,10 +230,15 @@ fn get_i64_col(df: &DataFrame, names: &[&str]) -> Result<Int64Chunked, DataError
 
 fn get_f64_col(df: &DataFrame, names: &[&str]) -> Result<Float64Chunked, DataError> {
     for name in names {
-        if let Ok(col) = df.column(name)
-            && let Ok(chunked) = col.f64()
-        {
-            return Ok(chunked.clone());
+        if let Ok(col) = df.column(name) {
+            if let Ok(chunked) = col.f64() {
+                return Ok(chunked.clone());
+            }
+            if let Ok(cast) = col.cast(&DataType::Float64)
+                && let Ok(chunked) = cast.f64()
+            {
+                return Ok(chunked.clone());
+            }
         }
     }
     Err(DataError::MissingColumn(names.join("/")))
@@ -735,5 +740,16 @@ mod tests {
                 });
             }
         });
+    }
+
+    #[test]
+    fn test_get_f64_col_casts_float32() {
+        let df = df!(
+            "open" => &[1.0f32, 2.0f32, 3.0f32],
+            "high" => &[1.0f32, 2.0f32, 3.0f32],
+        )
+        .unwrap();
+        let open = get_f64_col(&df, &["open"]).unwrap();
+        assert_eq!(open.get(0), Some(1.0));
     }
 }

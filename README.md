@@ -4,40 +4,23 @@ TradingView K-line data local HTTP service. Reads candlestick data from local pa
 
 ## 配置
 
-```toml
-[package]
-name = "tradingview-backend"
+服务从工作区 `config/config.toml` 读取配置（无 CLI 参数 / 环境变量覆盖）。字段：
 
-[[bin]]
-name = "tradingview"
+| 字段 | 必需 | 默认值 | 说明 |
+|------|------|--------|------|
+| `host` | 否 | `127.0.0.1` | 监听地址 |
+| `port` | 否 | `3001` | 监听端口 |
+| `data_dir` | 是 | 无 | parquet 数据根目录 |
+| `frontend_dir` | 否 | `<workspace>/frontend/dist` | 前端静态资源目录 |
 
-[dependencies]
-axum          # HTTP router
-tower-http    # CORS + static file serving
-clap          # CLI args + env var config
-moka          # in-memory cache (TTL 5min, cap 200)
-polars        # parquet reading via lazy scanning
-serde/serde_json  # serialization
-tokio         # async runtime
-thiserror     # typed error enums
-tracing       # structured logging
-chrono        # timestamps
-```
-
-CLI arguments:
-
-| Flag | Env | Default | Description |
-|------|-----|---------|-------------|
-| `--host` | `HOST` | `127.0.0.1` | Listening address |
-| `--port` | `PORT` | `3001` | Listening port |
-| `--data-dir` | `DATA_DIR` | auto-detect | Parquet data root |
+示例见 `config/config.example.toml`。
 
 ## 主执行流程
 
 ```
 main()
  ├─ tracing_subscriber::fmt() — init structured logging
- ├─ Args::parse() — parse CLI / env
+ ├─ Config::load() — read config/config.toml
  ├─ AppState::new(data_dir) — create DataLoader (moka cache)
  ├─ create_router() — register REST routes
  ├─ CorsLayer::new() — open CORS (all origins)
@@ -131,8 +114,6 @@ flowchart LR
 # from workspace root
 cargo run -p tradingview-backend
 
-# with custom port and data dir
-DATA_DIR=/path/to/data cargo run -p tradingview-backend -- --port 8080
-
+# 自定义端口与数据目录: 编辑 config/config.toml 后启动
 # http://localhost:3001/api/klines?market_type=futures&pair=BTCUSDT&timeframe=1h
 ```

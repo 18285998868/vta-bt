@@ -1,3 +1,4 @@
 host = "127.0.0.1"      # 可选参数, 默认值: 127.0.0.1
 port = 3001             # 可选参数, 默认值: 3001
-data_dir = "/data/nutilustrader/data"  # 可选参数, 默认值: ./data
+data_dir = "/data/nutilustrader/data"  # 必填参数, 无默认值, 须指向 parquet 数据根目录
+frontend_dir = "/data/nutilustrader/creats/tradingview/frontend/dist"  # 可选参数, 默认值: <workspace>/frontend/dist
