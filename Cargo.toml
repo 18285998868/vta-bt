@@ -17,7 +17,7 @@ tower-http = { version = "0.7", features = ["cors", "fs"] }
 toml = "1.1"
 dotenvy = "0.15"
 moka = { version = "0.12", features = ["sync", "future"] }
-polars = { version = "0.46", features = ["parquet", "csv", "lazy", "strings", "regex", "is_in", "abs", "log"] }
+polars = { version = "0.55", features = ["parquet", "lazy"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", features = ["serde"] }

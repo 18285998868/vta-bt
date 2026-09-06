@@ -246,7 +246,11 @@ fn read_parquet_files(files: &[PathBuf]) -> Result<Vec<Kline>, DataError> {
     let lfs: Vec<LazyFrame> = files
         .iter()
         .map(|path| {
-            LazyFrame::scan_parquet(path, ScanArgsParquet::default()).map_err(DataError::Polars)
+            LazyFrame::scan_parquet(
+                path.to_string_lossy().as_ref().into(),
+                ScanArgsParquet::default(),
+            )
+            .map_err(DataError::Polars)
         })
         .collect::<Result<Vec<_>, _>>()?;
 
