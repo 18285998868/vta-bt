@@ -26,25 +26,34 @@ impl Strategy for VwmaStrategy {
         format!("vwma_{}", self.periods[idx])
     }
 
-    fn generate_signals(&self, close: &[f64], volume: &[f64], param_idx: usize) -> Vec<Signal> {
+    fn generate_signals(
+        &self,
+        close: &[f64],
+        volume: &[f64],
+        param_idx: usize,
+    ) -> crate::error::Result<Vec<Signal>> {
         let period = self.periods[param_idx];
-        let vol = if volume.len() == close.len() {
-            volume
-        } else {
-            close
-        };
+        if volume.len() != close.len() {
+            return Err(crate::error::AppError::Msg(format!(
+                "VWMA 需要与 close 等长的 volume 数据 (当前 volume={} close={}), 不做静默降级",
+                volume.len(),
+                close.len()
+            )));
+        }
         let input = VwmaInput::from_slice(
             close,
-            vol,
+            volume,
             VwmaParams {
                 period: Some(period),
             },
         );
         let ma = match vwma(&input) {
             Ok(v) => v.values,
-            Err(_) => return vec![Signal::Hold; close.len()],
+            Err(e) => {
+                return Err(crate::error::AppError::Msg(format!("VWMA 计算失败: {e}")));
+            }
         };
-        price_cross_signal(&ma, close)
+        Ok(price_cross_signal(&ma, close))
     }
 }
 
@@ -59,12 +68,28 @@ mod tests {
         let close: Vec<f64> = (0..200)
             .map(|i| 100.0 + (i as f64 * 0.3).sin() * 20.0)
             .collect();
+        let volume: Vec<f64> = (0..200)
+            .map(|i| 1.0 + (i as f64 * 0.1).sin().abs() * 5.0)
+            .collect();
         let s = VwmaStrategy::new(RangeParam {
             start: 20,
             end: 20,
             step: 1,
         });
-        let sig = s.generate_signals(&close, &[], 0);
+        let sig = s.generate_signals(&close, &volume, 0).unwrap();
         assert!(sig.contains(&Signal::Buy));
+    }
+
+    #[test]
+    fn test_rejects_volume_mismatch() {
+        let close: Vec<f64> = (0..200)
+            .map(|i| 100.0 + (i as f64 * 0.3).sin() * 20.0)
+            .collect();
+        let s = VwmaStrategy::new(RangeParam {
+            start: 20,
+            end: 20,
+            step: 1,
+        });
+        assert!(s.generate_signals(&close, &[], 0).is_err());
     }
 }

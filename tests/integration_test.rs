@@ -27,7 +27,7 @@ fn test_ssf_standard_across_runs() {
     });
     assert!(s.param_count() > 0);
     for i in 0..s.param_count() {
-        let sig = s.generate_signals(&close, &[], i);
+        let sig = s.generate_signals(&close, &[], i).unwrap();
         assert_eq!(sig.len(), 500);
     }
 }
@@ -92,4 +92,37 @@ fn test_engine_cli_override_noop() {
     let sig = vec![Signal::Hold; 10];
     let m = engine::simulate(&close, &sig, 1000.0, 365.0);
     assert_eq!(m.num_trades, 0);
+}
+
+#[test]
+fn test_simulate_handles_nan_close() {
+    let mut close = rising_prices(50);
+    close[10] = f64::NAN;
+    let mut sig = vec![Signal::Hold; 50];
+    sig[5] = Signal::Buy;
+    sig[30] = Signal::Close;
+    let m = engine::simulate(&close, &sig, 1000.0, 365.0);
+    assert!(m.total_return.is_finite());
+    assert!(m.sharpe_ratio.is_finite());
+    assert!(m.max_drawdown_pct.is_finite());
+}
+
+#[test]
+fn test_simulate_truncates_to_shortest() {
+    let close = rising_prices(30);
+    let mut sig = vec![Signal::Hold; 60];
+    sig[0] = Signal::Buy;
+    let m = engine::simulate(&close, &sig, 1000.0, 365.0);
+    assert_eq!(m.num_trades, 1);
+}
+
+#[test]
+fn test_strategy_period_larger_than_window() {
+    let close = rising_prices(50);
+    let s = SsfStrategy::new(SsfConfig {
+        period: PeriodParam::Single(500),
+    });
+    let sig = s.generate_signals(&close, &[], 0).unwrap();
+    assert_eq!(sig.len(), 50);
+    assert!(sig.iter().all(|&s| s == Signal::Hold));
 }

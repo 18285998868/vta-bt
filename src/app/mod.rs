@@ -26,8 +26,23 @@ pub struct DetailResult {
 }
 
 /// 参数集合的稳定指纹 (FNV-1a)。写入组合文件名,避免改动参数后误命中旧缓存。
-fn params_fingerprint(strategy: &dyn crate::strategies::Strategy, n: usize) -> u64 {
+/// 除策略参数外还混入初始资金与数据窗口,防止改 balance / start_date 后仍命中旧临时文件
+/// (否则缓存结果的指标与当前资金口径不一致)。
+fn params_fingerprint(
+    strategy: &dyn crate::strategies::Strategy,
+    n: usize,
+    balance: f64,
+    window: &str,
+) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in balance.to_bits().to_le_bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    for b in window.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
     for i in 0..n {
         for b in strategy.param_str(i).bytes() {
             h ^= u64::from(b);
@@ -51,6 +66,8 @@ struct ComboCtx {
     overwrite: bool,
     temps_dir: String,
     detail_dir: String,
+    /// 数据窗口标识 (start_date/end_date), 纳入缓存指纹以区分不同数据区间。
+    window: String,
 }
 
 /// 执行单个 (symbol, timeframe, strategy) 组合:
@@ -73,7 +90,7 @@ fn run_combo(
         symbol,
         tf,
         strategy.name(),
-        params_fingerprint(strategy, n),
+        params_fingerprint(strategy, n, ctx.balance, &ctx.window),
     );
 
     if !ctx.overwrite && combo_path.exists() {
@@ -94,11 +111,18 @@ fn run_combo(
 
     use rayon::prelude::*;
 
+    if ctx.detail && n > 50_000 {
+        eprintln!(
+            "  [{}] 警告: detail 模式会把 {n} 组参数结果(含逐笔交易/权益曲线)先攒入内存再写出, 可能占用数 GB; 建议减少参数范围或关闭 detail",
+            strategy.name()
+        );
+    }
+
     if ctx.detail {
         let sims: Vec<(String, crate::engine::SimResult)> = (0..n)
             .into_par_iter()
             .map(|i| {
-                let signals = strategy.generate_signals(&cols.close, &cols.volume, i);
+                let signals = strategy.generate_signals(&cols.close, &cols.volume, i)?;
                 let sim = crate::engine::simulate_detailed(
                     &cols.time,
                     &cols.close,
@@ -106,9 +130,9 @@ fn run_combo(
                     ctx.balance,
                     ctx.bpy,
                 );
-                (strategy.param_str(i), sim)
+                Ok((strategy.param_str(i), sim))
             })
-            .collect();
+            .collect::<crate::error::Result<Vec<_>>>()?;
 
         let mut run_rows = Vec::with_capacity(n);
         let mut detail_rows = Vec::with_capacity(n);
@@ -141,17 +165,17 @@ fn run_combo(
         let run_rows: Vec<RunResult> = (0..n)
             .into_par_iter()
             .map(|i| {
-                let signals = strategy.generate_signals(&cols.close, &cols.volume, i);
+                let signals = strategy.generate_signals(&cols.close, &cols.volume, i)?;
                 let metrics = crate::engine::simulate(&cols.close, &signals, ctx.balance, ctx.bpy);
-                RunResult {
+                Ok(RunResult {
                     symbol: symbol.to_string(),
                     timeframe: tf.to_string(),
                     strategy: strategy.name().to_string(),
                     params: strategy.param_str(i),
                     metrics,
-                }
+                })
             })
-            .collect();
+            .collect::<crate::error::Result<Vec<_>>>()?;
 
         output::write_single_parquet(&run_rows, &combo_path, ctx.balance)?;
     }
@@ -179,6 +203,11 @@ pub fn run(config: &Config) -> crate::error::Result<()> {
     let detail = config.output.as_ref().is_some_and(|o| o.detail);
     let overwrite = config.output.as_ref().is_some_and(|o| o.overwrite);
     let balance = config.backtest.initial_balance;
+    let window = format!(
+        "{}~{}",
+        config.data.start_date.as_deref().unwrap_or(""),
+        config.data.end_date.as_deref().unwrap_or("")
+    );
 
     let symbols: Vec<&str> = config.data.symbol.iter().map(|s| s.as_str()).collect();
     let timeframes: Vec<&str> = config.data.timeframes.iter().map(|s| s.as_str()).collect();
@@ -217,6 +246,7 @@ pub fn run(config: &Config) -> crate::error::Result<()> {
                 overwrite,
                 temps_dir: temps_dir.clone(),
                 detail_dir: detail_dir.clone(),
+                window: window.clone(),
             };
 
             for strategy in &strategies {

@@ -29,7 +29,42 @@ impl Config {
         if self.strategy.is_empty() {
             return Err(AppError::Msg("strategy 不能为空".into()));
         }
+        for sc in &self.strategy {
+            sc.period_param()
+                .ok_or_else(|| AppError::Msg("strategy 缺少 period 参数(无法解析)".into()))?
+                .validate()?;
+        }
         Ok(())
+    }
+}
+
+impl StrategyConfig {
+    fn period_param(&self) -> Option<&PeriodParam> {
+        match self {
+            StrategyConfig::Sma(c)
+            | StrategyConfig::Ema(c)
+            | StrategyConfig::Hma(c)
+            | StrategyConfig::Zlma(c)
+            | StrategyConfig::Alma(c)
+            | StrategyConfig::Dema(c)
+            | StrategyConfig::Fwma(c)
+            | StrategyConfig::Jma(c)
+            | StrategyConfig::Kama(c)
+            | StrategyConfig::LinReg(c)
+            | StrategyConfig::Pwma(c)
+            | StrategyConfig::SinWma(c)
+            | StrategyConfig::Swma(c)
+            | StrategyConfig::Tema(c)
+            | StrategyConfig::Tilson(c)
+            | StrategyConfig::Trima(c)
+            | StrategyConfig::Wilders(c)
+            | StrategyConfig::Wma(c)
+            | StrategyConfig::Vwma(c)
+            | StrategyConfig::Vidya(c)
+            | StrategyConfig::McGinley(c) => Some(&c.period),
+            StrategyConfig::Ssf(c) => Some(&c.period),
+            StrategyConfig::SsfSt(c) => Some(&c.period),
+        }
     }
 }
 
@@ -96,6 +131,37 @@ pub enum PeriodParam {
 }
 
 impl PeriodParam {
+    pub fn validate(&self) -> crate::error::Result<()> {
+        match self {
+            PeriodParam::Single(v) => {
+                if *v < 1 {
+                    return Err(AppError::Msg(format!("period 必须 >= 1, 当前为 {v}")));
+                }
+            }
+            PeriodParam::Range(r) => {
+                if r.start < 1 {
+                    return Err(AppError::Msg(format!(
+                        "period 必须 >= 1, 当前 start = {}",
+                        r.start
+                    )));
+                }
+                if r.start > r.end {
+                    return Err(AppError::Msg(format!(
+                        "period 起点 {} 不能大于终点 {}",
+                        r.start, r.end
+                    )));
+                }
+                if r.step <= 0 {
+                    return Err(AppError::Msg(format!(
+                        "period.step 必须 > 0, 当前为 {}",
+                        r.step
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn into_range(self) -> RangeParam<usize> {
         match self {
             PeriodParam::Single(v) => RangeParam {
@@ -171,6 +237,39 @@ mod tests {
     fn validate_rejects_empty_strategy() {
         let cfg: Config = toml::from_str(&make_toml(10000.0, true, false)).unwrap();
         assert!(cfg.validate().is_err());
+    }
+
+    fn make_strategy_toml(period_body: &str) -> String {
+        format!(
+            "[data]\ntype = \"binance\"\ndir = \"/tmp\"\nsymbol = [\"BTCUSDT\"]\ntimeframes = [\"1d\"]\n\n[backtest]\ninitial_balance = 10000.0\n\n[[strategy]]\ntype = \"sma\"\nperiod = {period_body}\n"
+        )
+    }
+
+    #[test]
+    fn validate_rejects_zero_declared_period() {
+        let cfg: Config = toml::from_str(&make_strategy_toml("0")).unwrap();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_reversed_range() {
+        let cfg: Config =
+            toml::from_str(&make_strategy_toml("{ start = 50, end = 10, step = 5 }")).unwrap();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_zero_step() {
+        let cfg: Config =
+            toml::from_str(&make_strategy_toml("{ start = 5, end = 20, step = 0 }")).unwrap();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn validate_accepts_valid_range() {
+        let cfg: Config =
+            toml::from_str(&make_strategy_toml("{ start = 5, end = 20, step = 5 }")).unwrap();
+        assert!(cfg.validate().is_ok());
     }
 
     #[test]

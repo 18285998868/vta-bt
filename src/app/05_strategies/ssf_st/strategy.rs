@@ -48,10 +48,15 @@ impl Strategy for SsfStStrategy {
         format!("period={},variant=ssf_st", self.periods[idx])
     }
 
-    fn generate_signals(&self, close: &[f64], _volume: &[f64], param_idx: usize) -> Vec<Signal> {
+    fn generate_signals(
+        &self,
+        close: &[f64],
+        _volume: &[f64],
+        param_idx: usize,
+    ) -> crate::error::Result<Vec<Signal>> {
         let period = self.periods[param_idx];
         let values = ssf_filter(close, period);
-        price_cross_signal(&values, close)
+        Ok(price_cross_signal(&values, close))
     }
 }
 
@@ -75,7 +80,7 @@ mod tests {
                 step: 1,
             }),
         });
-        let sig = s.generate_signals(&prices(200), &[], 0);
+        let sig = s.generate_signals(&prices(200), &[], 0).unwrap();
         assert_eq!(sig.len(), 200);
     }
 }

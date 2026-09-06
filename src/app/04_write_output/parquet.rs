@@ -14,7 +14,7 @@ fn params_to_json(params: &str) -> String {
     if let Some(rest) = clean.strip_prefix("period=") {
         let period = rest.split(',').next().unwrap_or("0");
         if let Some(variant_pos) = rest.find(",variant=") {
-            let variant = &rest[variant_pos + 10..];
+            let variant = &rest[variant_pos + 9..];
             format!("{{\"period\":{},\"variant\":\"{}\"}}", period, variant)
         } else {
             format!("{{\"period\":{}}}", period)
@@ -62,6 +62,7 @@ fn build_parquet(results: &[RunResult], balance: f64) -> RecordBatch {
     let mut timeframe = StringBuilder::new();
     let mut strategy_params = UInt32Builder::new();
     let mut strategy_params_json = StringBuilder::new();
+    let mut params_full = StringBuilder::new();
     let mut bal = Float64Builder::new();
     let mut trade_size = StringBuilder::new();
     let mut pnl = Float64Builder::new();
@@ -101,6 +102,7 @@ fn build_parquet(results: &[RunResult], balance: f64) -> RecordBatch {
         timeframe.append_value(&r.timeframe);
         strategy_params.append_value(strategy_params_value(&r.params));
         strategy_params_json.append_value(params_to_json(&r.params));
+        params_full.append_value(&r.params);
         bal.append_value(balance);
         trade_size.append_value("100%");
         pnl.append_value(m.total_return);
@@ -176,6 +178,7 @@ fn build_parquet(results: &[RunResult], balance: f64) -> RecordBatch {
         Arc::new(z_score.finish()),
         Arc::new(p_value.finish()),
         Arc::new(fixed_pnl.finish()),
+        Arc::new(params_full.finish()),
     ];
 
     let fields = vec![
@@ -215,6 +218,7 @@ fn build_parquet(results: &[RunResult], balance: f64) -> RecordBatch {
         Field::new("z_score", DataType::Float64, false),
         Field::new("p_value", DataType::Float64, false),
         Field::new("fixed_pnl", DataType::Float64, false),
+        Field::new("params", DataType::Utf8, false),
     ];
 
     let schema = arrow::datatypes::Schema::new(fields);
@@ -391,10 +395,15 @@ pub fn read_parquet(path: &str) -> Result<Vec<RunResult>> {
     for batch in reader {
         let batch = batch?;
         let n = batch.num_rows();
+        if batch.num_columns() < 37 {
+            return Err(crate::error::AppError::Msg(format!(
+                "缓存文件缺少完整 params 列(旧格式, 无法区分 ssf/ssf_st 等 variant), 请重跑: {path}"
+            )));
+        }
         let strategy = str_col(&batch, 0);
         let symbol = str_col(&batch, 1);
         let timeframe = str_col(&batch, 2);
-        let strategy_params = u32_col(&batch, 3);
+        let params_full = str_col(&batch, 36);
         let pnl = f64_col(&batch, 7);
         let eq = f64_col(&batch, 8);
         let mdd = f64_col(&batch, 9);
@@ -429,7 +438,7 @@ pub fn read_parquet(path: &str) -> Result<Vec<RunResult>> {
                 symbol: symbol[i].clone(),
                 timeframe: timeframe[i].clone(),
                 strategy: strategy[i].clone(),
-                params: strategy_params[i].to_string(),
+                params: params_full[i].clone(),
                 metrics: SummaryMetrics {
                     total_return_pct: pnl[i] * 100.0,
                     total_return: pnl[i],

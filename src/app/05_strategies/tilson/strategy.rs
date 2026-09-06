@@ -26,7 +26,12 @@ impl Strategy for TilsonStrategy {
         format!("t3_{}", self.periods[idx])
     }
 
-    fn generate_signals(&self, close: &[f64], _volume: &[f64], param_idx: usize) -> Vec<Signal> {
+    fn generate_signals(
+        &self,
+        close: &[f64],
+        _volume: &[f64],
+        param_idx: usize,
+    ) -> crate::error::Result<Vec<Signal>> {
         let period = self.periods[param_idx];
         let input = TilsonInput::from_slice(
             close,
@@ -37,9 +42,9 @@ impl Strategy for TilsonStrategy {
         );
         let ma = match tilson(&input) {
             Ok(v) => v.values,
-            Err(_) => return vec![Signal::Hold; close.len()],
+            Err(_) => return Ok(vec![Signal::Hold; close.len()]),
         };
-        price_cross_signal(&ma, close)
+        Ok(price_cross_signal(&ma, close))
     }
 }
 
@@ -60,7 +65,7 @@ mod tests {
             step: 1,
         });
         assert_eq!(s.param_count(), 1);
-        let sig = s.generate_signals(&close, &[], 0);
+        let sig = s.generate_signals(&close, &[], 0).unwrap();
         assert!(sig.contains(&Signal::Buy));
     }
 }

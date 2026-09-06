@@ -80,8 +80,10 @@ struct CloseArgs {
     pos_qty: f64,
     pos_entry: f64,
     pos_entry_time: i64,
+    pos_entry_bar: usize,
     exit_price: f64,
     exit_time: i64,
+    exit_bar: usize,
     initial_cash: f64,
     trade_mfe: f64,
     trade_mae: f64,
@@ -93,8 +95,10 @@ fn close_position(args: CloseArgs) -> (f64, Trade) {
         pos_qty,
         pos_entry,
         pos_entry_time,
+        pos_entry_bar,
         exit_price,
         exit_time,
+        exit_bar,
         initial_cash,
         trade_mfe,
         trade_mae,
@@ -126,7 +130,7 @@ fn close_position(args: CloseArgs) -> (f64, Trade) {
         pnl,
         pnl_pct,
         fixed_pnl,
-        bars_held: exit_time - pos_entry_time,
+        bars_held: (exit_bar as i64) - (pos_entry_bar as i64),
         max_runup: trade_mfe,
         max_drawdown: trade_mae,
         exit_reason: "signal".to_string(),
@@ -137,13 +141,16 @@ fn close_position(args: CloseArgs) -> (f64, Trade) {
 fn scan_trades(
     close: &[f64],
     positions: &[i8],
+    time: &[i64],
     initial_cash: f64,
 ) -> (Vec<Trade>, f64, Vec<f64>, Vec<f64>) {
     let n = close.len().min(positions.len());
+    let ts = |i: usize| if i < time.len() { time[i] } else { i as i64 };
     let mut cash = initial_cash;
     let mut pos_qty = 0.0;
     let mut pos_entry = 0.0;
     let mut pos_entry_time: i64 = 0;
+    let mut pos_entry_bar: usize = 0;
     let mut cur_pos: i8 = 0;
     let mut trades = Vec::with_capacity(1024);
     let mut trade_pnls = Vec::with_capacity(1024);
@@ -175,8 +182,10 @@ fn scan_trades(
                 pos_qty,
                 pos_entry,
                 pos_entry_time,
+                pos_entry_bar,
                 exit_price: close[i],
-                exit_time: i as i64,
+                exit_time: ts(i),
+                exit_bar: i,
                 initial_cash,
                 trade_mfe,
                 trade_mae,
@@ -192,7 +201,8 @@ fn scan_trades(
 
         if cur_pos == 0 && positions[i] != 0 {
             pos_entry = close[i];
-            pos_entry_time = i as i64;
+            pos_entry_time = ts(i);
+            pos_entry_bar = i;
             pos_qty = cash / close[i];
             if positions[i] == 1 {
                 cash -= pos_qty * close[i];
@@ -221,8 +231,10 @@ fn scan_trades(
             pos_qty,
             pos_entry,
             pos_entry_time,
+            pos_entry_bar,
             exit_price: last_price,
-            exit_time: (n - 1) as i64,
+            exit_time: ts(n - 1),
+            exit_bar: n - 1,
             initial_cash,
             trade_mfe,
             trade_mae,
@@ -582,7 +594,7 @@ pub fn simulate(
     }
     let positions = signals_to_positions(signals);
     let (trades, _final_cash, equity_curve, trade_pnl_pcts) =
-        scan_trades(close, &positions, initial_cash);
+        scan_trades(close, &positions, &[], initial_cash);
     compute_metrics(
         &equity_curve,
         &trades,
@@ -610,7 +622,7 @@ pub fn simulate_detailed(
     }
     let positions = signals_to_positions(signals);
     let (trades, _final_cash, equity_curve, trade_pnl_pcts) =
-        scan_trades(close, &positions, initial_cash);
+        scan_trades(close, &positions, time, initial_cash);
     let summary = compute_metrics(
         &equity_curve,
         &trades,

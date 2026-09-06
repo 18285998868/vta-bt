@@ -47,10 +47,15 @@ impl Strategy for McGinleyStrategy {
         format!("mcginley_{}", self.periods[idx])
     }
 
-    fn generate_signals(&self, close: &[f64], _volume: &[f64], param_idx: usize) -> Vec<Signal> {
+    fn generate_signals(
+        &self,
+        close: &[f64],
+        _volume: &[f64],
+        param_idx: usize,
+    ) -> crate::error::Result<Vec<Signal>> {
         let period = self.periods[param_idx];
         let ma = mcgd_ma(close, period);
-        price_cross_signal(&ma, close)
+        Ok(price_cross_signal(&ma, close))
     }
 }
 
@@ -70,7 +75,7 @@ mod tests {
             end: 20,
             step: 1,
         });
-        let sig = s.generate_signals(&close, &[], 0);
+        let sig = s.generate_signals(&close, &[], 0).unwrap();
         assert!(sig.contains(&Signal::Buy));
     }
 }

@@ -30,5 +30,11 @@ pub trait Strategy: Send + Sync {
     fn name(&self) -> &'static str;
     fn param_count(&self) -> usize;
     fn param_str(&self, idx: usize) -> String;
-    fn generate_signals(&self, close: &[f64], volume: &[f64], param_idx: usize) -> Vec<Signal>;
+    /// 生成信号。返回 Err 表示该参数/数据无法计算 (例如 VWMA 缺少等长 volume), 不做静默降级。
+    fn generate_signals(
+        &self,
+        close: &[f64],
+        volume: &[f64],
+        param_idx: usize,
+    ) -> crate::error::Result<Vec<Signal>>;
 }

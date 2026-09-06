@@ -27,7 +27,12 @@ impl Strategy for SsfStrategy {
         format!("period={},variant=ssf", self.periods[idx])
     }
 
-    fn generate_signals(&self, close: &[f64], _volume: &[f64], param_idx: usize) -> Vec<Signal> {
+    fn generate_signals(
+        &self,
+        close: &[f64],
+        _volume: &[f64],
+        param_idx: usize,
+    ) -> crate::error::Result<Vec<Signal>> {
         let period = self.periods[param_idx];
         use vector_ta::indicators::moving_averages::supersmoother::{
             SuperSmootherInput, SuperSmootherParams, supersmoother,
@@ -40,9 +45,9 @@ impl Strategy for SsfStrategy {
             },
         )) {
             Ok(v) => v.values,
-            Err(_) => return vec![Signal::Hold; close.len()],
+            Err(_) => return Ok(vec![Signal::Hold; close.len()]),
         };
-        price_cross_signal(&values, close)
+        Ok(price_cross_signal(&values, close))
     }
 }
 
@@ -67,7 +72,7 @@ mod tests {
             }),
         });
         assert!(s.param_count() > 0);
-        let sig = s.generate_signals(&prices(200), &[], 0);
+        let sig = s.generate_signals(&prices(200), &[], 0).unwrap();
         assert_eq!(sig.len(), 200);
         assert!(sig.contains(&Signal::Buy));
     }
