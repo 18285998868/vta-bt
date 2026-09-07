@@ -42,6 +42,21 @@ period = { start = 5, end = 100, step = 5 } # 必填, 参数范围; 单值可写
 
 ## 逻辑编排
 
+- 启动 - main.rs 
+  - 初始化日志
+  - 解析 CLI - cli.rs - clap
+  - 执行app业务 - app/mod.rs
+    - 加载配置 - src/config.rs - toml + serde
+    - 配置校验 config.validate()
+    - 构建策略 build_strategies  # 每 [[strategy]] 块 → 1 个实例(内部 periods: Vec<usize>)
+    - for symbol x timeframe     # 串行, 数据一帧加载一次、帧末释放
+      - 加载数据 load_columns()  # 失败[跳过] continue; 供该帧全部策略复用
+      - for strategy
+        - 缓存跳过  # 非 overwrite 且 temps/{sym}_{tf}_{stg}_{参数指纹}.parquet 可读 → 跳过(仍并入合并)
+        - 参数并行 (0..n).par_iter  # 每参数: 生成信号 + 回测 一波完成
+        - 保存结果  # temps/ 每 sym x tf x stg 一文件; detail 模式另写 detail/ 每参数一文件
+    - 合并 result.parquet  # 只合并本次 combo(新算+跳过), 整文件重建
+
 ```
 启动 -> main.rs: cli::parse() 解析 --config/-c
 v

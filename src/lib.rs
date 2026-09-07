@@ -1,6 +1,5 @@
 pub mod app;
 pub mod cli;
-#[path = "app/01_config.rs"]
 pub mod config;
 #[path = "app/02_load_data.rs"]
 pub mod data;

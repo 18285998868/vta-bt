@@ -151,7 +151,7 @@ impl PeriodParam {
                         r.start, r.end
                     )));
                 }
-                if r.step <= 0 {
+                if r.step == 0 {
                     return Err(AppError::Msg(format!(
                         "period.step 必须 > 0, 当前为 {}",
                         r.step

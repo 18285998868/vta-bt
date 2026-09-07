@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::config::Config;
+use crate::config;
 use crate::engine;
 use crate::output;
 use crate::strategies::bars_per_year;
@@ -185,7 +185,7 @@ fn run_combo(
 
 /// 整体逻辑编排(与代码实际结构逐行对应):
 /// ```text
-/// 1.  加载配置并校验: config.validate()?; build_strategies → strategies
+/// 1.  加载配置并校验: config::load_config(path)?; config.validate()?; build_strategies → strategies
 /// 2.  for symbol in symbols                          // 品种层
 /// 3.    for timeframe in timeframes                 // 时间帧层
 /// 4.      cols ← load_columns(symbol, timeframe)     // 加载数据: 一次加载供该帧全部策略复用, 帧末释放内存; 失败打印[跳过]并 continue
@@ -197,7 +197,8 @@ fn run_combo(
 /// 10.         d. 写出: write_single_parquet(temps/) [+ write_detail_parquet(detail/)]
 /// 11. merge_parquet_files(combo_files) → result.parquet   // 只合并本次运行组合(新算+跳过), 整文件重建
 /// ```
-pub fn run(config: &Config) -> crate::error::Result<()> {
+pub fn run(config_path: &str) -> crate::error::Result<()> {
+    let config = config::load_config(config_path)?;
     config.validate()?;
     let strategies = build_strategies(&config.strategy);
     let detail = config.output.as_ref().is_some_and(|o| o.detail);
