@@ -186,16 +186,14 @@ fn run_combo(
 /// 整体逻辑编排(与代码实际结构逐行对应):
 /// ```text
 /// 1.  加载配置并校验: config::load_config(path)?; config.validate()?; build_strategies → strategies
-/// 2.  for symbol in symbols                          // 品种层
-/// 3.    for timeframe in timeframes                 // 时间帧层
-/// 4.      cols ← load_columns(symbol, timeframe)     // 加载数据: 一次加载供该帧全部策略复用, 帧末释放内存; 失败打印[跳过]并 continue
-/// 5.      for strategy in strategies                 // 策略层
-/// 6.        run_combo(...) → 单个组合处理, 内部:
-/// 7.          a. 跳过判断: 非 overwrite 且组合缓存文件(含参数指纹)可读 → 跳过(仍并入合并)
-/// 8.          b. 参数并行: (0..n).into_par_iter 单遍 生成信号 + simulate(/detailed)
-/// 9.          c. detail 模式收集 trades/equity_curve
-/// 10.         d. 写出: write_single_parquet(temps/) [+ write_detail_parquet(detail/)]
-/// 11. merge_parquet_files(combo_files) → result.parquet   // 只合并本次运行组合(新算+跳过), 整文件重建
+/// 2.  cols ← lib_reader::load_columns(&config.data)    // 加载数据(单品种 × 单时间帧)
+/// 3.  for strategy in strategies                       // 策略层
+/// 4.    run_combo(...) → 单个组合处理, 内部:
+/// 5.      a. 跳过判断: 非 overwrite 且组合缓存文件(含参数指纹)可读 → 跳过(仍并入合并)
+/// 6.      b. 参数并行: (0..n).into_par_iter 单遍 生成信号 + simulate(/detailed)
+/// 7.      c. detail 模式收集 trades/equity_curve
+/// 8.      d. 写出: write_single_parquet(temps/) [+ write_detail_parquet(detail/)]
+/// 9.  merge_parquet_files(combo_files) → result.parquet   // 只合并本次运行组合(新算+跳过), 整文件重建
 /// ```
 pub fn run(config_path: &str) -> crate::error::Result<()> {
     let config = config::load_config(config_path)?;
@@ -210,8 +208,8 @@ pub fn run(config_path: &str) -> crate::error::Result<()> {
         config.data.end_date.as_deref().unwrap_or("")
     );
 
-    let symbols: Vec<&str> = config.data.symbol.iter().map(|s| s.as_str()).collect();
-    let timeframes: Vec<&str> = config.data.timeframes.iter().map(|s| s.as_str()).collect();
+    let symbol = &config.data.symbol;
+    let tf = &config.data.timeframe;
 
     let out_dir = config
         .output
@@ -225,41 +223,37 @@ pub fn run(config_path: &str) -> crate::error::Result<()> {
     let mut skipped = 0u64;
     let mut ran = 0u64;
 
-    for symbol in &symbols {
-        for tf in &timeframes {
-            println!("\n{}", "=".repeat(70));
-            println!("  {} / {}", symbol, tf);
-            println!("{}", "=".repeat(70));
+    println!("\n{}", "=".repeat(70));
+    println!("  {} / {}", symbol, tf);
+    println!("{}", "=".repeat(70));
 
-            let cols = match crate::data::load_columns(&config.data, symbol, tf) {
-                Ok(c) => c,
-                Err(e) => {
-                    eprintln!("  [跳过] 加载失败: {e}");
-                    continue;
-                }
-            };
-            println!("  数据: {} bars\n", cols.len());
-            let bpy = bars_per_year(tf);
-            let ctx = ComboCtx {
-                balance,
-                bpy,
-                detail,
-                overwrite,
-                temps_dir: temps_dir.clone(),
-                detail_dir: detail_dir.clone(),
-                window: window.clone(),
-            };
-
-            for strategy in &strategies {
-                let (combo_path, computed) = run_combo(strategy.as_ref(), symbol, tf, &cols, &ctx)?;
-                if computed {
-                    ran += 1;
-                } else {
-                    skipped += 1;
-                }
-                combo_files.push(combo_path);
-            }
+    let cols = match lib_reader::load_columns(&config.data) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("  [失败] 加载失败: {e}");
+            return Err(e.into());
         }
+    };
+    println!("  数据: {} bars\n", cols.len());
+    let bpy = bars_per_year(tf);
+    let ctx = ComboCtx {
+        balance,
+        bpy,
+        detail,
+        overwrite,
+        temps_dir: temps_dir.clone(),
+        detail_dir: detail_dir.clone(),
+        window: window.clone(),
+    };
+
+    for strategy in &strategies {
+        let (combo_path, computed) = run_combo(strategy.as_ref(), symbol, tf, &cols, &ctx)?;
+        if computed {
+            ran += 1;
+        } else {
+            skipped += 1;
+        }
+        combo_files.push(combo_path);
     }
 
     let out_path = format!("{out_dir}/result.parquet");

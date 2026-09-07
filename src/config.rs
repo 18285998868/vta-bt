@@ -23,8 +23,8 @@ impl Config {
         if self.data.symbol.is_empty() {
             return Err(AppError::Msg("data.symbol 不能为空".into()));
         }
-        if self.data.timeframes.is_empty() {
-            return Err(AppError::Msg("data.timeframes 不能为空".into()));
+        if self.data.timeframe.is_empty() {
+            return Err(AppError::Msg("data.timeframe 不能为空".into()));
         }
         if self.strategy.is_empty() {
             return Err(AppError::Msg("strategy 不能为空".into()));
@@ -205,13 +205,13 @@ mod tests {
 
     fn make_toml(balance: f64, symbol: bool, strategy: bool) -> String {
         format!(
-            "{}\n[data]\ntype = \"binance\"\ndir = \"/tmp\"\nsymbol = {}\ntimeframes = [\"1d\"]\n\n[backtest]\ninitial_balance = {balance}\n",
+            "{}\n[data]\ntype = \"binance\"\ndir = \"/tmp\"\nsymbol = {}\ntimeframe = \"1d\"\n\n[backtest]\ninitial_balance = {balance}\n",
             if strategy {
                 "[[strategy]]\ntype = \"sma\"\nperiod = 20"
             } else {
                 "strategy = []"
             },
-            if symbol { "[\"BTCUSDT\"]" } else { "[]" },
+            if symbol { "\"BTCUSDT\"" } else { "\"\"" },
         )
     }
 
@@ -241,7 +241,7 @@ mod tests {
 
     fn make_strategy_toml(period_body: &str) -> String {
         format!(
-            "[data]\ntype = \"binance\"\ndir = \"/tmp\"\nsymbol = [\"BTCUSDT\"]\ntimeframes = [\"1d\"]\n\n[backtest]\ninitial_balance = 10000.0\n\n[[strategy]]\ntype = \"sma\"\nperiod = {period_body}\n"
+            "[data]\ntype = \"binance\"\ndir = \"/tmp\"\nsymbol = \"BTCUSDT\"\ntimeframe = \"1d\"\n\n[backtest]\ninitial_balance = 10000.0\n\n[[strategy]]\ntype = \"sma\"\nperiod = {period_body}\n"
         )
     }
 

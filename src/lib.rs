@@ -1,8 +1,6 @@
 pub mod app;
 pub mod cli;
 pub mod config;
-#[path = "app/02_load_data.rs"]
-pub mod data;
 #[path = "app/03_run_backtest.rs"]
 pub mod engine;
 pub mod error;
