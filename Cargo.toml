@@ -15,8 +15,8 @@ chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 anyhow = "1"
 toml = "1.1"
-arrow = "59"
-parquet = { version = "59", features = ["arrow"] }
+arrow = "60"
+parquet = { version = "60", features = ["arrow"] }
 clap = { version = "4", features = ["derive"] }
 thiserror = "2"
 tracing = { version = "0.1", features = ["log"] }

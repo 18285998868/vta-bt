@@ -383,8 +383,8 @@ mod tests {
     fn unknown_timeframe_is_rejected_instead_of_silently_annualized_as_1d() {
         // 3m 曾不在 bars_per_year 表里, 会静默按 365 年化(差 480 倍)
         for tf in ["3m", "8h", "4h", "1m", "1w"] {
-            let cfg: Config = toml::from_str(&make_scan_toml("\"BTCUSDT\"", &format!("\"{tf}\"")))
-                .unwrap();
+            let cfg: Config =
+                toml::from_str(&make_scan_toml("\"BTCUSDT\"", &format!("\"{tf}\""))).unwrap();
             assert!(cfg.validate().is_ok(), "{tf} 应被接受");
         }
         let cfg: Config = toml::from_str(&make_scan_toml("\"BTCUSDT\"", "\"3s\"")).unwrap();
