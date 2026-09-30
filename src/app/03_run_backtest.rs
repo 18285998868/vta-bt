@@ -33,6 +33,9 @@ pub struct SummaryMetrics {
     pub z_score: f64,
     pub p_value: f64,
     pub total_fixed_pnl: f64,
+    /// 年化成交笔数(往返次数)。信号抖动的主要预警指标:
+    /// 平均持仓不足 5 根 bar 时, 该值会高到成本必然吞掉全部毛利。
+    pub turnover_per_year: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -294,6 +297,11 @@ fn compute_metrics(
     }
 
     let num_bars = (n - 1) as f64;
+    let years = if bars_per_year > 0.0 {
+        num_bars / bars_per_year
+    } else {
+        0.0
+    };
     let sharpe = if ret_m2 > 0.0 && num_bars > 1.0 {
         let variance = ret_m2 / (num_bars - 1.0);
         ret_mean / variance.sqrt() * bars_per_year.sqrt()
@@ -561,6 +569,11 @@ fn compute_metrics(
         z_score,
         p_value,
         total_fixed_pnl,
+        turnover_per_year: if years > 0.0 {
+            num_trades as f64 / years
+        } else {
+            0.0
+        },
     }
 }
 
@@ -709,6 +722,33 @@ mod tests {
         let m = simulate(&close, &sig, 1000.0, 252.0);
         assert!(m.total_return_pct > 95.0);
         assert_eq!(m.num_trades, 1);
+    }
+
+    #[test]
+    fn test_turnover_per_year_counts_round_trips_annualized() {
+        let close = make_prices(200);
+        let mut sig = vec![Signal::Hold; 200];
+        sig[0] = Signal::Buy;
+        sig[50] = Signal::Sell;
+        sig[100] = Signal::Buy;
+        sig[150] = Signal::Sell;
+
+        let m = simulate(&close, &sig, 10_000.0, 252.0);
+        assert_eq!(m.num_trades, 4);
+        // 年数 = 199 根 bar / 252 bar 每年
+        let expected = 4.0 / (199.0 / 252.0);
+        assert!(
+            (m.turnover_per_year - expected).abs() < 1e-9,
+            "{}",
+            m.turnover_per_year
+        );
+    }
+
+    #[test]
+    fn test_turnover_per_year_is_zero_without_trades() {
+        let close = make_prices(200);
+        let m = simulate(&close, &vec![Signal::Hold; 200], 10_000.0, 252.0);
+        assert_eq!(m.turnover_per_year, 0.0);
     }
 
     #[test]

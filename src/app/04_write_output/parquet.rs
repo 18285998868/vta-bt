@@ -94,6 +94,7 @@ fn build_parquet(results: &[RunResult], balance: f64) -> RecordBatch {
     let mut z_score = Float64Builder::new();
     let mut p_value = Float64Builder::new();
     let mut fixed_pnl = Float64Builder::new();
+    let mut turnover_per_year = Float64Builder::new();
 
     for r in results {
         let m = &r.metrics;
@@ -139,6 +140,7 @@ fn build_parquet(results: &[RunResult], balance: f64) -> RecordBatch {
         z_score.append_value(m.z_score);
         p_value.append_value(m.p_value);
         fixed_pnl.append_value(m.total_fixed_pnl);
+        turnover_per_year.append_value(m.turnover_per_year);
     }
 
     let cols: Vec<ArrayRef> = vec![
@@ -179,6 +181,7 @@ fn build_parquet(results: &[RunResult], balance: f64) -> RecordBatch {
         Arc::new(p_value.finish()),
         Arc::new(fixed_pnl.finish()),
         Arc::new(params_full.finish()),
+        Arc::new(turnover_per_year.finish()),
     ];
 
     let fields = vec![
@@ -219,6 +222,7 @@ fn build_parquet(results: &[RunResult], balance: f64) -> RecordBatch {
         Field::new("p_value", DataType::Float64, false),
         Field::new("fixed_pnl", DataType::Float64, false),
         Field::new("params", DataType::Utf8, false),
+        Field::new("turnover_per_year", DataType::Float64, false),
     ];
 
     let schema = arrow::datatypes::Schema::new(fields);
@@ -432,6 +436,12 @@ pub fn read_parquet(path: &str) -> Result<Vec<RunResult>> {
         let z_score = f64_col(&batch, 33);
         let p_value = f64_col(&batch, 34);
         let fixed_pnl = f64_col(&batch, 35);
+        // turnover_per_year 为第 38 列(末尾追加), 旧缓存文件无此列时回退为 0
+        let turnover_per_year = if batch.num_columns() > 37 {
+            f64_col(&batch, 37)
+        } else {
+            vec![0.0; n]
+        };
 
         for i in 0..n {
             all.push(RunResult {
@@ -469,6 +479,7 @@ pub fn read_parquet(path: &str) -> Result<Vec<RunResult>> {
                     z_score: z_score[i],
                     p_value: p_value[i],
                     total_fixed_pnl: fixed_pnl[i],
+                    turnover_per_year: turnover_per_year[i],
                 },
             });
         }

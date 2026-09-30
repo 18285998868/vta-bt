@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use serde::Deserialize;
 
 use crate::error::AppError;
@@ -7,10 +9,66 @@ use crate::strategies::ssf_st::SsfStConfig;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    pub data: lib_reader::DataConfig,
+    pub data: DataSection,
     pub backtest: BacktestConfig,
     pub output: Option<OutputConfig>,
     pub strategy: Vec<StrategyConfig>,
+}
+
+/// 单值或列表, 统一归一化为 `Vec<String>`。
+/// TOML 里 `symbol = "BTCUSDT"` 与 `symbol = ["BTCUSDT", "ETHUSDT"]` 都合法。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum OneOrMany {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl OneOrMany {
+    pub fn items(&self) -> Vec<String> {
+        match self {
+            OneOrMany::One(s) => vec![s.clone()],
+            OneOrMany::Many(v) => v.clone(),
+        }
+    }
+}
+
+/// vta 自己的数据配置: 与 `lib_reader::DataConfig` 字段一致, 但 symbol/timeframe 支持列表。
+/// 加载时通过 [`DataSection::for_pair`] 降为 lib-reader 需要的单值形态。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DataSection {
+    #[serde(rename = "type")]
+    pub source_type: lib_reader::DataSource,
+    pub dir: PathBuf,
+    pub symbol: OneOrMany,
+    pub timeframe: OneOrMany,
+    #[serde(default)]
+    pub start_date: Option<String>,
+    #[serde(default)]
+    pub end_date: Option<String>,
+}
+
+impl DataSection {
+    pub fn symbols(&self) -> Vec<String> {
+        self.symbol.items()
+    }
+
+    pub fn timeframes(&self) -> Vec<String> {
+        self.timeframe.items()
+    }
+
+    /// 取出一组 (symbol, timeframe) 对应的单值配置, 供 `lib_reader::load_columns` 使用。
+    pub fn for_pair(&self, symbol: &str, timeframe: &str) -> lib_reader::DataConfig {
+        lib_reader::DataConfig {
+            source_type: self.source_type,
+            dir: self.dir.clone(),
+            symbol: symbol.to_string(),
+            timeframe: timeframe.to_string(),
+            start_date: self.start_date.clone(),
+            end_date: self.end_date.clone(),
+        }
+    }
 }
 
 impl Config {
@@ -20,11 +78,19 @@ impl Config {
                 "初始资金 backtest.initial_balance 必须大于 0".into(),
             ));
         }
-        if self.data.symbol.is_empty() {
+        if self.data.symbols().iter().any(|s| s.is_empty()) || self.data.symbols().is_empty() {
             return Err(AppError::Msg("data.symbol 不能为空".into()));
         }
-        if self.data.timeframe.is_empty() {
+        let tfs = self.data.timeframes();
+        if tfs.is_empty() || tfs.iter().any(|s| s.is_empty()) {
             return Err(AppError::Msg("data.timeframe 不能为空".into()));
+        }
+        for tf in &tfs {
+            if !crate::strategies::is_known_timeframe(tf) {
+                return Err(AppError::Msg(format!(
+                    "未知周期 data.timeframe = {tf:?}; 已知: 1m/3m/5m/15m/30m/1h/2h/4h/6h/8h/12h/1d/1w"
+                )));
+            }
         }
         if self.strategy.is_empty() {
             return Err(AppError::Msg("strategy 不能为空".into()));
@@ -276,5 +342,75 @@ mod tests {
     fn unknown_field_is_rejected() {
         let toml = format!("{}\nbacktest_typo = 1\n", make_toml(10000.0, true, true));
         assert!(toml::from_str::<Config>(&toml).is_err());
+    }
+
+    fn make_scan_toml(symbol: &str, timeframe: &str) -> String {
+        format!(
+            "[data]\ntype = \"binance\"\ndir = \"/tmp\"\nsymbol = {symbol}\ntimeframe = {timeframe}\n\n[backtest]\ninitial_balance = 10000.0\n\n[[strategy]]\ntype = \"ssf_st\"\nperiod = {{ start = 2, end = 6, step = 1 }}\n"
+        )
+    }
+
+    #[test]
+    fn single_string_symbol_normalizes_to_one_element_list() {
+        let cfg: Config = toml::from_str(&make_scan_toml("\"BTCUSDT\"", "\"15m\"")).unwrap();
+        assert_eq!(cfg.data.symbols(), vec!["BTCUSDT".to_string()]);
+        assert_eq!(cfg.data.timeframes(), vec!["15m".to_string()]);
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn multi_symbol_and_timeframe_lists_are_parsed() {
+        let cfg: Config = toml::from_str(&make_scan_toml(
+            "[\"BTCUSDT\", \"ETHUSDT\", \"SOLUSDT\"]",
+            "[\"15m\", \"1h\", \"4h\", \"1d\"]",
+        ))
+        .unwrap();
+        assert_eq!(cfg.data.symbols().len(), 3);
+        assert_eq!(cfg.data.timeframes().len(), 4);
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn empty_lists_are_rejected_by_validate() {
+        let cfg: Config = toml::from_str(&make_scan_toml("[]", "[\"15m\"]")).unwrap();
+        assert!(cfg.validate().is_err());
+
+        let cfg2: Config = toml::from_str(&make_scan_toml("[\"BTCUSDT\"]", "[]")).unwrap();
+        assert!(cfg2.validate().is_err());
+    }
+
+    #[test]
+    fn unknown_timeframe_is_rejected_instead_of_silently_annualized_as_1d() {
+        // 3m 曾不在 bars_per_year 表里, 会静默按 365 年化(差 480 倍)
+        for tf in ["3m", "8h", "4h", "1m", "1w"] {
+            let cfg: Config = toml::from_str(&make_scan_toml("\"BTCUSDT\"", &format!("\"{tf}\"")))
+                .unwrap();
+            assert!(cfg.validate().is_ok(), "{tf} 应被接受");
+        }
+        let cfg: Config = toml::from_str(&make_scan_toml("\"BTCUSDT\"", "\"3s\"")).unwrap();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn for_pair_produces_single_value_config_for_lib_reader() {
+        let cfg: Config = toml::from_str(&make_scan_toml(
+            "[\"BTCUSDT\", \"ETHUSDT\"]",
+            "[\"15m\", \"1h\"]",
+        ))
+        .unwrap();
+        let pair = cfg.data.for_pair("ETHUSDT", "1h");
+        assert_eq!(pair.symbol, "ETHUSDT");
+        assert_eq!(pair.timeframe, "1h");
+        assert_eq!(pair.dir, cfg.data.dir);
+        assert_eq!(pair.source_type, cfg.data.source_type);
+    }
+
+    #[test]
+    fn for_pair_preserves_date_window() {
+        let toml = "[data]\ntype = \"binance\"\ndir = \"/tmp\"\nsymbol = [\"BTCUSDT\"]\ntimeframe = [\"15m\"]\nstart_date = \"2024-01-01\"\nend_date = \"2024-06-30\"\n\n[backtest]\ninitial_balance = 10000.0\n\n[[strategy]]\ntype = \"ssf_st\"\nperiod = 3\n";
+        let cfg: Config = toml::from_str(toml).unwrap();
+        let pair = cfg.data.for_pair("BTCUSDT", "15m");
+        assert_eq!(pair.start_date.as_deref(), Some("2024-01-01"));
+        assert_eq!(pair.end_date.as_deref(), Some("2024-06-30"));
     }
 }

@@ -61,7 +61,6 @@ fn combo_parquet_path(temps_dir: &str, symbol: &str, tf: &str, strategy: &str, f
 /// 单个组合执行所需的运行期上下文: 由 run() 一次性构建, 全部组合共享。
 struct ComboCtx {
     balance: f64,
-    bpy: f64,
     detail: bool,
     overwrite: bool,
     temps_dir: String,
@@ -75,12 +74,14 @@ struct ComboCtx {
 /// 2. 该策略的 n 个参数并行执行 信号生成+回测; detail 模式收集 trades/equity_curve
 /// 3. 计算完成即写入 temps/(及 detail/)
 ///
+/// `bpy` 由调用方按当前 timeframe 提供, 不放在 `ctx` 里(多周期扫描时每周期不同)。
 /// 返回 (组合文件路径, 是否本次计算; false 表示命中缓存被跳过)。
 fn run_combo(
     strategy: &dyn crate::strategies::Strategy,
     symbol: &str,
     tf: &str,
     cols: &lib_reader::KlineColumns,
+    bpy: f64,
     ctx: &ComboCtx,
 ) -> crate::error::Result<(PathBuf, bool)> {
     let n = strategy.param_count();
@@ -128,7 +129,7 @@ fn run_combo(
                     &cols.close,
                     &signals,
                     ctx.balance,
-                    ctx.bpy,
+                    bpy,
                 );
                 Ok((strategy.param_str(i), sim))
             })
@@ -166,7 +167,7 @@ fn run_combo(
             .into_par_iter()
             .map(|i| {
                 let signals = strategy.generate_signals(&cols.close, &cols.volume, i)?;
-                let metrics = crate::engine::simulate(&cols.close, &signals, ctx.balance, ctx.bpy);
+                let metrics = crate::engine::simulate(&cols.close, &signals, ctx.balance, bpy);
                 Ok(RunResult {
                     symbol: symbol.to_string(),
                     timeframe: tf.to_string(),
@@ -186,15 +187,20 @@ fn run_combo(
 /// 整体逻辑编排(与代码实际结构逐行对应):
 /// ```text
 /// 1.  加载配置并校验: config::load_config(path)?; config.validate()?; build_strategies → strategies
-/// 2.  cols ← lib_reader::load_columns(&config.data)    // 加载数据(单品种 × 单时间帧)
-/// 3.  for strategy in strategies                       // 策略层
-/// 4.    run_combo(...) → 单个组合处理, 内部:
-/// 5.      a. 跳过判断: 非 overwrite 且组合缓存文件(含参数指纹)可读 → 跳过(仍并入合并)
-/// 6.      b. 参数并行: (0..n).into_par_iter 单遍 生成信号 + simulate(/detailed)
-/// 7.      c. detail 模式收集 trades/equity_curve
-/// 8.      d. 写出: write_single_parquet(temps/) [+ write_detail_parquet(detail/)]
-/// 9.  merge_parquet_files(combo_files) → result.parquet   // 只合并本次运行组合(新算+跳过), 整文件重建
+/// 2.  for symbol in data.symbols()                        // 品种层(单值时长度为 1)
+/// 3.    for tf in data.timeframes()                       // 周期层(单值时长度为 1)
+/// 4.      cols ← lib_reader::load_columns(data.for_pair(symbol, tf))   // 逐对加载
+/// 5.      for strategy in strategies                      // 策略层
+/// 6.        run_combo(...) → 单个组合处理, 内部:
+/// 7.          a. 跳过判断: 非 overwrite 且组合缓存文件(含参数指纹)可读 → 跳过(仍并入合并)
+/// 8.          b. 参数并行: (0..n).into_par_iter 单遍 生成信号 + simulate(/detailed)
+/// 9.          c. detail 模式收集 trades/equity_curve
+/// 10.         d. 写出: write_single_parquet(temps/) [+ write_detail_parquet(detail/)]
+/// 11. merge_parquet_files(combo_files) → result.parquet  // 只合并本次运行组合(新算+跳过)
 /// ```
+///
+/// 单个 (symbol, timeframe) 数据加载失败时跳过该对并继续, 不中断整体扫描;
+/// 全部组合都失败才返回错误。
 pub fn run(config_path: &str) -> crate::error::Result<()> {
     let config = config::load_config(config_path)?;
     config.validate()?;
@@ -208,8 +214,9 @@ pub fn run(config_path: &str) -> crate::error::Result<()> {
         config.data.end_date.as_deref().unwrap_or("")
     );
 
-    let symbol = &config.data.symbol;
-    let tf = &config.data.timeframe;
+    let symbols = config.data.symbols();
+    let timeframes = config.data.timeframes();
+    let pairs_total = symbols.len() * timeframes.len();
 
     let out_dir = config
         .output
@@ -222,23 +229,10 @@ pub fn run(config_path: &str) -> crate::error::Result<()> {
     let mut combo_files: Vec<PathBuf> = Vec::new();
     let mut skipped = 0u64;
     let mut ran = 0u64;
+    let mut load_failed = 0usize;
 
-    println!("\n{}", "=".repeat(70));
-    println!("  {} / {}", symbol, tf);
-    println!("{}", "=".repeat(70));
-
-    let cols = match lib_reader::load_columns(&config.data) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("  [失败] 加载失败: {e}");
-            return Err(e.into());
-        }
-    };
-    println!("  数据: {} bars\n", cols.len());
-    let bpy = bars_per_year(tf);
     let ctx = ComboCtx {
         balance,
-        bpy,
         detail,
         overwrite,
         temps_dir: temps_dir.clone(),
@@ -246,14 +240,57 @@ pub fn run(config_path: &str) -> crate::error::Result<()> {
         window: window.clone(),
     };
 
-    for strategy in &strategies {
-        let (combo_path, computed) = run_combo(strategy.as_ref(), symbol, tf, &cols, &ctx)?;
-        if computed {
-            ran += 1;
-        } else {
-            skipped += 1;
+    println!("\n{}", "=".repeat(70));
+    println!(
+        "  扫描规模: {} 品种 × {} 周期 × {} 策略 = {} 组",
+        symbols.len(),
+        timeframes.len(),
+        strategies.len(),
+        pairs_total * strategies.len()
+    );
+    println!("{}", "=".repeat(70));
+
+    let mut pair_idx = 0usize;
+    for symbol in &symbols {
+        for tf in &timeframes {
+            pair_idx += 1;
+            println!("\n[{pair_idx}/{pairs_total}] {symbol} / {tf}");
+
+            let pair_config = config.data.for_pair(symbol, tf);
+            let cols = match lib_reader::load_columns(&pair_config) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("  [跳过] 数据加载失败: {e}");
+                    load_failed += 1;
+                    continue;
+                }
+            };
+            if cols.is_empty() {
+                eprintln!("  [跳过] 无数据");
+                load_failed += 1;
+                continue;
+            }
+            println!("  数据: {} bars", cols.len());
+
+            let bpy = bars_per_year(tf);
+            for strategy in &strategies {
+                let (combo_path, computed) =
+                    run_combo(strategy.as_ref(), symbol, tf, &cols, bpy, &ctx)?;
+                if computed {
+                    ran += 1;
+                } else {
+                    skipped += 1;
+                }
+                combo_files.push(combo_path);
+            }
         }
-        combo_files.push(combo_path);
+    }
+
+    if combo_files.is_empty() {
+        return Err(crate::error::AppError::Msg(format!(
+            "全部 {} 组 (品种 × 周期) 均加载失败, 无可回测数据; 请检查 data.dir / symbol / timeframe",
+            load_failed
+        )));
     }
 
     let out_path = format!("{out_dir}/result.parquet");
@@ -262,6 +299,9 @@ pub fn run(config_path: &str) -> crate::error::Result<()> {
         "\n  完成: 运行 {ran} 组, 跳过 {skipped} 组, 合并 {} 条结果",
         merged
     );
+    if load_failed > 0 {
+        println!("  跳过 {load_failed} 组数据缺失的 (品种 × 周期)");
+    }
     println!("  合并 Parquet 已保存: {out_path}");
     if detail {
         println!("  详细数据 Parquet 已保存至: {detail_dir}/");

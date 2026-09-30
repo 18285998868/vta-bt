@@ -24,7 +24,7 @@ pub mod wilders;
 pub mod wma;
 pub mod zlema;
 
-pub use shared::{Signal, bars_per_year, price_cross_signal};
+pub use shared::{Signal, bars_per_year, is_known_timeframe, price_cross_signal};
 
 pub trait Strategy: Send + Sync {
     fn name(&self) -> &'static str;
