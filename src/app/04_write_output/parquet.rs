@@ -98,6 +98,11 @@ fn build_parquet(results: &[RunResult], balance: f64) -> RecordBatch {
     let mut delay_bars = UInt32Builder::new();
     let mut fee_bps = Float64Builder::new();
     let mut slippage_bps = Float64Builder::new();
+    let mut fixed_total_return = Float64Builder::new();
+    let mut fixed_sharpe_ratio = Float64Builder::new();
+    let mut fixed_max_drawdown_pct = Float64Builder::new();
+    let mut fixed_expectancy_bps = Float64Builder::new();
+    let mut fixed_profit_factor = Float64Builder::new();
 
     for r in results {
         let m = &r.metrics;
@@ -147,6 +152,11 @@ fn build_parquet(results: &[RunResult], balance: f64) -> RecordBatch {
         delay_bars.append_value(r.delay_bars);
         fee_bps.append_value(r.fee_bps);
         slippage_bps.append_value(r.slippage_bps);
+        fixed_total_return.append_value(m.fixed_total_return);
+        fixed_sharpe_ratio.append_value(m.fixed_sharpe_ratio);
+        fixed_max_drawdown_pct.append_value(m.fixed_max_drawdown_pct);
+        fixed_expectancy_bps.append_value(m.fixed_expectancy_bps);
+        fixed_profit_factor.append_value(m.fixed_profit_factor);
     }
 
     let cols: Vec<ArrayRef> = vec![
@@ -191,6 +201,11 @@ fn build_parquet(results: &[RunResult], balance: f64) -> RecordBatch {
         Arc::new(delay_bars.finish()),
         Arc::new(fee_bps.finish()),
         Arc::new(slippage_bps.finish()),
+        Arc::new(fixed_total_return.finish()),
+        Arc::new(fixed_sharpe_ratio.finish()),
+        Arc::new(fixed_max_drawdown_pct.finish()),
+        Arc::new(fixed_expectancy_bps.finish()),
+        Arc::new(fixed_profit_factor.finish()),
     ];
 
     let fields = vec![
@@ -235,6 +250,11 @@ fn build_parquet(results: &[RunResult], balance: f64) -> RecordBatch {
         Field::new("delay_bars", DataType::UInt32, false),
         Field::new("fee_bps", DataType::Float64, false),
         Field::new("slippage_bps", DataType::Float64, false),
+        Field::new("fixed_total_return", DataType::Float64, false),
+        Field::new("fixed_sharpe_ratio", DataType::Float64, false),
+        Field::new("fixed_max_drawdown_pct", DataType::Float64, false),
+        Field::new("fixed_expectancy_bps", DataType::Float64, false),
+        Field::new("fixed_profit_factor", DataType::Float64, false),
     ];
 
     let schema = arrow::datatypes::Schema::new(fields);
@@ -470,6 +490,32 @@ pub fn read_parquet(path: &str) -> Result<Vec<RunResult>> {
         } else {
             vec![0.0; n]
         };
+        // fixed 腿列(41-45)同理, 旧文件回退为 0。
+        let fixed_total_return = if batch.num_columns() > 45 {
+            f64_col(&batch, 41)
+        } else {
+            vec![0.0; n]
+        };
+        let fixed_sharpe_ratio = if batch.num_columns() > 45 {
+            f64_col(&batch, 42)
+        } else {
+            vec![0.0; n]
+        };
+        let fixed_max_drawdown_pct = if batch.num_columns() > 45 {
+            f64_col(&batch, 43)
+        } else {
+            vec![0.0; n]
+        };
+        let fixed_expectancy_bps = if batch.num_columns() > 45 {
+            f64_col(&batch, 44)
+        } else {
+            vec![0.0; n]
+        };
+        let fixed_profit_factor = if batch.num_columns() > 45 {
+            f64_col(&batch, 45)
+        } else {
+            vec![0.0; n]
+        };
 
         for i in 0..n {
             all.push(RunResult {
@@ -514,6 +560,11 @@ pub fn read_parquet(path: &str) -> Result<Vec<RunResult>> {
                     delay_bars: delay_bars[i],
                     fee_bps: fee_bps[i],
                     slippage_bps: slippage_bps[i],
+                    fixed_total_return: fixed_total_return[i],
+                    fixed_sharpe_ratio: fixed_sharpe_ratio[i],
+                    fixed_max_drawdown_pct: fixed_max_drawdown_pct[i],
+                    fixed_expectancy_bps: fixed_expectancy_bps[i],
+                    fixed_profit_factor: fixed_profit_factor[i],
                 },
             });
         }

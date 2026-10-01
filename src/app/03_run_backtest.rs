@@ -42,6 +42,16 @@ pub struct SummaryMetrics {
     pub fee_bps: f64,
     /// 执行口径(回放用): 单边逆向滑点 bp。
     pub slippage_bps: f64,
+    /// fixed 腿总收益(固定名义, 不复利)。研究报告引用此值, 而非复利 total_return。
+    pub fixed_total_return: f64,
+    /// fixed 腿年化 Sharpe(与 sharpe_ratio 同公式, 曲线为 fixed 盯市)。
+    pub fixed_sharpe_ratio: f64,
+    /// fixed 腿最大回撤 %。
+    pub fixed_max_drawdown_pct: f64,
+    /// fixed 腿单笔期望(bp, 以 initial 计)。C6 成本分析的直接输入。
+    pub fixed_expectancy_bps: f64,
+    /// fixed 腿 profit factor。
+    pub fixed_profit_factor: f64,
 }
 
 /// 成交执行假设。`delay_bars = 0` 为旧口径(信号当根收盘成交, 前视乐观);
@@ -234,7 +244,7 @@ fn scan_trades(
     time: &[i64],
     initial_cash: f64,
     exec: &ExecConfig,
-) -> (Vec<Trade>, f64, Vec<f64>, Vec<f64>) {
+) -> (Vec<Trade>, f64, Vec<f64>, Vec<f64>, Vec<f64>) {
     let n = close.len().min(positions.len()).min(open.len());
     let ts = |i: usize| if i < time.len() { time[i] } else { i as i64 };
     let mut cash = initial_cash;
@@ -247,6 +257,11 @@ fn scan_trades(
     let mut trade_pnls = Vec::with_capacity(1024);
     let mut trade_pnl_pcts = Vec::with_capacity(1024);
     let mut equity_curve = Vec::with_capacity(n);
+    // fixed 腿: 每笔按 initial/entry 固定张数, 逐 bar 盯市, 跨笔不复利。
+    let mut fixed_curve = Vec::with_capacity(n);
+    let mut fixed_realized = 0.0;
+    let mut fixed_qty = 0.0;
+    let mut fixed_entry = 0.0;
 
     let mut trade_mfe: f64 = 0.0;
     let mut trade_mae: f64 = 0.0;
@@ -291,6 +306,8 @@ fn scan_trades(
             trade_pnls.push(trade.pnl);
             trade_pnl_pcts.push(trade.pnl_pct);
             trades.push(trade);
+            fixed_realized += trades.last().expect("just pushed").fixed_pnl;
+            fixed_qty = 0.0;
             cur_pos = 0;
             trade_mfe = 0.0;
             trade_mae = 0.0;
@@ -305,6 +322,8 @@ fn scan_trades(
                 pos_entry_time = ts(fb);
                 pos_entry_bar = fb;
                 pos_qty = qty;
+                fixed_qty = initial_cash / entry_price;
+                fixed_entry = entry_price;
                 if side == 1 {
                     cash -= qty * entry_price + fee;
                 } else {
@@ -324,6 +343,14 @@ fn scan_trades(
             cash
         };
         equity_curve.push(eq);
+        let feq = if cur_pos == 1 {
+            initial_cash + fixed_realized + fixed_qty * (close[i] - fixed_entry)
+        } else if cur_pos == -1 {
+            initial_cash + fixed_realized + fixed_qty * (fixed_entry - close[i])
+        } else {
+            initial_cash + fixed_realized
+        };
+        fixed_curve.push(feq);
     }
 
     if cur_pos != 0 {
@@ -346,14 +373,60 @@ fn scan_trades(
         trade_pnls.push(trade.pnl);
         trade_pnl_pcts.push(trade.pnl_pct);
         trades.push(trade);
+        fixed_realized += trades.last().expect("just pushed").fixed_pnl;
         equity_curve[n - 1] = cash;
+        fixed_curve[n - 1] = initial_cash + fixed_realized;
     }
 
-    (trades, cash, equity_curve, trade_pnl_pcts)
+    (trades, cash, equity_curve, trade_pnl_pcts, fixed_curve)
+}
+
+/// 权益曲线的核心统计(对数收益口径): 返回 (sharpe, max_dd, volatility, total_return)。
+/// 复利腿与 fixed 腿共用同一公式, 保证两套 Sharpe 口径一致可比。
+fn curve_stats(curve: &[f64], initial_cash: f64, bars_per_year: f64) -> (f64, f64, f64, f64) {
+    let n = curve.len();
+    if n < 2 {
+        return (0.0, 0.0, 0.0, 0.0);
+    }
+    let mut ret_mean = 0.0;
+    let mut ret_m2 = 0.0;
+    let mut peak = initial_cash;
+    let mut max_dd = 0.0;
+    for i in 1..n {
+        let ret = (curve[i] / curve[i - 1]).ln();
+        let delta = ret - ret_mean;
+        ret_mean += delta / i as f64;
+        ret_m2 += delta * (ret - ret_mean);
+        if curve[i] > peak {
+            peak = curve[i];
+        }
+        let dd = (peak - curve[i]) / peak;
+        if dd > max_dd {
+            max_dd = dd;
+        }
+    }
+    let num_bars = (n - 1) as f64;
+    let (sharpe, volatility) = if ret_m2 > 0.0 && num_bars > 1.0 {
+        let variance = ret_m2 / (num_bars - 1.0);
+        (
+            ret_mean / variance.sqrt() * bars_per_year.sqrt(),
+            variance.sqrt() * bars_per_year.sqrt() * 100.0,
+        )
+    } else {
+        (0.0, 0.0)
+    };
+    let final_eq = *curve.last().unwrap_or(&initial_cash);
+    (
+        sharpe,
+        max_dd,
+        volatility,
+        (final_eq - initial_cash) / initial_cash,
+    )
 }
 
 fn compute_metrics(
     equity_curve: &[f64],
+    fixed_curve: &[f64],
     trades: &[Trade],
     trade_pnls: &[f64],
     trade_pnl_pcts: &[f64],
@@ -635,6 +708,30 @@ fn compute_metrics(
         "metrics computed"
     );
 
+    // fixed 腿统计: 以逐笔 fixed_pnl 与 fixed 盯市曲线为准, 与复利腿同公式可比。
+    // 研究报告统一引用 fixed_*; 无后缀的复利口径仅供容量参考。
+    let mut fixed_win = 0.0;
+    let mut fixed_loss = 0.0;
+    for t in trades {
+        if t.fixed_pnl > 0.0 {
+            fixed_win += t.fixed_pnl;
+        } else {
+            fixed_loss += t.fixed_pnl.abs();
+        }
+    }
+    let fixed_pf = if fixed_loss > 0.0 {
+        fixed_win / fixed_loss
+    } else {
+        fixed_win.max(0.0)
+    };
+    let fixed_expectancy_bps = if nt > 0.0 {
+        trades.iter().map(|t| t.fixed_pnl).sum::<f64>() / nt / initial_cash * 10_000.0
+    } else {
+        0.0
+    };
+    let (fixed_sharpe, fixed_mdd, _fixed_vol, fixed_return) =
+        curve_stats(fixed_curve, initial_cash, bars_per_year);
+
     SummaryMetrics {
         total_return_pct: total_return * 100.0,
         total_return,
@@ -678,6 +775,11 @@ fn compute_metrics(
         delay_bars: 0,
         fee_bps: 0.0,
         slippage_bps: 0.0,
+        fixed_total_return: fixed_return,
+        fixed_sharpe_ratio: fixed_sharpe,
+        fixed_max_drawdown_pct: fixed_mdd * 100.0,
+        fixed_expectancy_bps,
+        fixed_profit_factor: fixed_pf,
     }
 }
 
@@ -712,10 +814,11 @@ pub fn simulate(
         return SummaryMetrics::default();
     }
     let positions = signals_to_positions(signals);
-    let (trades, _final_cash, equity_curve, trade_pnl_pcts) =
+    let (trades, _final_cash, equity_curve, trade_pnl_pcts, fixed_curve) =
         scan_trades(close, open, &positions, &[], initial_cash, exec);
     let mut summary = compute_metrics(
         &equity_curve,
+        &fixed_curve,
         &trades,
         &trades.iter().map(|t| t.pnl).collect::<Vec<_>>(),
         &trade_pnl_pcts,
@@ -746,10 +849,11 @@ pub fn simulate_detailed(
         };
     }
     let positions = signals_to_positions(signals);
-    let (trades, _final_cash, equity_curve, trade_pnl_pcts) =
+    let (trades, _final_cash, equity_curve, trade_pnl_pcts, fixed_curve) =
         scan_trades(close, open, &positions, time, initial_cash, exec);
     let mut summary = compute_metrics(
         &equity_curve,
+        &fixed_curve,
         &trades,
         &trades.iter().map(|t| t.pnl).collect::<Vec<_>>(),
         &trade_pnl_pcts,
@@ -928,6 +1032,31 @@ mod tests {
         let exec = ExecConfig::from_bps(1, 0.0, 0.0);
         let m = simulate(&close, &open, &sig, 1000.0, 252.0, &exec);
         assert_eq!(m.num_trades, 0);
+    }
+
+    #[test]
+    fn test_fixed_leg_matches_hand_calc() {
+        // fixed 腿: 单多 100→110(三根bar), 名义 1000 → +100, 期望 +1000bp。
+        let close = vec![100.0, 105.0, 110.0];
+        let open = close.clone();
+        let sig = vec![Signal::Buy, Signal::Hold, Signal::Close];
+        let m = simulate(&close, &open, &sig, 1000.0, 252.0, &ExecConfig::default());
+        assert!(
+            (m.fixed_total_return - 0.1).abs() < 1e-12,
+            "{}",
+            m.fixed_total_return
+        );
+        assert!(
+            (m.fixed_expectancy_bps - 1000.0).abs() < 1e-9,
+            "{}",
+            m.fixed_expectancy_bps
+        );
+        assert!(
+            (m.fixed_profit_factor - 100.0).abs() < 1e-9,
+            "{}",
+            m.fixed_profit_factor
+        );
+        assert!(m.fixed_sharpe_ratio > 0.0);
     }
 
     #[test]

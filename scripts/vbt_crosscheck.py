@@ -56,6 +56,14 @@ pf_b = vbt.Portfolio.from_signals(
     d["open"], entries=buy.shift(1).fillna(False).astype(bool), exits=sell.shift(1).fillna(False).astype(bool),
     short_entries=sell.shift(1).fillna(False).astype(bool), short_exits=buy.shift(1).fillna(False).astype(bool),
     init_cash=10000.0, size=np.inf, fees=0.0, slippage=0.0, freq="1D")
-print("B delay1-open: trades=", len(pf_b.trades), "ret%=", round(pf_b.total_return() * 100, 2),
+print("B delay1-open复利: trades=", len(pf_b.trades), "ret%=", round(pf_b.total_return() * 100, 2),
       "sharpe=", round(pf_b.sharpe_ratio(), 3))
+
+# 固定腿: 每笔固定10000名义 (size_type value), 对 vta fixed_pnl
+pf_c = vbt.Portfolio.from_signals(
+    d["close"], entries=buy, exits=sell, short_entries=sell,
+    short_exits=buy,
+    init_cash=10000.0, size=10000.0, size_type="value", fees=0.0, slippage=0.0, freq="1D")
+print("C delay0固定: trades=", len(pf_c.trades), "ret%=", round(pf_c.total_return() * 100, 2),
+      "sharpe=", round(pf_c.sharpe_ratio(), 3))
 print("vta audit-d0: trades=17 fixed=+1781 sharpe=0.161 | audit-d1(+fee2slip1): trades=17 fixed=+1677 sharpe=0.135")
