@@ -95,6 +95,9 @@ fn build_parquet(results: &[RunResult], balance: f64) -> RecordBatch {
     let mut p_value = Float64Builder::new();
     let mut fixed_pnl = Float64Builder::new();
     let mut turnover_per_year = Float64Builder::new();
+    let mut delay_bars = UInt32Builder::new();
+    let mut fee_bps = Float64Builder::new();
+    let mut slippage_bps = Float64Builder::new();
 
     for r in results {
         let m = &r.metrics;
@@ -141,6 +144,9 @@ fn build_parquet(results: &[RunResult], balance: f64) -> RecordBatch {
         p_value.append_value(m.p_value);
         fixed_pnl.append_value(m.total_fixed_pnl);
         turnover_per_year.append_value(m.turnover_per_year);
+        delay_bars.append_value(r.delay_bars);
+        fee_bps.append_value(r.fee_bps);
+        slippage_bps.append_value(r.slippage_bps);
     }
 
     let cols: Vec<ArrayRef> = vec![
@@ -182,6 +188,9 @@ fn build_parquet(results: &[RunResult], balance: f64) -> RecordBatch {
         Arc::new(fixed_pnl.finish()),
         Arc::new(params_full.finish()),
         Arc::new(turnover_per_year.finish()),
+        Arc::new(delay_bars.finish()),
+        Arc::new(fee_bps.finish()),
+        Arc::new(slippage_bps.finish()),
     ];
 
     let fields = vec![
@@ -223,6 +232,9 @@ fn build_parquet(results: &[RunResult], balance: f64) -> RecordBatch {
         Field::new("fixed_pnl", DataType::Float64, false),
         Field::new("params", DataType::Utf8, false),
         Field::new("turnover_per_year", DataType::Float64, false),
+        Field::new("delay_bars", DataType::UInt32, false),
+        Field::new("fee_bps", DataType::Float64, false),
+        Field::new("slippage_bps", DataType::Float64, false),
     ];
 
     let schema = arrow::datatypes::Schema::new(fields);
@@ -442,6 +454,22 @@ pub fn read_parquet(path: &str) -> Result<Vec<RunResult>> {
         } else {
             vec![0.0; n]
         };
+        // 执行口径列(38-40)同理, 旧文件回退为旧口径(0/0/0)。
+        let delay_bars = if batch.num_columns() > 40 {
+            u32_col(&batch, 38)
+        } else {
+            vec![0; n]
+        };
+        let fee_bps = if batch.num_columns() > 40 {
+            f64_col(&batch, 39)
+        } else {
+            vec![0.0; n]
+        };
+        let slippage_bps = if batch.num_columns() > 40 {
+            f64_col(&batch, 40)
+        } else {
+            vec![0.0; n]
+        };
 
         for i in 0..n {
             all.push(RunResult {
@@ -449,6 +477,9 @@ pub fn read_parquet(path: &str) -> Result<Vec<RunResult>> {
                 timeframe: timeframe[i].clone(),
                 strategy: strategy[i].clone(),
                 params: params_full[i].clone(),
+                delay_bars: delay_bars[i],
+                fee_bps: fee_bps[i],
+                slippage_bps: slippage_bps[i],
                 metrics: SummaryMetrics {
                     total_return_pct: pnl[i] * 100.0,
                     total_return: pnl[i],
@@ -480,6 +511,9 @@ pub fn read_parquet(path: &str) -> Result<Vec<RunResult>> {
                     p_value: p_value[i],
                     total_fixed_pnl: fixed_pnl[i],
                     turnover_per_year: turnover_per_year[i],
+                    delay_bars: delay_bars[i],
+                    fee_bps: fee_bps[i],
+                    slippage_bps: slippage_bps[i],
                 },
             });
         }

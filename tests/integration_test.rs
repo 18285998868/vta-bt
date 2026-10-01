@@ -1,5 +1,6 @@
 use vta::config::{PeriodParam, RangeParam};
 use vta::engine;
+use vta::engine::ExecConfig;
 use vta::strategies::Signal;
 use vta::strategies::ssf::{SsfConfig, SsfStrategy};
 use vta::strategies::{PoleCount, Strategy};
@@ -39,7 +40,7 @@ fn test_engine_all_buy_reinvest_allowed() {
     let mut sig = vec![Signal::Hold; 50];
     sig[0] = Signal::Buy;
     sig[10] = Signal::Buy;
-    let m = engine::simulate(&close, &sig, 1000.0, 365.0);
+    let m = engine::simulate(&close, &close, &sig, 1000.0, 365.0, &ExecConfig::default());
     assert!(m.total_return_pct > 0.0);
     assert_eq!(m.num_trades, 1);
 }
@@ -50,7 +51,7 @@ fn test_engine_short_profits() {
     let mut sig = vec![Signal::Hold; 50];
     sig[0] = Signal::Sell;
     sig[25] = Signal::Close;
-    let m = engine::simulate(&close, &sig, 1000.0, 365.0);
+    let m = engine::simulate(&close, &close, &sig, 1000.0, 365.0, &ExecConfig::default());
     assert!(
         m.total_return_pct > 0.0,
         "short should profit: {}",
@@ -65,7 +66,7 @@ fn test_engine_short_losses() {
     let mut sig = vec![Signal::Hold; 50];
     sig[0] = Signal::Sell;
     sig[30] = Signal::Close;
-    let m = engine::simulate(&close, &sig, 1000.0, 365.0);
+    let m = engine::simulate(&close, &close, &sig, 1000.0, 365.0, &ExecConfig::default());
     assert!(
         m.total_return_pct < 0.0,
         "short should lose: {}",
@@ -82,7 +83,7 @@ fn test_engine_buy_sell_cycle() {
     sig[100] = Signal::Close;
     sig[150] = Signal::Buy;
     sig[250] = Signal::Close;
-    let m = engine::simulate(&close, &sig, 1000.0, 365.0);
+    let m = engine::simulate(&close, &close, &sig, 1000.0, 365.0, &ExecConfig::default());
     assert_eq!(m.num_trades, 2);
     assert!(m.expectancy.is_finite());
 }
@@ -91,7 +92,7 @@ fn test_engine_buy_sell_cycle() {
 fn test_engine_cli_override_noop() {
     let close = vec![100.0; 10];
     let sig = vec![Signal::Hold; 10];
-    let m = engine::simulate(&close, &sig, 1000.0, 365.0);
+    let m = engine::simulate(&close, &close, &sig, 1000.0, 365.0, &ExecConfig::default());
     assert_eq!(m.num_trades, 0);
 }
 
@@ -102,7 +103,7 @@ fn test_simulate_handles_nan_close() {
     let mut sig = vec![Signal::Hold; 50];
     sig[5] = Signal::Buy;
     sig[30] = Signal::Close;
-    let m = engine::simulate(&close, &sig, 1000.0, 365.0);
+    let m = engine::simulate(&close, &close, &sig, 1000.0, 365.0, &ExecConfig::default());
     assert!(m.total_return.is_finite());
     assert!(m.sharpe_ratio.is_finite());
     assert!(m.max_drawdown_pct.is_finite());
@@ -113,7 +114,7 @@ fn test_simulate_truncates_to_shortest() {
     let close = rising_prices(30);
     let mut sig = vec![Signal::Hold; 60];
     sig[0] = Signal::Buy;
-    let m = engine::simulate(&close, &sig, 1000.0, 365.0);
+    let m = engine::simulate(&close, &close, &sig, 1000.0, 365.0, &ExecConfig::default());
     assert_eq!(m.num_trades, 1);
 }
 

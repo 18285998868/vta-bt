@@ -80,6 +80,11 @@ impl Config {
                 "初始资金 backtest.initial_balance 必须大于 0".into(),
             ));
         }
+        if self.backtest.fee_bps < 0.0 || self.backtest.slippage_bps < 0.0 {
+            return Err(AppError::Msg(
+                "backtest.fee_bps / slippage_bps 不能为负".into(),
+            ));
+        }
         if self.data.symbols().iter().any(|s| s.is_empty()) || self.data.symbols().is_empty() {
             return Err(AppError::Msg("data.symbol 不能为空".into()));
         }
@@ -143,6 +148,16 @@ impl StrategyConfig {
 #[serde(deny_unknown_fields)]
 pub struct BacktestConfig {
     pub initial_balance: f64,
+    /// 信号到成交的延迟(bar 数)。0 = 现状: 信号当根收盘成交(前视乐观);
+    /// 1 = 信号次根开盘成交(推荐, 消除同 bar 前视)。
+    #[serde(default)]
+    pub delay_bars: usize,
+    /// 单边佣金(bp)。如 taker 2bp 填 2.0, maker 零费填 0。
+    #[serde(default)]
+    pub fee_bps: f64,
+    /// 单边逆向滑点(bp)。买入抬价、卖出压价; 与 fee 叠加扣除。
+    #[serde(default)]
+    pub slippage_bps: f64,
 }
 
 /// 输出配置。`dir` 为输出根目录，合并结果写入 `{dir}/result.parquet`，逐组合写入 `{dir}/temps/`。

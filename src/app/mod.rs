@@ -13,6 +13,9 @@ pub struct RunResult {
     pub strategy: String,
     pub params: String,
     pub metrics: engine::SummaryMetrics,
+    pub delay_bars: u32,
+    pub fee_bps: f64,
+    pub slippage_bps: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -33,6 +36,7 @@ fn params_fingerprint(
     n: usize,
     balance: f64,
     window: &str,
+    exec: &crate::engine::ExecConfig,
 ) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in balance.to_bits().to_le_bytes() {
@@ -40,6 +44,19 @@ fn params_fingerprint(
         h = h.wrapping_mul(0x0000_0100_0000_01b3);
     }
     for b in window.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    // 执行口径变更必须失效旧缓存, 否则 delay/费率不同的结果会误命中。
+    for b in (exec.delay_bars as u64).to_le_bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    for b in exec.fee_rate.to_bits().to_le_bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    for b in exec.slip_rate.to_bits().to_le_bytes() {
         h ^= u64::from(b);
         h = h.wrapping_mul(0x0000_0100_0000_01b3);
     }
@@ -67,6 +84,7 @@ struct ComboCtx {
     detail_dir: String,
     /// 数据窗口标识 (start_date/end_date), 纳入缓存指纹以区分不同数据区间。
     window: String,
+    exec: crate::engine::ExecConfig,
 }
 
 /// 执行单个 (symbol, timeframe, strategy) 组合:
@@ -91,7 +109,7 @@ fn run_combo(
         symbol,
         tf,
         strategy.name(),
-        params_fingerprint(strategy, n, ctx.balance, &ctx.window),
+        params_fingerprint(strategy, n, ctx.balance, &ctx.window, &ctx.exec),
     );
 
     if !ctx.overwrite && combo_path.exists() {
@@ -128,9 +146,11 @@ fn run_combo(
                 let sim = crate::engine::simulate_detailed(
                     &cols.time,
                     &cols.close,
+                    &cols.open,
                     &signals,
                     ctx.balance,
                     bpy,
+                    &ctx.exec,
                 );
                 Ok((strategy.param_str(i), sim))
             })
@@ -150,6 +170,9 @@ fn run_combo(
                 strategy: strategy.name().to_string(),
                 params: params.clone(),
                 metrics: summary,
+                delay_bars: ctx.exec.delay_bars as u32,
+                fee_bps: ctx.exec.fee_rate * 10_000.0,
+                slippage_bps: ctx.exec.slip_rate * 10_000.0,
             });
             detail_rows.push(DetailResult {
                 symbol: symbol.to_string(),
@@ -169,13 +192,23 @@ fn run_combo(
             .map(|i| {
                 let signals =
                     strategy.generate_signals(&cols.open, &cols.close, &cols.volume, i)?;
-                let metrics = crate::engine::simulate(&cols.close, &signals, ctx.balance, bpy);
+                let metrics = crate::engine::simulate(
+                    &cols.close,
+                    &cols.open,
+                    &signals,
+                    ctx.balance,
+                    bpy,
+                    &ctx.exec,
+                );
                 Ok(RunResult {
                     symbol: symbol.to_string(),
                     timeframe: tf.to_string(),
                     strategy: strategy.name().to_string(),
                     params: strategy.param_str(i),
                     metrics,
+                    delay_bars: ctx.exec.delay_bars as u32,
+                    fee_bps: ctx.exec.fee_rate * 10_000.0,
+                    slippage_bps: ctx.exec.slip_rate * 10_000.0,
                 })
             })
             .collect::<crate::error::Result<Vec<_>>>()?;
@@ -240,6 +273,11 @@ pub fn run(config_path: &str) -> crate::error::Result<()> {
         temps_dir: temps_dir.clone(),
         detail_dir: detail_dir.clone(),
         window: window.clone(),
+        exec: crate::engine::ExecConfig::from_bps(
+            config.backtest.delay_bars,
+            config.backtest.fee_bps,
+            config.backtest.slippage_bps,
+        ),
     };
 
     println!("\n{}", "=".repeat(70));

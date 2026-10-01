@@ -36,6 +36,43 @@ pub struct SummaryMetrics {
     /// 年化成交笔数(往返次数)。信号抖动的主要预警指标:
     /// 平均持仓不足 5 根 bar 时, 该值会高到成本必然吞掉全部毛利。
     pub turnover_per_year: f64,
+    /// 执行口径(回放用): 信号延迟 bar 数。
+    pub delay_bars: u32,
+    /// 执行口径(回放用): 单边佣金 bp。
+    pub fee_bps: f64,
+    /// 执行口径(回放用): 单边逆向滑点 bp。
+    pub slippage_bps: f64,
+}
+
+/// 成交执行假设。`delay_bars = 0` 为旧口径(信号当根收盘成交, 前视乐观);
+/// `delay_bars = 1` 为推荐口径(信号次根开盘成交)。费率按单边名义扣除。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ExecConfig {
+    pub delay_bars: usize,
+    pub fee_rate: f64,
+    pub slip_rate: f64,
+}
+
+impl Default for ExecConfig {
+    /// 全零 = 旧口径, 逐位一致。
+    fn default() -> Self {
+        Self {
+            delay_bars: 0,
+            fee_rate: 0.0,
+            slip_rate: 0.0,
+        }
+    }
+}
+
+impl ExecConfig {
+    #[must_use]
+    pub fn from_bps(delay_bars: usize, fee_bps: f64, slippage_bps: f64) -> Self {
+        Self {
+            delay_bars,
+            fee_rate: fee_bps / 10_000.0,
+            slip_rate: slippage_bps / 10_000.0,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -90,6 +127,44 @@ struct CloseArgs {
     initial_cash: f64,
     trade_mfe: f64,
     trade_mae: f64,
+    fee_rate: f64,
+}
+
+/// 方向 side 的成交价: 买入抬价、卖出压价(逆向滑点)。
+fn fill_price(side: i8, base: f64, slip_rate: f64) -> f64 {
+    if side == 1 {
+        base * (1.0 + slip_rate)
+    } else {
+        base * (1.0 - slip_rate)
+    }
+}
+
+/// 信号 bar `i`、订单方向 `side` 的成交位置与价格。
+/// - `delay_bars = 0`: 当根收盘(旧口径)。
+/// - `delay_bars > 0`: fill bar 的开盘; 开仓 fill bar 超出数据返回 `None`(放弃,
+///   无未来可成交), 平仓钳到末根收盘(与旧口径的末根离场一致)。
+fn resolve_fill(
+    i: usize,
+    side: i8,
+    is_open: bool,
+    close: &[f64],
+    open: &[f64],
+    n: usize,
+    exec: &ExecConfig,
+) -> Option<(usize, f64)> {
+    if exec.delay_bars == 0 {
+        return Some((i, fill_price(side, close[i], exec.slip_rate)));
+    }
+    let fb = i + exec.delay_bars;
+    if fb >= n {
+        if is_open {
+            return None;
+        }
+        let last = n - 1;
+        return Some((last, fill_price(side, close[last], exec.slip_rate)));
+    }
+    let base = open.get(fb).copied().unwrap_or(close[fb]);
+    Some((fb, fill_price(side, base, exec.slip_rate)))
 }
 
 fn close_position(args: CloseArgs) -> (f64, Trade) {
@@ -105,18 +180,29 @@ fn close_position(args: CloseArgs) -> (f64, Trade) {
         initial_cash,
         trade_mfe,
         trade_mae,
+        fee_rate,
     } = args;
 
+    // 平仓单方向与持仓反向: 多头平仓为卖, 空头平仓为买; 佣金按单边名义扣除。
+    let exit_fee = exit_price * pos_qty * fee_rate;
     let (cash_delta, pnl) = if cur_pos == 1 {
-        (pos_qty * exit_price, (exit_price - pos_entry) * pos_qty)
+        (
+            pos_qty * exit_price - exit_fee,
+            (exit_price - pos_entry) * pos_qty - exit_fee,
+        )
     } else {
-        (-(exit_price * pos_qty), (pos_entry - exit_price) * pos_qty)
+        (
+            -(exit_price * pos_qty) - exit_fee,
+            (pos_entry - exit_price) * pos_qty - exit_fee,
+        )
     };
     let fixed_qty = initial_cash / pos_entry;
+    let entry_fee_fixed = pos_entry * fixed_qty * fee_rate;
+    let exit_fee_fixed = exit_price * fixed_qty * fee_rate;
     let fixed_pnl = if cur_pos == 1 {
-        (exit_price - pos_entry) * fixed_qty
+        (exit_price - pos_entry) * fixed_qty - entry_fee_fixed - exit_fee_fixed
     } else {
-        (pos_entry - exit_price) * fixed_qty
+        (pos_entry - exit_price) * fixed_qty - entry_fee_fixed - exit_fee_fixed
     };
     let pnl_pct = if cur_pos == 1 {
         (exit_price - pos_entry) / pos_entry
@@ -143,11 +229,13 @@ fn close_position(args: CloseArgs) -> (f64, Trade) {
 
 fn scan_trades(
     close: &[f64],
+    open: &[f64],
     positions: &[i8],
     time: &[i64],
     initial_cash: f64,
+    exec: &ExecConfig,
 ) -> (Vec<Trade>, f64, Vec<f64>, Vec<f64>) {
-    let n = close.len().min(positions.len());
+    let n = close.len().min(positions.len()).min(open.len());
     let ts = |i: usize| if i < time.len() { time[i] } else { i as i64 };
     let mut cash = initial_cash;
     let mut pos_qty = 0.0;
@@ -164,7 +252,8 @@ fn scan_trades(
     let mut trade_mae: f64 = 0.0;
 
     for i in 0..n {
-        if cur_pos != 0 {
+        // 浮动盈亏只统计已成交持仓(fill bar 之后), fill 前的漂移不计入 MFE/MAE。
+        if cur_pos != 0 && i >= pos_entry_bar {
             let favor = if cur_pos == 1 {
                 close[i] - pos_entry
             } else {
@@ -180,18 +269,23 @@ fn scan_trades(
         }
 
         if cur_pos != 0 && cur_pos != positions[i] {
+            let exit_side: i8 = -cur_pos;
+            // 平仓 resolve 永不返回 None(尾部钳到末根), 直接解包。
+            let (fb, exit_price) = resolve_fill(i, exit_side, false, close, open, n, exec)
+                .expect("close fill is clamped to last bar");
             let (cash_delta, trade) = close_position(CloseArgs {
                 cur_pos,
                 pos_qty,
                 pos_entry,
                 pos_entry_time,
                 pos_entry_bar,
-                exit_price: close[i],
-                exit_time: ts(i),
-                exit_bar: i,
+                exit_price,
+                exit_time: ts(fb),
+                exit_bar: fb,
                 initial_cash,
                 trade_mfe,
                 trade_mae,
+                fee_rate: exec.fee_rate,
             });
             cash += cash_delta;
             trade_pnls.push(trade.pnl);
@@ -203,18 +297,23 @@ fn scan_trades(
         }
 
         if cur_pos == 0 && positions[i] != 0 {
-            pos_entry = close[i];
-            pos_entry_time = ts(i);
-            pos_entry_bar = i;
-            pos_qty = cash / close[i];
-            if positions[i] == 1 {
-                cash -= pos_qty * close[i];
-            } else {
-                cash += pos_qty * close[i];
+            let side = positions[i];
+            if let Some((fb, entry_price)) = resolve_fill(i, side, true, close, open, n, exec) {
+                let qty = cash / entry_price;
+                let fee = entry_price * qty * exec.fee_rate;
+                pos_entry = entry_price;
+                pos_entry_time = ts(fb);
+                pos_entry_bar = fb;
+                pos_qty = qty;
+                if side == 1 {
+                    cash -= qty * entry_price + fee;
+                } else {
+                    cash += qty * entry_price - fee;
+                }
+                cur_pos = side;
+                trade_mfe = 0.0;
+                trade_mae = 0.0;
             }
-            cur_pos = positions[i];
-            trade_mfe = 0.0;
-            trade_mae = 0.0;
         }
 
         let eq = if cur_pos == 1 {
@@ -228,7 +327,7 @@ fn scan_trades(
     }
 
     if cur_pos != 0 {
-        let last_price = close[n - 1];
+        let last_price = fill_price(-cur_pos, close[n - 1], exec.slip_rate);
         let (cash_delta, trade) = close_position(CloseArgs {
             cur_pos,
             pos_qty,
@@ -241,6 +340,7 @@ fn scan_trades(
             initial_cash,
             trade_mfe,
             trade_mae,
+            fee_rate: exec.fee_rate,
         });
         cash += cash_delta;
         trade_pnls.push(trade.pnl);
@@ -574,6 +674,10 @@ fn compute_metrics(
         } else {
             0.0
         },
+        // 执行口径由 simulate()/落盘层回填, 裸 compute 为旧口径 0。
+        delay_bars: 0,
+        fee_bps: 0.0,
+        slippage_bps: 0.0,
     }
 }
 
@@ -597,9 +701,11 @@ fn erf(x: f64) -> f64 {
 
 pub fn simulate(
     close: &[f64],
+    open: &[f64],
     signals: &[Signal],
     initial_cash: f64,
     bars_per_year: f64,
+    exec: &ExecConfig,
 ) -> SummaryMetrics {
     let n = close.len().min(signals.len());
     if n < 2 {
@@ -607,23 +713,29 @@ pub fn simulate(
     }
     let positions = signals_to_positions(signals);
     let (trades, _final_cash, equity_curve, trade_pnl_pcts) =
-        scan_trades(close, &positions, &[], initial_cash);
-    compute_metrics(
+        scan_trades(close, open, &positions, &[], initial_cash, exec);
+    let mut summary = compute_metrics(
         &equity_curve,
         &trades,
         &trades.iter().map(|t| t.pnl).collect::<Vec<_>>(),
         &trade_pnl_pcts,
         initial_cash,
         bars_per_year,
-    )
+    );
+    summary.delay_bars = exec.delay_bars as u32;
+    summary.fee_bps = exec.fee_rate * 10_000.0;
+    summary.slippage_bps = exec.slip_rate * 10_000.0;
+    summary
 }
 
 pub fn simulate_detailed(
     time: &[i64],
     close: &[f64],
+    open: &[f64],
     signals: &[Signal],
     initial_cash: f64,
     bars_per_year: f64,
+    exec: &ExecConfig,
 ) -> SimResult {
     let n = close.len().min(signals.len());
     if n < 2 {
@@ -635,8 +747,8 @@ pub fn simulate_detailed(
     }
     let positions = signals_to_positions(signals);
     let (trades, _final_cash, equity_curve, trade_pnl_pcts) =
-        scan_trades(close, &positions, time, initial_cash);
-    let summary = compute_metrics(
+        scan_trades(close, open, &positions, time, initial_cash, exec);
+    let mut summary = compute_metrics(
         &equity_curve,
         &trades,
         &trades.iter().map(|t| t.pnl).collect::<Vec<_>>(),
@@ -644,6 +756,9 @@ pub fn simulate_detailed(
         initial_cash,
         bars_per_year,
     );
+    summary.delay_bars = exec.delay_bars as u32;
+    summary.fee_bps = exec.fee_rate * 10_000.0;
+    summary.slippage_bps = exec.slip_rate * 10_000.0;
 
     let equity_curve: Vec<(f64, f64)> = equity_curve
         .into_iter()
@@ -667,26 +782,40 @@ pub fn simulate_detailed(
 
 pub fn simulate_batch(
     close: &[f64],
+    open: &[f64],
     signal_batch: &[Vec<Signal>],
     initial_cash: f64,
     bars_per_year: f64,
+    exec: &ExecConfig,
 ) -> Vec<SummaryMetrics> {
     signal_batch
         .par_iter()
-        .map(|signals| simulate(close, signals, initial_cash, bars_per_year))
+        .map(|signals| simulate(close, open, signals, initial_cash, bars_per_year, exec))
         .collect()
 }
 
 pub fn simulate_batch_detailed(
     time: &[i64],
     close: &[f64],
+    open: &[f64],
     signal_batch: &[Vec<Signal>],
     initial_cash: f64,
     bars_per_year: f64,
+    exec: &ExecConfig,
 ) -> Vec<SimResult> {
     signal_batch
         .par_iter()
-        .map(|signals| simulate_detailed(time, close, signals, initial_cash, bars_per_year))
+        .map(|signals| {
+            simulate_detailed(
+                time,
+                close,
+                open,
+                signals,
+                initial_cash,
+                bars_per_year,
+                exec,
+            )
+        })
         .collect()
 }
 
@@ -702,7 +831,7 @@ mod tests {
 
     #[test]
     fn test_empty_returns_default() {
-        let m = simulate(&[], &[], 1000.0, 252.0);
+        let m = simulate(&[], &[], &[], 1000.0, 252.0, &ExecConfig::default());
         assert_eq!(m.num_trades, 0);
     }
 
@@ -710,7 +839,7 @@ mod tests {
     fn test_no_signals_hold_value() {
         let close = vec![100.0; 100];
         let sig = vec![Signal::Hold; 100];
-        let m = simulate(&close, &sig, 1000.0, 252.0);
+        let m = simulate(&close, &close, &sig, 1000.0, 252.0, &ExecConfig::default());
         assert!((m.total_return_pct).abs() < 1e-10);
     }
 
@@ -719,9 +848,86 @@ mod tests {
         let close: Vec<f64> = (0..100).map(|i| 100.0 + i as f64).collect();
         let mut sig = vec![Signal::Hold; 100];
         sig[0] = Signal::Buy;
-        let m = simulate(&close, &sig, 1000.0, 252.0);
+        let m = simulate(&close, &close, &sig, 1000.0, 252.0, &ExecConfig::default());
         assert!(m.total_return_pct > 95.0);
         assert_eq!(m.num_trades, 1);
+    }
+
+    #[test]
+    fn test_default_exec_matches_legacy_close_fill() {
+        // 默认口径必须与旧逻辑逐位一致: 单多信号当根收盘进、末根收盘出。
+        let close = vec![100.0, 102.0, 101.0, 105.0];
+        let open = vec![99.0, 100.5, 102.5, 101.5];
+        let sig = vec![Signal::Buy, Signal::Hold, Signal::Hold, Signal::Hold];
+        let m = simulate(&close, &open, &sig, 1000.0, 252.0, &ExecConfig::default());
+        assert_eq!(m.num_trades, 1);
+        // 固定名义 1000/100=10 股, (105-100)*10=50。
+        assert!(
+            (m.total_fixed_pnl - 50.0).abs() < 1e-9,
+            "{}",
+            m.total_fixed_pnl
+        );
+        assert_eq!(m.delay_bars, 0);
+    }
+
+    #[test]
+    fn test_delay_one_fills_at_next_open() {
+        // delay=1: bar0 多单按 open[1] 成交; bar2 反手空按 open[3] 离场并建仓。
+        let close = vec![100.0, 102.0, 101.0, 105.0, 107.0];
+        let open = vec![99.0, 101.0, 102.5, 100.5, 106.0];
+        let sig = vec![
+            Signal::Buy,
+            Signal::Hold,
+            Signal::Sell,
+            Signal::Hold,
+            Signal::Hold,
+        ];
+        let exec = ExecConfig::from_bps(1, 0.0, 0.0);
+        let m = simulate(&close, &open, &sig, 1000.0, 252.0, &exec);
+        assert_eq!(m.num_trades, 2);
+        // 多头: 进 101.0 出 100.5 → (100.5-101.0)/101.0*1000。
+        let expect_long = (100.5 - 101.0) / 101.0 * 1000.0;
+        // 空头: 进 100.5, 末根 107 收盘离场 → (100.5-107)/100.5*1000。
+        let expect_short = (100.5 - 107.0) / 100.5 * 1000.0;
+        assert!(
+            (m.total_fixed_pnl - (expect_long + expect_short)).abs() < 1e-9,
+            "{}",
+            m.total_fixed_pnl
+        );
+        assert_eq!(m.delay_bars, 1);
+    }
+
+    #[test]
+    fn test_fee_and_slippage_deducted_per_side() {
+        // fee 10bp + slip 10bp 双边: 进出各扣一次。用 Close 离场以隔离单笔数学。
+        let close = vec![100.0, 110.0];
+        let open = close.clone();
+        let sig = vec![Signal::Buy, Signal::Close];
+        let exec = ExecConfig::from_bps(0, 10.0, 10.0);
+        let m = simulate(&close, &open, &sig, 1000.0, 252.0, &exec);
+        assert_eq!(m.num_trades, 1);
+        // 进 100*1.001=100.1, 出 110*0.999=109.89; 名义 1000/100.1;
+        // 毛利 (109.89-100.1)*qty - 进出佣金 (100.1+109.89)*qty*0.001。
+        let qty = 1000.0 / 100.1;
+        let expect = (109.89 - 100.1) * qty - (100.1 + 109.89) * qty * 0.001;
+        assert!(
+            (m.total_fixed_pnl - expect).abs() < 1e-9,
+            "{} vs {expect}",
+            m.total_fixed_pnl
+        );
+        assert!((m.fee_bps - 10.0).abs() < 1e-12);
+        assert!((m.slippage_bps - 10.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_trailing_open_beyond_data_skipped() {
+        // 末根信号 delay=1 无未来可成交: 不开仓, 交易数为 0。
+        let close = vec![100.0, 101.0, 102.0];
+        let open = vec![99.0, 100.0, 101.0];
+        let sig = vec![Signal::Hold, Signal::Hold, Signal::Buy];
+        let exec = ExecConfig::from_bps(1, 0.0, 0.0);
+        let m = simulate(&close, &open, &sig, 1000.0, 252.0, &exec);
+        assert_eq!(m.num_trades, 0);
     }
 
     #[test]
@@ -733,7 +939,14 @@ mod tests {
         sig[100] = Signal::Buy;
         sig[150] = Signal::Sell;
 
-        let m = simulate(&close, &sig, 10_000.0, 252.0);
+        let m = simulate(
+            &close,
+            &close,
+            &sig,
+            10_000.0,
+            252.0,
+            &ExecConfig::default(),
+        );
         assert_eq!(m.num_trades, 4);
         // 年数 = 199 根 bar / 252 bar 每年
         let expected = 4.0 / (199.0 / 252.0);
@@ -747,7 +960,14 @@ mod tests {
     #[test]
     fn test_turnover_per_year_is_zero_without_trades() {
         let close = make_prices(200);
-        let m = simulate(&close, &vec![Signal::Hold; 200], 10_000.0, 252.0);
+        let m = simulate(
+            &close,
+            &close,
+            &[Signal::Hold; 200],
+            10_000.0,
+            252.0,
+            &ExecConfig::default(),
+        );
         assert_eq!(m.turnover_per_year, 0.0);
     }
 
@@ -759,9 +979,10 @@ mod tests {
         sig2[0] = Signal::Buy;
 
         let batch = vec![sig1.clone(), sig2.clone()];
-        let results = simulate_batch(&close, &batch, 10_000.0, 252.0);
-        let r1 = simulate(&close, &sig1, 10_000.0, 252.0);
-        let r2 = simulate(&close, &sig2, 10_000.0, 252.0);
+        let exec = ExecConfig::default();
+        let results = simulate_batch(&close, &close, &batch, 10_000.0, 252.0, &exec);
+        let r1 = simulate(&close, &close, &sig1, 10_000.0, 252.0, &exec);
+        let r2 = simulate(&close, &close, &sig2, 10_000.0, 252.0, &exec);
 
         assert_eq!(results.len(), 2);
         assert_eq!(results[0], r1);
