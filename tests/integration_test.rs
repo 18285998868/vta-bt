@@ -1,8 +1,8 @@
 use vta::config::{PeriodParam, RangeParam};
 use vta::engine;
 use vta::strategies::Signal;
-use vta::strategies::Strategy;
 use vta::strategies::ssf::{SsfConfig, SsfStrategy};
+use vta::strategies::{PoleCount, Strategy};
 
 fn rising_prices(n: usize) -> Vec<f64> {
     (0..n).map(|i| 100.0 + i as f64 * 0.5).collect()
@@ -24,10 +24,11 @@ fn test_ssf_standard_across_runs() {
             end: 50,
             step: 10,
         }),
+        poles: PoleCount::Two,
     });
     assert!(s.param_count() > 0);
     for i in 0..s.param_count() {
-        let sig = s.generate_signals(&close, &[], i).unwrap();
+        let sig = s.generate_signals(&[], &close, &[], i).unwrap();
         assert_eq!(sig.len(), 500);
     }
 }
@@ -121,8 +122,9 @@ fn test_strategy_period_larger_than_window() {
     let close = rising_prices(50);
     let s = SsfStrategy::new(SsfConfig {
         period: PeriodParam::Single(500),
+        poles: PoleCount::Two,
     });
-    let sig = s.generate_signals(&close, &[], 0).unwrap();
+    let sig = s.generate_signals(&[], &close, &[], 0).unwrap();
     assert_eq!(sig.len(), 50);
     assert!(sig.iter().all(|&s| s == Signal::Hold));
 }

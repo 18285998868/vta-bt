@@ -28,6 +28,7 @@ impl Strategy for HmaStrategy {
 
     fn generate_signals(
         &self,
+        _open: &[f64],
         close: &[f64],
         _volume: &[f64],
         param_idx: usize,
@@ -64,7 +65,7 @@ mod tests {
             end: 20,
             step: 1,
         });
-        let sig = s.generate_signals(&close, &[], 0).unwrap();
+        let sig = s.generate_signals(&[], &close, &[], 0).unwrap();
         assert!(sig.contains(&Signal::Buy));
     }
 }

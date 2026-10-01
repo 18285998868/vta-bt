@@ -4,7 +4,9 @@ use serde::Deserialize;
 
 use crate::error::AppError;
 use crate::strategies::ssf::SsfConfig;
+use crate::strategies::ssf_cd::SsfCdConfig;
 use crate::strategies::ssf_st::SsfStConfig;
+use crate::strategies::ssf_st_cd::SsfStCdConfig;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -108,6 +110,7 @@ impl StrategyConfig {
     fn period_param(&self) -> Option<&PeriodParam> {
         match self {
             StrategyConfig::Sma(c)
+            | StrategyConfig::SmaCd(c)
             | StrategyConfig::Ema(c)
             | StrategyConfig::Hma(c)
             | StrategyConfig::Zlma(c)
@@ -129,7 +132,9 @@ impl StrategyConfig {
             | StrategyConfig::Vidya(c)
             | StrategyConfig::McGinley(c) => Some(&c.period),
             StrategyConfig::Ssf(c) => Some(&c.period),
+            StrategyConfig::SsfCd(c) => Some(&c.period),
             StrategyConfig::SsfSt(c) => Some(&c.period),
+            StrategyConfig::SsfStCd(c) => Some(&c.period),
         }
     }
 }
@@ -165,6 +170,7 @@ pub struct MaGridCfg {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum StrategyConfig {
     Sma(MaGridCfg),
+    SmaCd(MaGridCfg),
     Ema(MaGridCfg),
     Hma(MaGridCfg),
     Zlma(MaGridCfg),
@@ -186,7 +192,9 @@ pub enum StrategyConfig {
     Vidya(MaGridCfg),
     McGinley(MaGridCfg),
     Ssf(SsfConfig),
+    SsfCd(SsfCdConfig),
     SsfSt(SsfStConfig),
+    SsfStCd(SsfStCdConfig),
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -123,7 +123,8 @@ fn run_combo(
         let sims: Vec<(String, crate::engine::SimResult)> = (0..n)
             .into_par_iter()
             .map(|i| {
-                let signals = strategy.generate_signals(&cols.close, &cols.volume, i)?;
+                let signals =
+                    strategy.generate_signals(&cols.open, &cols.close, &cols.volume, i)?;
                 let sim = crate::engine::simulate_detailed(
                     &cols.time,
                     &cols.close,
@@ -166,7 +167,8 @@ fn run_combo(
         let run_rows: Vec<RunResult> = (0..n)
             .into_par_iter()
             .map(|i| {
-                let signals = strategy.generate_signals(&cols.close, &cols.volume, i)?;
+                let signals =
+                    strategy.generate_signals(&cols.open, &cols.close, &cols.volume, i)?;
                 let metrics = crate::engine::simulate(&cols.close, &signals, ctx.balance, bpy);
                 Ok(RunResult {
                     symbol: symbol.to_string(),

@@ -1,19 +1,24 @@
-use crate::strategies::{Signal, Strategy, price_cross_signal};
+use crate::strategies::{PoleCount, Signal, Strategy, price_cross_signal, supersmoother_3_pole};
 
 use super::config::SsfStConfig;
 
 pub struct SsfStStrategy {
     periods: Vec<usize>,
+    poles: PoleCount,
 }
 
 impl SsfStStrategy {
     pub fn new(config: SsfStConfig) -> Self {
         let range = config.period.into_range();
         let periods: Vec<usize> = (range.start..=range.end).step_by(range.step).collect();
-        Self { periods }
+        Self {
+            periods,
+            poles: config.poles,
+        }
     }
 }
 
+/// 2 极 = 社区版 (无预平均): c1*Price[i] + b*SSF[i-1] - a2*SSF[i-2], 常数 sqrt(2)。
 fn ssf_filter(close: &[f64], period: usize) -> Vec<f64> {
     use std::f64::consts::PI;
     let x = PI * 2.0_f64.sqrt() / period as f64;
@@ -45,17 +50,28 @@ impl Strategy for SsfStStrategy {
     }
 
     fn param_str(&self, idx: usize) -> String {
-        format!("period={},variant=ssf_st", self.periods[idx])
+        format!(
+            "period={},poles={},variant=ssf_st",
+            self.periods[idx],
+            usize::from(self.poles)
+        )
     }
 
     fn generate_signals(
         &self,
+        _open: &[f64],
         close: &[f64],
         _volume: &[f64],
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
         let period = self.periods[param_idx];
-        let values = ssf_filter(close, period);
+        let values = match self.poles {
+            PoleCount::Two => ssf_filter(close, period),
+            PoleCount::Three => match supersmoother_3_pole(close, period) {
+                Some(v) => v,
+                None => return Ok(vec![Signal::Hold; close.len()]),
+            },
+        };
         Ok(price_cross_signal(&values, close))
     }
 }
@@ -71,16 +87,69 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn test_ssf_st_generates_signals() {
-        let s = SsfStStrategy::new(SsfStConfig {
+    fn cfg(poles: PoleCount) -> SsfStConfig {
+        SsfStConfig {
             period: PeriodParam::Range(RangeParam {
                 start: 20,
                 end: 20,
                 step: 1,
             }),
-        });
-        let sig = s.generate_signals(&prices(200), &[], 0).unwrap();
+            poles,
+        }
+    }
+
+    #[test]
+    fn test_ssf_st_generates_signals() {
+        let s = SsfStStrategy::new(cfg(PoleCount::Two));
+        let sig = s.generate_signals(&[], &prices(200), &[], 0).unwrap();
         assert_eq!(sig.len(), 200);
+    }
+
+    #[test]
+    fn test_ssf_st_three_pole() {
+        let s = SsfStStrategy::new(cfg(PoleCount::Three));
+        let sig = s.generate_signals(&[], &prices(200), &[], 0).unwrap();
+        assert_eq!(sig.len(), 200);
+        assert!(sig.contains(&Signal::Buy));
+    }
+
+    #[test]
+    fn test_ssf_st_three_pole_matches_ssf_three_pole() {
+        // 3 极在 ssf 与 ssf_st 之间共用同一实现, 信号必须逐根一致
+        let close = prices(400);
+        let a = SsfStStrategy::new(cfg(PoleCount::Three))
+            .generate_signals(&[], &close, &[], 0)
+            .unwrap();
+        let b = crate::strategies::ssf::SsfStrategy::new(crate::strategies::ssf::SsfConfig {
+            period: PeriodParam::Range(RangeParam {
+                start: 20,
+                end: 20,
+                step: 1,
+            }),
+            poles: PoleCount::Three,
+        })
+        .generate_signals(&[], &close, &[], 0)
+        .unwrap();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn test_ssf_st_two_and_three_pole_differ() {
+        let close = prices(400);
+        let two = SsfStStrategy::new(cfg(PoleCount::Two))
+            .generate_signals(&[], &close, &[], 0)
+            .unwrap();
+        let three = SsfStStrategy::new(cfg(PoleCount::Three))
+            .generate_signals(&[], &close, &[], 0)
+            .unwrap();
+        assert_ne!(two, three, "2 极与 3 极不应产生完全相同的信号序列");
+    }
+
+    #[test]
+    fn test_ssf_st_param_str_records_poles() {
+        assert_eq!(
+            SsfStStrategy::new(cfg(PoleCount::Two)).param_str(0),
+            "period=20,poles=2,variant=ssf_st"
+        );
     }
 }

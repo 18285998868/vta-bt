@@ -11,8 +11,11 @@ use super::mcginley::McGinleyStrategy;
 use super::pwma::PwmaStrategy;
 use super::sinwma::SinWmaStrategy;
 use super::sma::SmaStrategy;
+use super::sma_cd::SmaCdStrategy;
 use super::ssf::SsfStrategy;
+use super::ssf_cd::SsfCdStrategy;
 use super::ssf_st::SsfStStrategy;
+use super::ssf_st_cd::SsfStCdStrategy;
 use super::swma::SwmaStrategy;
 use super::tema::TemaStrategy;
 use super::tilson::TilsonStrategy;
@@ -30,7 +33,11 @@ macro_rules! build_ma {
             $(StrategyConfig::$variant(c) => {
                 std::iter::once(Box::new(<$strategy>::new(c.period.to_range())) as Box<dyn Strategy>)
             })*
-            StrategyConfig::Ssf(_) | StrategyConfig::SsfSt(_) => unreachable!(),
+            StrategyConfig::Ssf(_)
+            | StrategyConfig::SsfCd(_)
+            | StrategyConfig::SsfSt(_)
+            | StrategyConfig::SsfStCd(_)
+            | StrategyConfig::SmaCd(_) => unreachable!(),
         }
     };
 }
@@ -38,7 +45,16 @@ macro_rules! build_ma {
 pub fn build_strategies(configs: &[StrategyConfig]) -> Vec<Box<dyn Strategy>> {
     let ma_strategies: Vec<Box<dyn Strategy>> = configs
         .iter()
-        .filter(|sc| !matches!(sc, StrategyConfig::Ssf(_) | StrategyConfig::SsfSt(_)))
+        .filter(|sc| {
+            !matches!(
+                sc,
+                StrategyConfig::Ssf(_)
+                    | StrategyConfig::SsfCd(_)
+                    | StrategyConfig::SsfSt(_)
+                    | StrategyConfig::SsfStCd(_)
+                    | StrategyConfig::SmaCd(_)
+            )
+        })
         .flat_map(|sc| {
             build_ma!(
                 sc,
@@ -73,8 +89,17 @@ pub fn build_strategies(configs: &[StrategyConfig]) -> Vec<Box<dyn Strategy>> {
             StrategyConfig::Ssf(c) => {
                 Some(Box::new(SsfStrategy::new(c.clone())) as Box<dyn Strategy>)
             }
+            StrategyConfig::SsfCd(c) => {
+                Some(Box::new(SsfCdStrategy::new(c.clone())) as Box<dyn Strategy>)
+            }
+            StrategyConfig::SmaCd(c) => {
+                Some(Box::new(SmaCdStrategy::new(c.clone())) as Box<dyn Strategy>)
+            }
             StrategyConfig::SsfSt(c) => {
                 Some(Box::new(SsfStStrategy::new(c.clone())) as Box<dyn Strategy>)
+            }
+            StrategyConfig::SsfStCd(c) => {
+                Some(Box::new(SsfStCdStrategy::new(c.clone())) as Box<dyn Strategy>)
             }
             _ => None,
         })
