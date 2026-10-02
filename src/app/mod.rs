@@ -18,6 +18,10 @@ pub struct RunResult {
     pub slippage_bps: f64,
     /// delay>0 时 fill bar 取收盘(true)还是开盘(false, 默认)。
     pub fill_close: bool,
+    /// 被动基准(固定名义): 首根 close 买入、末根 close 卖出、无成本的 pnl。
+    pub buy_hold_pnl: f64,
+    /// 被动基准总收益(=pnl/名义)。
+    pub buy_hold_return: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -142,6 +146,7 @@ fn run_combo(
     }
 
     if ctx.detail {
+        let (bh_pnl, bh_ret) = crate::engine::buy_hold_pnl(&cols.close, ctx.balance);
         let sims: Vec<(String, crate::engine::SimResult)> = (0..n)
             .into_par_iter()
             .map(|i| {
@@ -178,6 +183,8 @@ fn run_combo(
                 fee_bps: ctx.exec.fee_rate * 10_000.0,
                 slippage_bps: ctx.exec.slip_rate * 10_000.0,
                 fill_close: ctx.exec.fill_close,
+                buy_hold_pnl: bh_pnl,
+                buy_hold_return: bh_ret,
             });
             detail_rows.push(DetailResult {
                 symbol: symbol.to_string(),
@@ -192,6 +199,7 @@ fn run_combo(
         output::write_single_parquet(&run_rows, &combo_path, ctx.balance)?;
         output::write_detail_parquet(&detail_rows, &ctx.detail_dir)?;
     } else {
+        let (bh_pnl, bh_ret) = crate::engine::buy_hold_pnl(&cols.close, ctx.balance);
         let run_rows: Vec<RunResult> = (0..n)
             .into_par_iter()
             .map(|i| {
@@ -215,6 +223,8 @@ fn run_combo(
                     fee_bps: ctx.exec.fee_rate * 10_000.0,
                     slippage_bps: ctx.exec.slip_rate * 10_000.0,
                     fill_close: ctx.exec.fill_close,
+                    buy_hold_pnl: bh_pnl,
+                    buy_hold_return: bh_ret,
                 })
             })
             .collect::<crate::error::Result<Vec<_>>>()?;

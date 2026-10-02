@@ -164,6 +164,22 @@ fn fill_price(side: i8, base: f64, slip_rate: f64) -> f64 {
     }
 }
 
+/// 被动基准: 首根 close 买入、末根 close 卖出, 无成本, 固定名义。
+/// 返回 (pnl, return)。数据不足 2 根或首价非正有限值时返回 (0, 0)。
+/// 与策略 fixed 腿同为固定名义口径, 可直接对比。
+#[must_use]
+pub fn buy_hold_pnl(close: &[f64], nominal: f64) -> (f64, f64) {
+    if close.len() < 2 || !nominal.is_finite() || nominal <= 0.0 {
+        return (0.0, 0.0);
+    }
+    let (first, last) = (close[0], close[close.len() - 1]);
+    if !first.is_finite() || !last.is_finite() || first <= 0.0 {
+        return (0.0, 0.0);
+    }
+    let ret = last / first - 1.0;
+    (ret * nominal, ret)
+}
+
 /// 信号 bar `i`、订单方向 `side` 的成交位置与价格。
 /// - `delay_bars = 0`: 当根收盘(旧口径)。
 /// - `delay_bars > 0`: fill bar 的开盘(`fill_close=false`, 默认)或收盘(`fill_close=true`);
@@ -1046,6 +1062,17 @@ mod tests {
             "{}",
             m.total_fixed_pnl
         );
+    }
+
+    #[test]
+    fn test_buy_hold_first_close_to_last_close() {
+        // 100→110 名义 1000 → +100/+0.1; 不足 2 根或首价非法 → 0。
+        let (pnl, ret) = buy_hold_pnl(&[100.0, 105.0, 110.0], 1000.0);
+        assert!((pnl - 100.0).abs() < 1e-9, "{pnl}");
+        assert!((ret - 0.1).abs() < 1e-12, "{ret}");
+        assert_eq!(buy_hold_pnl(&[100.0], 1000.0), (0.0, 0.0));
+        assert_eq!(buy_hold_pnl(&[], 1000.0), (0.0, 0.0));
+        assert_eq!(buy_hold_pnl(&[0.0, 110.0], 1000.0), (0.0, 0.0));
     }
 
     #[test]

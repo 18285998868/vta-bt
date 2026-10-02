@@ -104,6 +104,8 @@ fn build_parquet(results: &[RunResult], balance: f64) -> RecordBatch {
     let mut fixed_expectancy_bps = Float64Builder::new();
     let mut fixed_profit_factor = Float64Builder::new();
     let mut fill_close = UInt8Builder::new();
+    let mut buy_hold_pnl = Float64Builder::new();
+    let mut buy_hold_return = Float64Builder::new();
 
     for r in results {
         let m = &r.metrics;
@@ -159,6 +161,8 @@ fn build_parquet(results: &[RunResult], balance: f64) -> RecordBatch {
         fixed_expectancy_bps.append_value(m.fixed_expectancy_bps);
         fixed_profit_factor.append_value(m.fixed_profit_factor);
         fill_close.append_value(u8::from(r.fill_close));
+        buy_hold_pnl.append_value(r.buy_hold_pnl);
+        buy_hold_return.append_value(r.buy_hold_return);
     }
 
     let cols: Vec<ArrayRef> = vec![
@@ -209,6 +213,8 @@ fn build_parquet(results: &[RunResult], balance: f64) -> RecordBatch {
         Arc::new(fixed_expectancy_bps.finish()),
         Arc::new(fixed_profit_factor.finish()),
         Arc::new(fill_close.finish()),
+        Arc::new(buy_hold_pnl.finish()),
+        Arc::new(buy_hold_return.finish()),
     ];
 
     let fields = vec![
@@ -259,6 +265,8 @@ fn build_parquet(results: &[RunResult], balance: f64) -> RecordBatch {
         Field::new("fixed_expectancy_bps", DataType::Float64, false),
         Field::new("fixed_profit_factor", DataType::Float64, false),
         Field::new("fill_close", DataType::UInt8, false),
+        Field::new("buy_hold_pnl", DataType::Float64, false),
+        Field::new("buy_hold_return", DataType::Float64, false),
     ];
 
     let schema = arrow::datatypes::Schema::new(fields);
@@ -535,6 +543,17 @@ pub fn read_parquet(path: &str) -> Result<Vec<RunResult>> {
         } else {
             vec![0; n]
         };
+        // buy_hold 两列(47-48)同理, 旧文件回退为 0。
+        let buy_hold_pnl = if batch.num_columns() > 48 {
+            f64_col(&batch, 47)
+        } else {
+            vec![0.0; n]
+        };
+        let buy_hold_return = if batch.num_columns() > 48 {
+            f64_col(&batch, 48)
+        } else {
+            vec![0.0; n]
+        };
 
         for i in 0..n {
             all.push(RunResult {
@@ -546,6 +565,8 @@ pub fn read_parquet(path: &str) -> Result<Vec<RunResult>> {
                 fee_bps: fee_bps[i],
                 slippage_bps: slippage_bps[i],
                 fill_close: fill_close[i] != 0,
+                buy_hold_pnl: buy_hold_pnl[i],
+                buy_hold_return: buy_hold_return[i],
                 metrics: SummaryMetrics {
                     total_return_pct: pnl[i] * 100.0,
                     total_return: pnl[i],
