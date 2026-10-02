@@ -1,0 +1,11 @@
+[data]
+dir = "/data/nutilustrader/data/futures/um/daily/klines"
+start_date = "2020-01-01"
+end_date = "2026-09-29"
+
+[strategy]
+type = "sma"
+instrument_id = "BTCUSDT-PERP.BINANCE"
+bar_type = "BTCUSDT-PERP.BINANCE-1-DAY-LAST-EXTERNAL"
+period = 40
+trade_size = "0.100"

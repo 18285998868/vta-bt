@@ -1,0 +1,22 @@
+[data]
+type = "binance"
+dir = "/data/nutilustrader/data/futures/um/daily/klines"
+symbol = "BTCUSDT"
+timeframe = "1d"
+start_date = "2020-01-01"
+end_date = "2026-09-29"
+
+[backtest]
+initial_balance = 10000.0
+delay_bars = 1
+fee_bps = 2.0
+slippage_bps = 1.0
+
+[output]
+dir = "/tmp/opencode/final-vta"
+detail = false
+overwrite = true
+
+[[strategy]]
+type = "sma"
+period = 40
