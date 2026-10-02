@@ -58,6 +58,7 @@ overwrite = false
 #
 # 支持的策略类型:
 #   sma, ema, dema, tema, hma, zlma, alma, fwma, jma,
+#   ema_cross(双均线: fast/slow 双范围, 只取 fast<slow)
 #   kama, lin_reg, mc_ginley, pwma, sin_wma, swma,
 #   tilson, trima, vidya, vwma, wilders, wma, ssf, ssf_st
 # ========================================
@@ -141,3 +142,8 @@ period = { start = 1, end = 1000, step = 1 }
 [[strategy]]
 type = "zlma"
 period = { start = 1, end = 1000, step = 1 }
+
+[[strategy]]
+type = "ema_cross"
+fast = { start = 5, end = 50, step = 5 }
+slow = { start = 20, end = 200, step = 10 }

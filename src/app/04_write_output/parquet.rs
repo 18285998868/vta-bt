@@ -11,6 +11,17 @@ use crate::error::Result;
 
 fn params_to_json(params: &str) -> String {
     let clean = params.replace(' ', "");
+    // 双均线 "fast=F,slow=S" → {"fast":F,"slow":S}。
+    if let Some(rest) = clean.strip_prefix("fast=") {
+        let mut it = rest.split(',');
+        let f = it.next().unwrap_or("0");
+        let s = it
+            .next()
+            .unwrap_or("0")
+            .strip_prefix("slow=")
+            .unwrap_or("0");
+        return format!("{{\"fast\":{},\"slow\":{}}}", f, s);
+    }
     if let Some(rest) = clean.strip_prefix("period=") {
         let period = rest.split(',').next().unwrap_or("0");
         if let Some(variant_pos) = rest.find(",variant=") {
@@ -35,6 +46,19 @@ fn params_to_json(params: &str) -> String {
 
 fn strategy_params_value(params: &str) -> u32 {
     let clean = params.replace(' ', "");
+    // 双均线 "fast=F,slow=S" 编码为 F*1_000_000+S(F/S<1_000_000, 本项目网格内唯一)。
+    if let Some(rest) = clean.strip_prefix("fast=") {
+        let mut it = rest.split(',');
+        let f: u32 = it.next().unwrap_or("0").parse().unwrap_or(0);
+        let s: u32 = it
+            .next()
+            .unwrap_or("0")
+            .strip_prefix("slow=")
+            .unwrap_or("0")
+            .parse()
+            .unwrap_or(0);
+        return f.saturating_mul(1_000_000).saturating_add(s);
+    }
     if let Some(rest) = clean.strip_prefix("period=") {
         rest.split(',')
             .next()
@@ -739,4 +763,18 @@ pub fn merge_parquet_files(paths: &[PathBuf], output_path: &str, balance: f64) -
         write_parquet(output_path, &all, balance)?;
     }
     Ok(total)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_params_value_fast_slow_encoding() {
+        assert_eq!(strategy_params_value("fast=10,slow=20"), 10_000_020);
+        assert_eq!(strategy_params_value("fast=50,slow=200"), 50_000_200);
+        // 旧口径回归。
+        assert_eq!(strategy_params_value("period=20"), 20);
+        assert_eq!(strategy_params_value("ema_10"), 10);
+    }
 }

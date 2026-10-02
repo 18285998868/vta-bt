@@ -2,6 +2,7 @@ pub mod alma;
 pub mod build;
 pub mod dema;
 pub mod ema;
+pub mod ema_cross;
 pub mod fwma;
 pub mod hma;
 pub mod jma;

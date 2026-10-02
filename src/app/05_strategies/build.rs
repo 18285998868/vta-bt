@@ -2,6 +2,7 @@ use super::Strategy;
 use super::alma::AlmaStrategy;
 use super::dema::DemaStrategy;
 use super::ema::EmaStrategy;
+use super::ema_cross::EmaCrossStrategy;
 use super::fwma::FwmaStrategy;
 use super::hma::HmaStrategy;
 use super::jma::JmaStrategy;
@@ -37,7 +38,8 @@ macro_rules! build_ma {
             | StrategyConfig::SsfCd(_)
             | StrategyConfig::SsfSt(_)
             | StrategyConfig::SsfStCd(_)
-            | StrategyConfig::SmaCd(_) => unreachable!(),
+            | StrategyConfig::SmaCd(_)
+            | StrategyConfig::EmaCross(_) => unreachable!(),
         }
     };
 }
@@ -53,6 +55,7 @@ pub fn build_strategies(configs: &[StrategyConfig]) -> Vec<Box<dyn Strategy>> {
                     | StrategyConfig::SsfSt(_)
                     | StrategyConfig::SsfStCd(_)
                     | StrategyConfig::SmaCd(_)
+                    | StrategyConfig::EmaCross(_)
             )
         })
         .flat_map(|sc| {
@@ -100,6 +103,9 @@ pub fn build_strategies(configs: &[StrategyConfig]) -> Vec<Box<dyn Strategy>> {
             }
             StrategyConfig::SsfStCd(c) => {
                 Some(Box::new(SsfStCdStrategy::new(c.clone())) as Box<dyn Strategy>)
+            }
+            StrategyConfig::EmaCross(c) => {
+                Some(Box::new(EmaCrossStrategy::new(c.clone())) as Box<dyn Strategy>)
             }
             _ => None,
         })

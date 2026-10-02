@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use serde::Deserialize;
 
 use crate::error::AppError;
+use crate::strategies::ema_cross::EmaCrossConfig;
 use crate::strategies::ssf::SsfConfig;
 use crate::strategies::ssf_cd::SsfCdConfig;
 use crate::strategies::ssf_st::SsfStConfig;
@@ -103,9 +104,21 @@ impl Config {
             return Err(AppError::Msg("strategy 不能为空".into()));
         }
         for sc in &self.strategy {
-            sc.period_param()
-                .ok_or_else(|| AppError::Msg("strategy 缺少 period 参数(无法解析)".into()))?
-                .validate()?;
+            match sc {
+                // 双均线用 fast/slow 双参数, 无单一 period。
+                StrategyConfig::EmaCross(c) => {
+                    c.fast.validate()?;
+                    c.slow.validate()?;
+                    if c.pairs().is_empty() {
+                        return Err(AppError::Msg("ema_cross 无 fast<slow 有效组合".into()));
+                    }
+                }
+                _ => {
+                    sc.period_param()
+                        .ok_or_else(|| AppError::Msg("strategy 缺少 period 参数(无法解析)".into()))?
+                        .validate()?;
+                }
+            }
         }
         Ok(())
     }
@@ -140,6 +153,8 @@ impl StrategyConfig {
             StrategyConfig::SsfCd(c) => Some(&c.period),
             StrategyConfig::SsfSt(c) => Some(&c.period),
             StrategyConfig::SsfStCd(c) => Some(&c.period),
+            // 双均线无单一 period, 调用方走 validate() 的 EmaCross 分支。
+            StrategyConfig::EmaCross(_) => None,
         }
     }
 }
@@ -225,6 +240,7 @@ pub enum StrategyConfig {
     SsfCd(SsfCdConfig),
     SsfSt(SsfStConfig),
     SsfStCd(SsfStCdConfig),
+    EmaCross(EmaCrossConfig),
 }
 
 #[derive(Debug, Clone, Deserialize)]
