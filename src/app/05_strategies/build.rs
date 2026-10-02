@@ -1,15 +1,23 @@
 use super::Strategy;
+use super::aberration::AberrationStrategy;
 use super::alma::AlmaStrategy;
+use super::atrband::ATRBandStrategy;
+use super::bbmr::BBMRStrategy;
 use super::dema::DemaStrategy;
+use super::dualthrust::DualThrustStrategy;
 use super::ema::EmaStrategy;
 use super::ema_cross::EmaCrossStrategy;
+use super::fiali::FialiStrategy;
 use super::fwma::FwmaStrategy;
 use super::hma::HmaStrategy;
 use super::jma::JmaStrategy;
 use super::kama::KamaStrategy;
+use super::keltner::KeltnerStrategy;
 use super::linreg::LinRegStrategy;
 use super::mcginley::McGinleyStrategy;
 use super::pwma::PwmaStrategy;
+use super::rbreaker::RBreakerStrategy;
+use super::rsi2::RSI2Strategy;
 use super::sinwma::SinWmaStrategy;
 use super::sma::SmaStrategy;
 use super::sma_cd::SmaCdStrategy;
@@ -21,6 +29,7 @@ use super::swma::SwmaStrategy;
 use super::tema::TemaStrategy;
 use super::tilson::TilsonStrategy;
 use super::trima::TrimaStrategy;
+use super::turtle::TurtleStrategy;
 use super::vidya::VidyaStrategy;
 use super::vwma::VwmaStrategy;
 use super::wilders::WildersStrategy;
@@ -39,7 +48,16 @@ macro_rules! build_ma {
             | StrategyConfig::SsfSt(_)
             | StrategyConfig::SsfStCd(_)
             | StrategyConfig::SmaCd(_)
-            | StrategyConfig::EmaCross(_) => unreachable!(),
+            | StrategyConfig::EmaCross(_)
+            | StrategyConfig::Turtle(_)
+            | StrategyConfig::DualThrust(_)
+            | StrategyConfig::RBreaker(_)
+            | StrategyConfig::Fiali(_)
+            | StrategyConfig::Aberration(_)
+            | StrategyConfig::ATRBand(_)
+            | StrategyConfig::Keltner(_)
+            | StrategyConfig::BBMR(_)
+            | StrategyConfig::RSI2(_) => unreachable!(),
         }
     };
 }
@@ -56,6 +74,15 @@ pub fn build_strategies(configs: &[StrategyConfig]) -> Vec<Box<dyn Strategy>> {
                     | StrategyConfig::SsfStCd(_)
                     | StrategyConfig::SmaCd(_)
                     | StrategyConfig::EmaCross(_)
+                    | StrategyConfig::Turtle(_)
+                    | StrategyConfig::DualThrust(_)
+                    | StrategyConfig::RBreaker(_)
+                    | StrategyConfig::Fiali(_)
+                    | StrategyConfig::Aberration(_)
+                    | StrategyConfig::ATRBand(_)
+                    | StrategyConfig::Keltner(_)
+                    | StrategyConfig::BBMR(_)
+                    | StrategyConfig::RSI2(_)
             )
         })
         .flat_map(|sc| {
@@ -106,6 +133,33 @@ pub fn build_strategies(configs: &[StrategyConfig]) -> Vec<Box<dyn Strategy>> {
             }
             StrategyConfig::EmaCross(c) => {
                 Some(Box::new(EmaCrossStrategy::new(c.clone())) as Box<dyn Strategy>)
+            }
+            StrategyConfig::Turtle(c) => {
+                Some(Box::new(TurtleStrategy::new(c.clone())) as Box<dyn Strategy>)
+            }
+            StrategyConfig::DualThrust(c) => {
+                Some(Box::new(DualThrustStrategy::new(c.clone())) as Box<dyn Strategy>)
+            }
+            StrategyConfig::RBreaker(c) => {
+                Some(Box::new(RBreakerStrategy::new(c.clone())) as Box<dyn Strategy>)
+            }
+            StrategyConfig::Fiali(c) => {
+                Some(Box::new(FialiStrategy::new(c.clone())) as Box<dyn Strategy>)
+            }
+            StrategyConfig::Aberration(c) => {
+                Some(Box::new(AberrationStrategy::new(c.clone())) as Box<dyn Strategy>)
+            }
+            StrategyConfig::ATRBand(c) => {
+                Some(Box::new(ATRBandStrategy::new(c.clone())) as Box<dyn Strategy>)
+            }
+            StrategyConfig::Keltner(c) => {
+                Some(Box::new(KeltnerStrategy::new(c.clone())) as Box<dyn Strategy>)
+            }
+            StrategyConfig::BBMR(c) => {
+                Some(Box::new(BBMRStrategy::new(c.clone())) as Box<dyn Strategy>)
+            }
+            StrategyConfig::RSI2(c) => {
+                Some(Box::new(RSI2Strategy::new(c.clone())) as Box<dyn Strategy>)
             }
             _ => None,
         })

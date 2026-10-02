@@ -147,3 +147,43 @@ period = { start = 1, end = 1000, step = 1 }
 type = "ema_cross"
 fast = { start = 5, end = 50, step = 5 }
 slow = { start = 20, end = 200, step = 10 }
+
+# 十大经典策略(示例小范围; 研究用网格见各策略研究报告)。
+[[strategy]]
+type = "turtle"
+entry = { start = 20, end = 55, step = 35 }
+exit = { start = 10, end = 20, step = 10 }
+
+[[strategy]]
+type = "dual_thrust"
+n = { start = 3, end = 10, step = 7 }
+k = { start = 0.1, end = 0.6, step = 0.1 }
+
+[[strategy]]
+type = "r_breaker"
+stop_pct = { start = 0.5, end = 2.0, step = 1.5 }
+
+[[strategy]]
+type = "fiali"
+
+[[strategy]]
+type = "aberration"
+n = { start = 20, end = 100, step = 80 }
+mult = { start = 1.5, end = 2.5, step = 1.0 }
+
+[[strategy]]
+type = "atr_band"
+mult = { start = 1.5, end = 2.5, step = 0.5 }
+
+[[strategy]]
+type = "keltner"
+mult = { start = 1.5, end = 2.5, step = 0.5 }
+
+[[strategy]]
+type = "bbmr"
+sigma = { start = 2.0, end = 3.0, step = 0.5 }
+
+[[strategy]]
+type = "rsi2"
+buy = { start = 5.0, end = 10.0, step = 5.0 }
+sell = { start = 90.0, end = 95.0, step = 5.0 }

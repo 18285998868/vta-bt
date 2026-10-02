@@ -22,6 +22,19 @@ fn params_to_json(params: &str) -> String {
             .unwrap_or("0");
         return format!("{{\"fast\":{},\"slow\":{}}}", f, s);
     }
+    // 新策略 param_str 原样转 JSON 键(键名即含义, 各策略内唯一)。
+    for prefix in ["entry=", "n=", "stop=", "k=", "sigma=", "buy="] {
+        if clean.strip_prefix(prefix).is_some() {
+            let mut parts = Vec::new();
+            for kv in clean.split(',') {
+                let mut it = kv.splitn(2, '=');
+                if let (Some(k), Some(v)) = (it.next(), it.next()) {
+                    parts.push(format!("\"{}\":{}", k, v));
+                }
+            }
+            return format!("{{{}}}", parts.join(","));
+        }
+    }
     if let Some(rest) = clean.strip_prefix("period=") {
         let period = rest.split(',').next().unwrap_or("0");
         if let Some(variant_pos) = rest.find(",variant=") {
@@ -58,6 +71,72 @@ fn strategy_params_value(params: &str) -> u32 {
             .parse()
             .unwrap_or(0);
         return f.saturating_mul(1_000_000).saturating_add(s);
+    }
+    // 海龟 "entry=E,exit=X" → E*1M+X。
+    if let Some(rest) = clean.strip_prefix("entry=") {
+        let mut it = rest.split(',');
+        let e: u32 = it.next().unwrap_or("0").parse().unwrap_or(0);
+        let x: u32 = it
+            .next()
+            .unwrap_or("0")
+            .strip_prefix("exit=")
+            .unwrap_or("0")
+            .parse()
+            .unwrap_or(0);
+        return e.saturating_mul(1_000_000).saturating_add(x);
+    }
+    // "n=N,k=K"(DualThrust)/"n=N,m=M"(Aberration) → N*1M+round(次值*1000)。
+    if let Some(rest) = clean.strip_prefix("n=") {
+        let mut it = rest.split(',');
+        let n: u32 = it.next().unwrap_or("0").parse().unwrap_or(0);
+        let kv = it.next().unwrap_or("0");
+        let second: u32 = kv
+            .split('=')
+            .nth(1)
+            .unwrap_or("0")
+            .parse::<f64>()
+            .map(|v| (v * 1000.0).round() as u32)
+            .unwrap_or(0);
+        return n.saturating_mul(1_000_000).saturating_add(second);
+    }
+    // R-Breaker "stop=S" → round(S*100); ATR带/Keltner "k=K" → round(K*1000);
+    // BBMR "sigma=S" → round(S*1000)。各策略内唯一。
+    if let Some(rest) = clean.strip_prefix("stop=") {
+        return rest
+            .parse::<f64>()
+            .map(|v| (v * 100.0).round() as u32)
+            .unwrap_or(0);
+    }
+    if let Some(rest) = clean.strip_prefix("k=") {
+        return rest
+            .parse::<f64>()
+            .map(|v| (v * 1000.0).round() as u32)
+            .unwrap_or(0);
+    }
+    if let Some(rest) = clean.strip_prefix("sigma=") {
+        return rest
+            .parse::<f64>()
+            .map(|v| (v * 1000.0).round() as u32)
+            .unwrap_or(0);
+    }
+    // RSI2 "buy=B,sell=S" → round(B*10)*10000+round(S*10)。
+    if let Some(rest) = clean.strip_prefix("buy=") {
+        let mut it = rest.split(',');
+        let b: u32 = it
+            .next()
+            .unwrap_or("0")
+            .parse::<f64>()
+            .map(|v| (v * 10.0).round() as u32)
+            .unwrap_or(0);
+        let s: u32 = it
+            .next()
+            .unwrap_or("0")
+            .strip_prefix("sell=")
+            .unwrap_or("0")
+            .parse::<f64>()
+            .map(|v| (v * 10.0).round() as u32)
+            .unwrap_or(0);
+        return b.saturating_mul(10_000).saturating_add(s);
     }
     if let Some(rest) = clean.strip_prefix("period=") {
         rest.split(',')
@@ -776,5 +855,32 @@ mod tests {
         // 旧口径回归。
         assert_eq!(strategy_params_value("period=20"), 20);
         assert_eq!(strategy_params_value("ema_10"), 10);
+    }
+
+    #[test]
+    fn test_params_value_new_strategies_unique() {
+        // 海龟/DT/RBreaker/ATR带/Keltner/BBMR/RSI2/Aberration 编码各策略内唯一。
+        assert_eq!(strategy_params_value("entry=20,exit=10"), 20_000_010);
+        assert_eq!(strategy_params_value("entry=55,exit=10"), 55_000_010);
+        assert_eq!(strategy_params_value("n=5,k=0.2"), 5_000_200);
+        assert_eq!(strategy_params_value("n=50,m=2"), 50_002_000);
+        assert_eq!(strategy_params_value("stop=0.5"), 50);
+        assert_eq!(strategy_params_value("stop=2"), 200);
+        assert_eq!(strategy_params_value("k=1.5"), 1500);
+        assert_eq!(strategy_params_value("sigma=2.5"), 2500);
+        assert_eq!(strategy_params_value("buy=10,sell=90"), 1_000_900);
+        assert_eq!(strategy_params_value("buy=5,sell=95"), 500_950);
+        assert_eq!(strategy_params_value("base"), 0);
+    }
+
+    #[test]
+    fn test_params_json_new_strategies() {
+        assert_eq!(
+            params_to_json("entry=20,exit=10"),
+            "{\"entry\":20,\"exit\":10}"
+        );
+        assert_eq!(params_to_json("n=5,k=0.2"), "{\"n\":5,\"k\":0.2}");
+        assert_eq!(params_to_json("sigma=2.5"), "{\"sigma\":2.5}");
+        assert_eq!(params_to_json("buy=10,sell=90"), "{\"buy\":10,\"sell\":90}");
     }
 }

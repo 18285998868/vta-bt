@@ -3,11 +3,20 @@ use std::path::PathBuf;
 use serde::Deserialize;
 
 use crate::error::AppError;
+use crate::strategies::aberration::AberrationConfig;
+use crate::strategies::atrband::ATRBandConfig;
+use crate::strategies::bbmr::BBMRConfig;
+use crate::strategies::dualthrust::DualThrustConfig;
 use crate::strategies::ema_cross::EmaCrossConfig;
+use crate::strategies::fiali::FialiConfig;
+use crate::strategies::keltner::KeltnerConfig;
+use crate::strategies::rbreaker::RBreakerConfig;
+use crate::strategies::rsi2::RSI2Config;
 use crate::strategies::ssf::SsfConfig;
 use crate::strategies::ssf_cd::SsfCdConfig;
 use crate::strategies::ssf_st::SsfStConfig;
 use crate::strategies::ssf_st_cd::SsfStCdConfig;
+use crate::strategies::turtle::TurtleConfig;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -113,6 +122,60 @@ impl Config {
                         return Err(AppError::Msg("ema_cross 无 fast<slow 有效组合".into()));
                     }
                 }
+                StrategyConfig::Turtle(c) => {
+                    for pp in [&c.entry, &c.exit] {
+                        pp.validate()?;
+                    }
+                    if c.pairs().is_empty() {
+                        return Err(AppError::Msg("turtle 参数组合为空".into()));
+                    }
+                }
+                StrategyConfig::DualThrust(c) => {
+                    c.n.validate()?;
+                    validate_f64_range(&c.k, "dualthrust.k", 0.01, 5.0)?;
+                    if c.pairs().is_empty() {
+                        return Err(AppError::Msg("dualthrust 参数组合为空".into()));
+                    }
+                }
+                StrategyConfig::RBreaker(c) => {
+                    validate_f64_range(&c.stop_pct, "rbreaker.stop_pct", 0.01, 50.0)?;
+                    if c.values().is_empty() {
+                        return Err(AppError::Msg("rbreaker 参数组合为空".into()));
+                    }
+                }
+                StrategyConfig::Fiali(_) => {}
+                StrategyConfig::Aberration(c) => {
+                    c.n.validate()?;
+                    validate_f64_range(&c.mult, "aberration.mult", 0.1, 20.0)?;
+                    if c.pairs().is_empty() {
+                        return Err(AppError::Msg("aberration 参数组合为空".into()));
+                    }
+                }
+                StrategyConfig::ATRBand(c) => {
+                    validate_f64_range(&c.mult, "atrband.mult", 0.1, 20.0)?;
+                    if c.values().is_empty() {
+                        return Err(AppError::Msg("atrband 参数组合为空".into()));
+                    }
+                }
+                StrategyConfig::Keltner(c) => {
+                    validate_f64_range(&c.mult, "keltner.mult", 0.1, 20.0)?;
+                    if c.values().is_empty() {
+                        return Err(AppError::Msg("keltner 参数组合为空".into()));
+                    }
+                }
+                StrategyConfig::BBMR(c) => {
+                    validate_f64_range(&c.sigma, "bbmr.sigma", 0.1, 10.0)?;
+                    if c.values().is_empty() {
+                        return Err(AppError::Msg("bbmr 参数组合为空".into()));
+                    }
+                }
+                StrategyConfig::RSI2(c) => {
+                    validate_f64_range(&c.buy, "rsi2.buy", 0.0, 100.0)?;
+                    validate_f64_range(&c.sell, "rsi2.sell", 0.0, 100.0)?;
+                    if c.pairs().is_empty() {
+                        return Err(AppError::Msg("rsi2 参数组合为空".into()));
+                    }
+                }
                 _ => {
                     sc.period_param()
                         .ok_or_else(|| AppError::Msg("strategy 缺少 period 参数(无法解析)".into()))?
@@ -153,6 +216,15 @@ impl StrategyConfig {
             StrategyConfig::SsfCd(c) => Some(&c.period),
             StrategyConfig::SsfSt(c) => Some(&c.period),
             StrategyConfig::SsfStCd(c) => Some(&c.period),
+            StrategyConfig::Turtle(_)
+            | StrategyConfig::DualThrust(_)
+            | StrategyConfig::RBreaker(_)
+            | StrategyConfig::Fiali(_)
+            | StrategyConfig::Aberration(_)
+            | StrategyConfig::ATRBand(_)
+            | StrategyConfig::Keltner(_)
+            | StrategyConfig::BBMR(_)
+            | StrategyConfig::RSI2(_) => None,
             // 双均线无单一 period, 调用方走 validate() 的 EmaCross 分支。
             StrategyConfig::EmaCross(_) => None,
         }
@@ -240,6 +312,15 @@ pub enum StrategyConfig {
     SsfCd(SsfCdConfig),
     SsfSt(SsfStConfig),
     SsfStCd(SsfStCdConfig),
+    Turtle(TurtleConfig),
+    DualThrust(DualThrustConfig),
+    RBreaker(RBreakerConfig),
+    Fiali(FialiConfig),
+    Aberration(AberrationConfig),
+    ATRBand(ATRBandConfig),
+    Keltner(KeltnerConfig),
+    BBMR(BBMRConfig),
+    RSI2(RSI2Config),
     EmaCross(EmaCrossConfig),
 }
 
@@ -311,6 +392,29 @@ pub struct RangeParam<T: PartialOrd + Copy> {
     pub start: T,
     pub end: T,
     pub step: T,
+}
+
+/// f64 范围校验(start<=end, step>0, 有限值, 落在 [lo, hi] 内)。
+fn validate_f64_range(
+    v: &RangeParam<f64>,
+    name: &str,
+    lo: f64,
+    hi: f64,
+) -> crate::error::Result<()> {
+    let ok = v.start.is_finite()
+        && v.end.is_finite()
+        && v.step.is_finite()
+        && v.step > 0.0
+        && v.start <= v.end
+        && v.start >= lo
+        && v.end <= hi;
+    if !ok {
+        return Err(AppError::Msg(format!(
+            "{name} 非法: [{}, {}] step {}(允许 [{lo}, {hi}])",
+            v.start, v.end, v.step
+        )));
+    }
+    Ok(())
 }
 
 pub fn load_config(path: &str) -> crate::error::Result<Config> {

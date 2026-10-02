@@ -138,6 +138,143 @@ pub fn is_known_timeframe(tf: &str) -> bool {
     )
 }
 
+/// 通道右移一根(经典 Donchian/Aberration 口径: 用**前 N 根**的极值与
+/// 当根收盘比较; 含当根的通道永远无法被穿越)。`out[0]=NaN`, 其余 `out[i]=v[i-1]`。
+pub fn shift_right_1(v: &[f64]) -> Vec<f64> {
+    let mut out = vec![f64::NAN; v.len()];
+    if v.len() >= 2 {
+        out[1..].copy_from_slice(&v[..v.len() - 1]);
+    }
+    out
+}
+
+/// UTC 自然日毫秒数。日内策略( Dual Thrust / R-Breaker / 菲阿里)按此切“交易日”。
+pub const UTC_DAY_MS: i64 = 86_400_000;
+
+/// bar 时间戳所属 UTC 日序号。
+#[must_use]
+pub fn utc_day_index(ts_ms: i64) -> i64 {
+    ts_ms.div_euclid(UTC_DAY_MS)
+}
+
+/// O(n) 滑动最高/最低。`out[i]` 为 `data[i-n+1..=i]` 的极值, `i<n-1` 处为 NaN
+/// (与 vector-ta 的 NaN 前缀惯例一致, 调用方统一按 NaN→Hold)。
+/// Donchian / Aberration 通道用, n up to 数百、T up to 数百万均可。
+pub fn rolling_highest(data: &[f64], n: usize) -> Vec<f64> {
+    rolling_extreme(data, n, true)
+}
+
+pub fn rolling_lowest(data: &[f64], n: usize) -> Vec<f64> {
+    rolling_extreme(data, n, false)
+}
+
+fn rolling_extreme(data: &[f64], n: usize, want_max: bool) -> Vec<f64> {
+    use std::collections::VecDeque;
+    let len = data.len();
+    let mut out = vec![f64::NAN; len];
+    if n == 0 || len < n {
+        return out;
+    }
+    let mut dq: VecDeque<usize> = VecDeque::new();
+    for i in 0..len {
+        while let Some(&back) = dq.back() {
+            let worse = if want_max {
+                data[back] <= data[i]
+            } else {
+                data[back] >= data[i]
+            };
+            if worse {
+                dq.pop_back();
+            } else {
+                break;
+            }
+        }
+        dq.push_back(i);
+        while let Some(&front) = dq.front() {
+            if front + n <= i {
+                dq.pop_front();
+            } else {
+                break;
+            }
+        }
+        if i + 1 >= n {
+            out[i] = data[*dq.front().expect("deque 非空")];
+        }
+    }
+    out
+}
+
+/// f64 范围展开(6位小数取整, 避免 0.1 累加漂移)。上限 100000 档防爆。
+pub fn expand_f64_range(start: f64, end: f64, step: f64) -> Vec<f64> {
+    let mut out = Vec::new();
+    if !step.is_finite() || step <= 0.0 || !start.is_finite() || !end.is_finite() || start > end {
+        return out;
+    }
+    let mut v = start;
+    while v <= end + 1e-9 && out.len() < 100_000 {
+        out.push((v * 1e6).round() / 1e6);
+        v += step;
+    }
+    out
+}
+
+/// UTC 自然日聚合 bar(日内策略：Dual Thrust / R-Breaker / 菲阿里用)。
+/// NaN 在极值折叠时跳过；`end_idx` 为当日最后一根 bar 下标(含)。
+#[derive(Debug, Clone)]
+pub struct DayBar {
+    pub day: i64,
+    pub open: f64,
+    pub high: f64,
+    pub low: f64,
+    pub close: f64,
+    pub start_idx: usize,
+    pub end_idx: usize,
+}
+
+pub fn aggregate_days(
+    time: &[i64],
+    open: &[f64],
+    high: &[f64],
+    low: &[f64],
+    close: &[f64],
+) -> Vec<DayBar> {
+    let n = time
+        .len()
+        .min(open.len())
+        .min(high.len())
+        .min(low.len())
+        .min(close.len());
+    let mut days: Vec<DayBar> = Vec::new();
+    for i in 0..n {
+        let d = utc_day_index(time[i]);
+        let (o, h, l, c) = (open[i], high[i], low[i], close[i]);
+        match days.last_mut() {
+            Some(cur) if cur.day == d => {
+                if h.is_finite() && h > cur.high {
+                    cur.high = h;
+                }
+                if l.is_finite() && l < cur.low {
+                    cur.low = l;
+                }
+                if c.is_finite() {
+                    cur.close = c;
+                }
+                cur.end_idx = i;
+            }
+            _ => days.push(DayBar {
+                day: d,
+                open: o,
+                high: h,
+                low: l,
+                close: c,
+                start_idx: i,
+                end_idx: i,
+            }),
+        }
+    }
+    days
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -200,6 +337,64 @@ mod tests {
         // 第 0 根有 open 且 close(10) <= open(11) -> Hold; 第 1 根缺 open -> Hold
         assert_eq!(sig[0], Signal::Hold);
         assert_eq!(sig[1], Signal::Hold);
+    }
+
+    #[test]
+    fn test_rolling_extreme_matches_naive() {
+        let data: Vec<f64> = vec![3.0, 1.0, 4.0, 1.0, 5.0, 9.0, 2.0, 6.0];
+        let hi = rolling_highest(&data, 3);
+        let lo = rolling_lowest(&data, 3);
+        assert!(hi[0].is_nan() && hi[1].is_nan());
+        assert_eq!(hi[2], 4.0);
+        assert_eq!(hi[5], 9.0);
+        assert_eq!(lo[2], 1.0);
+        assert_eq!(lo[4], 1.0);
+        assert_eq!(lo[7], 2.0);
+        // n=1 恒为自身, n>len 全 NaN
+        assert_eq!(rolling_highest(&data, 1), data);
+        assert!(rolling_lowest(&data, 99).iter().all(|v| v.is_nan()));
+    }
+
+    #[test]
+    fn test_expand_f64_range_no_drift() {
+        assert_eq!(
+            expand_f64_range(0.1, 0.6, 0.1),
+            vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+        );
+        assert!(expand_f64_range(1.0, 0.5, 0.1).is_empty());
+        assert!(expand_f64_range(1.0, 2.0, 0.0).is_empty());
+    }
+
+    #[test]
+    fn test_shift_right_1() {
+        assert_eq!(shift_right_1(&[1.0, 2.0, 3.0])[1], 1.0);
+        assert!(shift_right_1(&[1.0, 2.0])[0].is_nan());
+        assert!(shift_right_1(&[]).is_empty());
+    }
+
+    #[test]
+    fn test_utc_day_index_splits_days() {
+        assert_eq!(utc_day_index(0), 0);
+        assert_eq!(utc_day_index(86_399_999), 0);
+        assert_eq!(utc_day_index(86_400_000), 1);
+    }
+
+    #[test]
+    fn test_aggregate_days_groups_bars() {
+        // day0: 3 根, day1: 2 根(ms 时间戳)。
+        let time = vec![0, 60_000, 120_000, 86_400_000, 86_460_000];
+        let open = vec![10.0, 11.0, 12.0, 13.0, 14.0];
+        let high = vec![11.0, 12.0, 13.0, 14.0, 15.0];
+        let low = vec![9.0, 10.0, 11.0, 12.0, 13.0];
+        let close = vec![10.5, 11.5, 12.5, 13.5, 14.5];
+        let days = aggregate_days(&time, &open, &high, &low, &close);
+        assert_eq!(days.len(), 2);
+        assert_eq!(
+            (days[0].open, days[0].high, days[0].low, days[0].close),
+            (10.0, 13.0, 9.0, 12.5)
+        );
+        assert_eq!((days[0].start_idx, days[0].end_idx), (0, 2));
+        assert_eq!((days[1].start_idx, days[1].end_idx), (3, 4));
     }
 
     #[test]
