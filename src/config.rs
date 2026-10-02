@@ -6,6 +6,7 @@ use crate::error::AppError;
 use crate::strategies::aberration::AberrationConfig;
 use crate::strategies::atrband::ATRBandConfig;
 use crate::strategies::bbmr::BBMRConfig;
+use crate::strategies::bbrk::BBRKConfig;
 use crate::strategies::dualthrust::DualThrustConfig;
 use crate::strategies::ema_cross::EmaCrossConfig;
 use crate::strategies::fiali::FialiConfig;
@@ -132,13 +133,13 @@ impl Config {
                 }
                 StrategyConfig::DualThrust(c) => {
                     c.n.validate()?;
-                    validate_f64_range(&c.k, "dualthrust.k", 0.01, 5.0)?;
+                    c.k.validate_range("dualthrust.k", 0.01, 5.0)?;
                     if c.pairs().is_empty() {
                         return Err(AppError::Msg("dualthrust 参数组合为空".into()));
                     }
                 }
                 StrategyConfig::RBreaker(c) => {
-                    validate_f64_range(&c.stop_pct, "rbreaker.stop_pct", 0.01, 50.0)?;
+                    c.stop_pct.validate_range("rbreaker.stop_pct", 0.01, 50.0)?;
                     if c.values().is_empty() {
                         return Err(AppError::Msg("rbreaker 参数组合为空".into()));
                     }
@@ -146,32 +147,38 @@ impl Config {
                 StrategyConfig::Fiali(_) => {}
                 StrategyConfig::Aberration(c) => {
                     c.n.validate()?;
-                    validate_f64_range(&c.mult, "aberration.mult", 0.1, 20.0)?;
+                    c.mult.validate_range("aberration.mult", 0.1, 20.0)?;
                     if c.pairs().is_empty() {
                         return Err(AppError::Msg("aberration 参数组合为空".into()));
                     }
                 }
                 StrategyConfig::ATRBand(c) => {
-                    validate_f64_range(&c.mult, "atrband.mult", 0.1, 20.0)?;
+                    c.mult.validate_range("atrband.mult", 0.1, 20.0)?;
                     if c.values().is_empty() {
                         return Err(AppError::Msg("atrband 参数组合为空".into()));
                     }
                 }
                 StrategyConfig::Keltner(c) => {
-                    validate_f64_range(&c.mult, "keltner.mult", 0.1, 20.0)?;
+                    c.mult.validate_range("keltner.mult", 0.1, 20.0)?;
                     if c.values().is_empty() {
                         return Err(AppError::Msg("keltner 参数组合为空".into()));
                     }
                 }
                 StrategyConfig::BBMR(c) => {
-                    validate_f64_range(&c.sigma, "bbmr.sigma", 0.1, 10.0)?;
+                    c.sigma.validate_range("bbmr.sigma", 0.1, 10.0)?;
                     if c.values().is_empty() {
                         return Err(AppError::Msg("bbmr 参数组合为空".into()));
                     }
                 }
+                StrategyConfig::Bbrk(c) => {
+                    c.sigma.validate_range("bbrk.sigma", 0.1, 10.0)?;
+                    if c.values().is_empty() {
+                        return Err(AppError::Msg("bbrk 参数组合为空".into()));
+                    }
+                }
                 StrategyConfig::RSI2(c) => {
-                    validate_f64_range(&c.buy, "rsi2.buy", 0.0, 100.0)?;
-                    validate_f64_range(&c.sell, "rsi2.sell", 0.0, 100.0)?;
+                    c.buy.validate_range("rsi2.buy", 0.0, 100.0)?;
+                    c.sell.validate_range("rsi2.sell", 0.0, 100.0)?;
                     if c.pairs().is_empty() {
                         return Err(AppError::Msg("rsi2 参数组合为空".into()));
                     }
@@ -224,6 +231,7 @@ impl StrategyConfig {
             | StrategyConfig::ATRBand(_)
             | StrategyConfig::Keltner(_)
             | StrategyConfig::BBMR(_)
+            | StrategyConfig::Bbrk(_)
             | StrategyConfig::RSI2(_) => None,
             // 双均线无单一 period, 调用方走 validate() 的 EmaCross 分支。
             StrategyConfig::EmaCross(_) => None,
@@ -317,9 +325,13 @@ pub enum StrategyConfig {
     RBreaker(RBreakerConfig),
     Fiali(FialiConfig),
     Aberration(AberrationConfig),
+    #[serde(rename = "atr_band")]
     ATRBand(ATRBandConfig),
     Keltner(KeltnerConfig),
+    #[serde(rename = "bbmr")]
     BBMR(BBMRConfig),
+    Bbrk(BBRKConfig),
+    #[serde(rename = "rsi2")]
     RSI2(RSI2Config),
     EmaCross(EmaCrossConfig),
 }
@@ -394,27 +406,33 @@ pub struct RangeParam<T: PartialOrd + Copy> {
     pub step: T,
 }
 
-/// f64 范围校验(start<=end, step>0, 有限值, 落在 [lo, hi] 内)。
-fn validate_f64_range(
-    v: &RangeParam<f64>,
-    name: &str,
-    lo: f64,
-    hi: f64,
-) -> crate::error::Result<()> {
-    let ok = v.start.is_finite()
-        && v.end.is_finite()
-        && v.step.is_finite()
-        && v.step > 0.0
-        && v.start <= v.end
-        && v.start >= lo
-        && v.end <= hi;
-    if !ok {
-        return Err(AppError::Msg(format!(
-            "{name} 非法: [{}, {}] step {}(允许 [{lo}, {hi}])",
-            v.start, v.end, v.step
-        )));
+/// f64 参数: 单值或范围(与 PeriodParam 对应, 后者只支持 usize)。
+/// TOML 里 `k = 0.2` 与 `k = { start = 0.1, end = 0.6, step = 0.1 }` 都合法。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum F64Param {
+    Single(f64),
+    Range(RangeParam<f64>),
+}
+
+impl F64Param {
+    pub fn values(&self) -> Vec<f64> {
+        match self {
+            F64Param::Single(v) => vec![*v],
+            F64Param::Range(r) => crate::strategies::expand_f64_range(r.start, r.end, r.step),
+        }
     }
-    Ok(())
+
+    pub fn validate_range(&self, name: &str, lo: f64, hi: f64) -> crate::error::Result<()> {
+        let vs = self.values();
+        if vs.is_empty() {
+            return Err(AppError::Msg(format!("{name} 展开为空")));
+        }
+        if vs.iter().any(|v| !v.is_finite() || *v < lo || *v > hi) {
+            return Err(AppError::Msg(format!("{name} 越界(允许 [{lo}, {hi}])")));
+        }
+        Ok(())
+    }
 }
 
 pub fn load_config(path: &str) -> crate::error::Result<Config> {
@@ -500,6 +518,23 @@ mod tests {
     fn unknown_field_is_rejected() {
         let toml = format!("{}\nbacktest_typo = 1\n", make_toml(10000.0, true, true));
         assert!(toml::from_str::<Config>(&toml).is_err());
+    }
+
+    #[test]
+    fn acronym_strategy_names_parse_as_written_in_run_configs() {
+        // 回归: ATRBand/BBMR/RSI2 的自然名必须可解析(serde 默认会转成 a_t_r_band/b_b_m_r/r_s_i2)。
+        for st in [
+            "type = \"atr_band\"\nmult = { start = 1.5, end = 2.5, step = 0.5 }",
+            "type = \"bbmr\"\nsigma = { start = 2.0, end = 3.0, step = 0.5 }",
+            "type = \"rsi2\"\nbuy = { start = 5.0, end = 10.0, step = 5.0 }\nsell = { start = 90.0, end = 95.0, step = 5.0 }",
+            "type = \"bbrk\"\nsigma = { start = 1.5, end = 2.5, step = 0.5 }",
+        ] {
+            let toml = format!(
+                "[data]\ntype = \"binance\"\ndir = \"/tmp\"\nsymbol = \"BTCUSDT\"\ntimeframe = \"1d\"\n\n[backtest]\ninitial_balance = 10000.0\n\n[[strategy]]\n{st}\n"
+            );
+            let cfg: Config = toml::from_str(&toml).unwrap();
+            assert!(cfg.validate().is_ok());
+        }
     }
 
     fn make_scan_toml(symbol: &str, timeframe: &str) -> String {

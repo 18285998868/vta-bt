@@ -3,6 +3,7 @@ use super::aberration::AberrationStrategy;
 use super::alma::AlmaStrategy;
 use super::atrband::ATRBandStrategy;
 use super::bbmr::BBMRStrategy;
+use super::bbrk::BBRKStrategy;
 use super::dema::DemaStrategy;
 use super::dualthrust::DualThrustStrategy;
 use super::ema::EmaStrategy;
@@ -57,6 +58,7 @@ macro_rules! build_ma {
             | StrategyConfig::ATRBand(_)
             | StrategyConfig::Keltner(_)
             | StrategyConfig::BBMR(_)
+            | StrategyConfig::Bbrk(_)
             | StrategyConfig::RSI2(_) => unreachable!(),
         }
     };
@@ -82,6 +84,7 @@ pub fn build_strategies(configs: &[StrategyConfig]) -> Vec<Box<dyn Strategy>> {
                     | StrategyConfig::ATRBand(_)
                     | StrategyConfig::Keltner(_)
                     | StrategyConfig::BBMR(_)
+                    | StrategyConfig::Bbrk(_)
                     | StrategyConfig::RSI2(_)
             )
         })
@@ -157,6 +160,9 @@ pub fn build_strategies(configs: &[StrategyConfig]) -> Vec<Box<dyn Strategy>> {
             }
             StrategyConfig::BBMR(c) => {
                 Some(Box::new(BBMRStrategy::new(c.clone())) as Box<dyn Strategy>)
+            }
+            StrategyConfig::Bbrk(c) => {
+                Some(Box::new(BBRKStrategy::new(c.clone())) as Box<dyn Strategy>)
             }
             StrategyConfig::RSI2(c) => {
                 Some(Box::new(RSI2Strategy::new(c.clone())) as Box<dyn Strategy>)
