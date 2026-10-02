@@ -28,8 +28,10 @@ timeframe = "1d"
 initial_balance = 10000.0
 # 可选, 信号到成交的延迟(bar 数), 默认 0
 #   0 = 信号当根收盘成交(旧口径, 前视乐观, 仅用于复现历史结果)
-#   1 = 信号次根开盘成交(推荐, 消除同 bar 前视)
+#   1 = 信号次根 fill bar 成交(推荐, 消除同 bar 前视; 成交价见 fill_bar_price)
 # delay_bars = 1
+# 可选, delay>0 时 fill bar 的成交价, 默认 "open"(次根开盘); "close" 为次根收盘(多等一根 bar 内漂移)
+# fill_bar_price = "close"
 # 可选, 单边佣金(bp), 默认 0。如 taker 2bp 填 2.0, maker 零费填 0
 # fee_bps = 2.0
 # 可选, 单边逆向滑点(bp), 默认 0。买入抬价、卖出压价, 与佣金叠加扣除

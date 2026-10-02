@@ -149,7 +149,7 @@ impl StrategyConfig {
 pub struct BacktestConfig {
     pub initial_balance: f64,
     /// 信号到成交的延迟(bar 数)。0 = 现状: 信号当根收盘成交(前视乐观);
-    /// 1 = 信号次根开盘成交(推荐, 消除同 bar 前视)。
+    /// 1 = 信号次根 fill bar 成交(推荐, 消除同 bar 前视)。
     #[serde(default)]
     pub delay_bars: usize,
     /// 单边佣金(bp)。如 taker 2bp 填 2.0, maker 零费填 0。
@@ -158,6 +158,21 @@ pub struct BacktestConfig {
     /// 单边逆向滑点(bp)。买入抬价、卖出压价; 与 fee 叠加扣除。
     #[serde(default)]
     pub slippage_bps: f64,
+    /// delay>0 时 fill bar 的成交价: "open"(默认, 次根开盘)或 "close"(次根收盘)。
+    /// 旧配置文件无此键时回退为 open, 历史结果不受影响。
+    #[serde(default)]
+    pub fill_bar_price: FillBarPrice,
+}
+
+/// delay>0 时 fill bar 的成交价位。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum FillBarPrice {
+    /// fill bar 开盘(默认, 现状口径)。
+    #[default]
+    Open,
+    /// fill bar 收盘(多等一根 bar 内漂移, 更贴近追单成交)。
+    Close,
 }
 
 /// 输出配置。`dir` 为输出根目录，合并结果写入 `{dir}/result.parquet`，逐组合写入 `{dir}/temps/`。
@@ -435,5 +450,21 @@ mod tests {
         let pair = cfg.data.for_pair("BTCUSDT", "15m");
         assert_eq!(pair.start_date.as_deref(), Some("2024-01-01"));
         assert_eq!(pair.end_date.as_deref(), Some("2024-06-30"));
+    }
+
+    #[test]
+    fn fill_bar_price_defaults_to_open_when_omitted() {
+        let toml = "[data]\ntype = \"binance\"\ndir = \"/tmp\"\nsymbol = \"BTCUSDT\"\ntimeframe = \"1d\"\n\n[backtest]\ninitial_balance = 10000.0\n\n[[strategy]]\ntype = \"sma\"\nperiod = 20\n";
+        let cfg: Config = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.backtest.fill_bar_price, FillBarPrice::Open);
+    }
+
+    #[test]
+    fn fill_bar_price_accepts_close_and_rejects_unknown() {
+        let toml = "[data]\ntype = \"binance\"\ndir = \"/tmp\"\nsymbol = \"BTCUSDT\"\ntimeframe = \"1d\"\n\n[backtest]\ninitial_balance = 10000.0\nfill_bar_price = \"close\"\n\n[[strategy]]\ntype = \"sma\"\nperiod = 20\n";
+        let cfg: Config = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.backtest.fill_bar_price, FillBarPrice::Close);
+        let bad = toml.replace("\"close\"", "\"mid\"");
+        assert!(toml::from_str::<Config>(&bad).is_err());
     }
 }

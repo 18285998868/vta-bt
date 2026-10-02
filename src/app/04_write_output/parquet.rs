@@ -103,6 +103,7 @@ fn build_parquet(results: &[RunResult], balance: f64) -> RecordBatch {
     let mut fixed_max_drawdown_pct = Float64Builder::new();
     let mut fixed_expectancy_bps = Float64Builder::new();
     let mut fixed_profit_factor = Float64Builder::new();
+    let mut fill_close = UInt8Builder::new();
 
     for r in results {
         let m = &r.metrics;
@@ -157,6 +158,7 @@ fn build_parquet(results: &[RunResult], balance: f64) -> RecordBatch {
         fixed_max_drawdown_pct.append_value(m.fixed_max_drawdown_pct);
         fixed_expectancy_bps.append_value(m.fixed_expectancy_bps);
         fixed_profit_factor.append_value(m.fixed_profit_factor);
+        fill_close.append_value(u8::from(r.fill_close));
     }
 
     let cols: Vec<ArrayRef> = vec![
@@ -206,6 +208,7 @@ fn build_parquet(results: &[RunResult], balance: f64) -> RecordBatch {
         Arc::new(fixed_max_drawdown_pct.finish()),
         Arc::new(fixed_expectancy_bps.finish()),
         Arc::new(fixed_profit_factor.finish()),
+        Arc::new(fill_close.finish()),
     ];
 
     let fields = vec![
@@ -255,6 +258,7 @@ fn build_parquet(results: &[RunResult], balance: f64) -> RecordBatch {
         Field::new("fixed_max_drawdown_pct", DataType::Float64, false),
         Field::new("fixed_expectancy_bps", DataType::Float64, false),
         Field::new("fixed_profit_factor", DataType::Float64, false),
+        Field::new("fill_close", DataType::UInt8, false),
     ];
 
     let schema = arrow::datatypes::Schema::new(fields);
@@ -419,6 +423,15 @@ fn u32_col(batch: &RecordBatch, idx: usize) -> Vec<u32> {
     (0..batch.num_rows()).map(|i| arr.value(i)).collect()
 }
 
+fn u8_col(batch: &RecordBatch, idx: usize) -> Vec<u8> {
+    let arr = batch
+        .column(idx)
+        .as_any()
+        .downcast_ref::<UInt8Array>()
+        .expect("u8 column");
+    (0..batch.num_rows()).map(|i| arr.value(i)).collect()
+}
+
 pub fn read_parquet(path: &str) -> Result<Vec<RunResult>> {
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
     use std::fs::File;
@@ -516,6 +529,12 @@ pub fn read_parquet(path: &str) -> Result<Vec<RunResult>> {
         } else {
             vec![0.0; n]
         };
+        // fill_close 为第 46 列(末尾追加), 旧缓存文件无此列时回退为 open(0)。
+        let fill_close = if batch.num_columns() > 46 {
+            u8_col(&batch, 46)
+        } else {
+            vec![0; n]
+        };
 
         for i in 0..n {
             all.push(RunResult {
@@ -526,6 +545,7 @@ pub fn read_parquet(path: &str) -> Result<Vec<RunResult>> {
                 delay_bars: delay_bars[i],
                 fee_bps: fee_bps[i],
                 slippage_bps: slippage_bps[i],
+                fill_close: fill_close[i] != 0,
                 metrics: SummaryMetrics {
                     total_return_pct: pnl[i] * 100.0,
                     total_return: pnl[i],

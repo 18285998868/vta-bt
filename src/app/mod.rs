@@ -16,6 +16,8 @@ pub struct RunResult {
     pub delay_bars: u32,
     pub fee_bps: f64,
     pub slippage_bps: f64,
+    /// delay>0 时 fill bar 取收盘(true)还是开盘(false, 默认)。
+    pub fill_close: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -47,7 +49,7 @@ fn params_fingerprint(
         h ^= u64::from(b);
         h = h.wrapping_mul(0x0000_0100_0000_01b3);
     }
-    // 执行口径变更必须失效旧缓存, 否则 delay/费率不同的结果会误命中。
+    // 执行口径变更必须失效旧缓存, 否则 delay/费率/fill 不同的结果会误命中。
     for b in (exec.delay_bars as u64).to_le_bytes() {
         h ^= u64::from(b);
         h = h.wrapping_mul(0x0000_0100_0000_01b3);
@@ -60,6 +62,8 @@ fn params_fingerprint(
         h ^= u64::from(b);
         h = h.wrapping_mul(0x0000_0100_0000_01b3);
     }
+    h ^= u64::from(exec.fill_close);
+    h = h.wrapping_mul(0x0000_0100_0000_01b3);
     for i in 0..n {
         for b in strategy.param_str(i).bytes() {
             h ^= u64::from(b);
@@ -173,6 +177,7 @@ fn run_combo(
                 delay_bars: ctx.exec.delay_bars as u32,
                 fee_bps: ctx.exec.fee_rate * 10_000.0,
                 slippage_bps: ctx.exec.slip_rate * 10_000.0,
+                fill_close: ctx.exec.fill_close,
             });
             detail_rows.push(DetailResult {
                 symbol: symbol.to_string(),
@@ -209,6 +214,7 @@ fn run_combo(
                     delay_bars: ctx.exec.delay_bars as u32,
                     fee_bps: ctx.exec.fee_rate * 10_000.0,
                     slippage_bps: ctx.exec.slip_rate * 10_000.0,
+                    fill_close: ctx.exec.fill_close,
                 })
             })
             .collect::<crate::error::Result<Vec<_>>>()?;
@@ -273,10 +279,11 @@ pub fn run(config_path: &str) -> crate::error::Result<()> {
         temps_dir: temps_dir.clone(),
         detail_dir: detail_dir.clone(),
         window: window.clone(),
-        exec: crate::engine::ExecConfig::from_bps(
+        exec: crate::engine::ExecConfig::from_bps_fill(
             config.backtest.delay_bars,
             config.backtest.fee_bps,
             config.backtest.slippage_bps,
+            config.backtest.fill_bar_price == config::FillBarPrice::Close,
         ),
     };
 

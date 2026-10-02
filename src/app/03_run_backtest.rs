@@ -55,21 +55,25 @@ pub struct SummaryMetrics {
 }
 
 /// 成交执行假设。`delay_bars = 0` 为旧口径(信号当根收盘成交, 前视乐观);
-/// `delay_bars = 1` 为推荐口径(信号次根开盘成交)。费率按单边名义扣除。
+/// `delay_bars = 1` 为推荐口径(信号次根 fill bar 成交, `fill_close=false` 取开盘,
+/// `fill_close=true` 取收盘)。费率按单边名义扣除。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ExecConfig {
     pub delay_bars: usize,
     pub fee_rate: f64,
     pub slip_rate: f64,
+    /// delay>0 时 fill bar 取收盘(true)还是开盘(false, 默认)。
+    pub fill_close: bool,
 }
 
 impl Default for ExecConfig {
-    /// 全零 = 旧口径, 逐位一致。
+    /// 全零/false = 旧口径, 逐位一致。
     fn default() -> Self {
         Self {
             delay_bars: 0,
             fee_rate: 0.0,
             slip_rate: 0.0,
+            fill_close: false,
         }
     }
 }
@@ -77,10 +81,21 @@ impl Default for ExecConfig {
 impl ExecConfig {
     #[must_use]
     pub fn from_bps(delay_bars: usize, fee_bps: f64, slippage_bps: f64) -> Self {
+        Self::from_bps_fill(delay_bars, fee_bps, slippage_bps, false)
+    }
+
+    #[must_use]
+    pub fn from_bps_fill(
+        delay_bars: usize,
+        fee_bps: f64,
+        slippage_bps: f64,
+        fill_close: bool,
+    ) -> Self {
         Self {
             delay_bars,
             fee_rate: fee_bps / 10_000.0,
             slip_rate: slippage_bps / 10_000.0,
+            fill_close,
         }
     }
 }
@@ -151,8 +166,9 @@ fn fill_price(side: i8, base: f64, slip_rate: f64) -> f64 {
 
 /// 信号 bar `i`、订单方向 `side` 的成交位置与价格。
 /// - `delay_bars = 0`: 当根收盘(旧口径)。
-/// - `delay_bars > 0`: fill bar 的开盘; 开仓 fill bar 超出数据返回 `None`(放弃,
-///   无未来可成交), 平仓钳到末根收盘(与旧口径的末根离场一致)。
+/// - `delay_bars > 0`: fill bar 的开盘(`fill_close=false`, 默认)或收盘(`fill_close=true`);
+///   开仓 fill bar 超出数据返回 `None`(放弃, 无未来可成交),
+///   平仓钳到末根收盘(与旧口径的末根离场一致)。
 fn resolve_fill(
     i: usize,
     side: i8,
@@ -173,7 +189,11 @@ fn resolve_fill(
         let last = n - 1;
         return Some((last, fill_price(side, close[last], exec.slip_rate)));
     }
-    let base = open.get(fb).copied().unwrap_or(close[fb]);
+    let base = if exec.fill_close {
+        close[fb]
+    } else {
+        open.get(fb).copied().unwrap_or(close[fb])
+    };
     Some((fb, fill_price(side, base, exec.slip_rate)))
 }
 
@@ -999,6 +1019,33 @@ mod tests {
             m.total_fixed_pnl
         );
         assert_eq!(m.delay_bars, 1);
+    }
+
+    #[test]
+    fn test_fill_close_uses_next_bar_close() {
+        // delay=1 + fill_close: bar0 多单按 close[1] 成交; bar2 反手空按 close[3] 离场并建仓。
+        // 数据与 test_delay_one_fills_at_next_open 同构, 仅 fill 价位 open→close。
+        let close = vec![100.0, 102.0, 101.0, 105.0, 107.0];
+        let open = vec![99.0, 101.0, 102.5, 100.5, 106.0];
+        let sig = vec![
+            Signal::Buy,
+            Signal::Hold,
+            Signal::Sell,
+            Signal::Hold,
+            Signal::Hold,
+        ];
+        let exec = ExecConfig::from_bps_fill(1, 0.0, 0.0, true);
+        let m = simulate(&close, &open, &sig, 1000.0, 252.0, &exec);
+        assert_eq!(m.num_trades, 2);
+        // 多头: 进 102.0 出 105.0 → (105.0-102.0)/102.0*1000。
+        let expect_long = (105.0 - 102.0) / 102.0 * 1000.0;
+        // 空头: 进 105.0, 末根 107 收盘离场 → (105.0-107)/105.0*1000。
+        let expect_short = (105.0 - 107.0) / 105.0 * 1000.0;
+        assert!(
+            (m.total_fixed_pnl - (expect_long + expect_short)).abs() < 1e-9,
+            "{}",
+            m.total_fixed_pnl
+        );
     }
 
     #[test]
