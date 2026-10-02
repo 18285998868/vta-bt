@@ -68,6 +68,10 @@ pub fn rbreaker_signals(days: &[DayBar], close: &[f64], stop_pct: f64) -> Vec<Si
             }
             let is_eod = i == day.end_idx;
             if pos == 0 {
+                if is_eod {
+                    // 日末bar不新开：零持有时间纯付成本，且避免引擎隔夜持仓与策略flat分叉。
+                    continue;
+                }
                 if c > lv.b_break {
                     sig[i] = Signal::Buy;
                     pos = 1;
@@ -205,6 +209,18 @@ mod tests {
         assert_eq!(sig[1], Signal::Hold);
         assert_eq!(sig[2], Signal::Buy);
         assert_eq!(sig[3], Signal::Close);
+    }
+
+    #[test]
+    fn test_no_entry_on_final_bar() {
+        // 前日 H/L/C=110/90/100 → bBreak=130。次日仅最后一根突破：不进场（全 Hold）。
+        let days = vec![
+            day(100.0, 110.0, 90.0, 100.0, 0, 0),
+            day(100.0, 132.0, 99.0, 132.0, 1, 3),
+        ];
+        let close = vec![100.0, 100.0, 100.0, 131.0];
+        let sig = rbreaker_signals(&days, &close, 50.0);
+        assert!(sig.iter().all(|&s| s == Signal::Hold));
     }
 
     #[test]
