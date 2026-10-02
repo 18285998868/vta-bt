@@ -140,68 +140,95 @@ fn run_combo(
 
     use rayon::prelude::*;
 
-    if ctx.detail && n > 50_000 {
-        eprintln!(
-            "  [{}] 警告: detail 模式会把 {n} 组参数结果(含逐笔交易/权益曲线)先攒入内存再写出, 可能占用数 GB; 建议减少参数范围或关闭 detail",
-            strategy.name()
-        );
-    }
-
     if ctx.detail {
         let (bh_pnl, bh_ret) = crate::engine::buy_hold_pnl(&cols.close, ctx.balance);
-        let sims: Vec<(String, crate::engine::SimResult)> = (0..n)
-            .into_par_iter()
-            .map(|i| {
-                let signals =
-                    strategy.generate_signals(&cols.open, &cols.close, &cols.volume, i)?;
-                let sim = crate::engine::simulate_detailed(
-                    &cols.time,
-                    &cols.close,
-                    &cols.open,
-                    &signals,
-                    ctx.balance,
-                    bpy,
-                    &ctx.exec,
-                );
-                Ok((strategy.param_str(i), sim))
-            })
-            .collect::<crate::error::Result<Vec<_>>>()?;
+        // detail 预检与自适应分块: 曲线(trades+equity+fixed)常驻内存曾导致整机 swap。
+        // 单 param 约 T×200B; 峰值钳在 DETAIL_MEM_BUDGET, 超量分批, 单批都装不下则拒绝。
+        const DETAIL_MEM_BUDGET: u64 = 4 * 1024 * 1024 * 1024;
+        let per_param = cols.len() as u64 * 200;
+        let total_est = per_param.saturating_mul(n as u64);
+        let gib = |b: u64| {
+            if b < 1_073_741_824 {
+                format!("{:.1} MiB", b as f64 / 1_048_576.0)
+            } else {
+                format!("{:.1} GiB", b as f64 / 1_073_741_824.0)
+            }
+        };
+        if per_param > DETAIL_MEM_BUDGET {
+            return Err(crate::error::AppError::Msg(format!(
+                "[{}] detail 单 param 预估 {} GiB 超预算 {} GiB, 拒绝执行(请关 detail 或拆小时间窗)",
+                strategy.name(),
+                gib(per_param),
+                gib(DETAIL_MEM_BUDGET)
+            )));
+        }
+        let chunk = ((DETAIL_MEM_BUDGET / per_param.max(1))
+            .max(1)
+            .min(n.max(1) as u64)) as usize;
+        println!(
+            "  [{}] detail 预检: 总量约 {}, 分 {} 批, 峰值约 {}",
+            strategy.name(),
+            gib(total_est),
+            n.div_ceil(chunk.max(1)),
+            gib(per_param.saturating_mul(chunk as u64))
+        );
 
         let mut run_rows = Vec::with_capacity(n);
-        let mut detail_rows = Vec::with_capacity(n);
-        for (params, sim) in sims {
-            let crate::engine::SimResult {
-                summary,
-                trades,
-                equity_curve,
-                fixed_curve,
-            } = sim;
-            run_rows.push(RunResult {
-                symbol: symbol.to_string(),
-                timeframe: tf.to_string(),
-                strategy: strategy.name().to_string(),
-                params: params.clone(),
-                metrics: summary,
-                delay_bars: ctx.exec.delay_bars as u32,
-                fee_bps: ctx.exec.fee_rate * 10_000.0,
-                slippage_bps: ctx.exec.slip_rate * 10_000.0,
-                fill_close: ctx.exec.fill_close,
-                buy_hold_pnl: bh_pnl,
-                buy_hold_return: bh_ret,
-            });
-            detail_rows.push(DetailResult {
-                symbol: symbol.to_string(),
-                timeframe: tf.to_string(),
-                strategy: strategy.name().to_string(),
-                params,
-                trades,
-                equity_curve,
-                fixed_curve,
-            });
+        for start in (0..n).step_by(chunk.max(1)) {
+            let end = (start + chunk).min(n);
+            let sims: Vec<(String, crate::engine::SimResult)> = (start..end)
+                .into_par_iter()
+                .map(|i| {
+                    let signals =
+                        strategy.generate_signals(&cols.open, &cols.close, &cols.volume, i)?;
+                    let sim = crate::engine::simulate_detailed(
+                        &cols.time,
+                        &cols.close,
+                        &cols.open,
+                        &signals,
+                        ctx.balance,
+                        bpy,
+                        &ctx.exec,
+                    );
+                    Ok((strategy.param_str(i), sim))
+                })
+                .collect::<crate::error::Result<Vec<_>>>()?;
+
+            let mut detail_rows = Vec::with_capacity(end - start);
+            for (params, sim) in sims {
+                let crate::engine::SimResult {
+                    summary,
+                    trades,
+                    equity_curve,
+                    fixed_curve,
+                } = sim;
+                run_rows.push(RunResult {
+                    symbol: symbol.to_string(),
+                    timeframe: tf.to_string(),
+                    strategy: strategy.name().to_string(),
+                    params: params.clone(),
+                    metrics: summary,
+                    delay_bars: ctx.exec.delay_bars as u32,
+                    fee_bps: ctx.exec.fee_rate * 10_000.0,
+                    slippage_bps: ctx.exec.slip_rate * 10_000.0,
+                    fill_close: ctx.exec.fill_close,
+                    buy_hold_pnl: bh_pnl,
+                    buy_hold_return: bh_ret,
+                });
+                detail_rows.push(DetailResult {
+                    symbol: symbol.to_string(),
+                    timeframe: tf.to_string(),
+                    strategy: strategy.name().to_string(),
+                    params,
+                    trades,
+                    equity_curve,
+                    fixed_curve,
+                });
+            }
+            output::write_detail_parquet(&detail_rows, &ctx.detail_dir)?;
         }
 
         output::write_single_parquet(&run_rows, &combo_path, ctx.balance)?;
-        output::write_detail_parquet(&detail_rows, &ctx.detail_dir)?;
     } else {
         let (bh_pnl, bh_ret) = crate::engine::buy_hold_pnl(&cols.close, ctx.balance);
         let run_rows: Vec<RunResult> = (0..n)
