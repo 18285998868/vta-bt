@@ -122,6 +122,8 @@ pub struct SimResult {
     pub summary: SummaryMetrics,
     pub trades: Vec<Trade>,
     pub equity_curve: Vec<(f64, f64)>,
+    /// fixed 腿逐 bar 权益(与 bar 对齐, `--pbo` 的 T×N 输入)。
+    pub fixed_curve: Vec<f64>,
 }
 
 fn signals_to_positions(signals: &[Signal]) -> Vec<i8> {
@@ -882,6 +884,7 @@ pub fn simulate_detailed(
             summary: SummaryMetrics::default(),
             trades: Vec::new(),
             equity_curve: Vec::new(),
+            fixed_curve: Vec::new(),
         };
     }
     let positions = signals_to_positions(signals);
@@ -917,6 +920,7 @@ pub fn simulate_detailed(
         summary,
         trades,
         equity_curve,
+        fixed_curve,
     }
 }
 

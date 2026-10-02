@@ -116,3 +116,15 @@ app/05_strategies/{alma,dema,...,zlema}/… # 21 个单 MA 策略(周期遍历 �
 app/05_strategies/ssf/  # SSF 策略(supersmoother, param_str 含 variant=ssf)
 app/05_strategies/ssf_st/ # SSF 平滑型(variant=ssf_st)
 ```
+
+## PBO 模式(判局用 C3)
+
+```bash
+# 1. 先用 detail=true 跑出逐笔 fixed 曲线(detail/ 下 *_fixedcurve.parquet)
+# 2. 按(币,周期,策略)分组实算 CSCV(Bailey et al. 2016, S=16→12870 logits)
+cargo run --release -- --pbo /path/to/reports_XXX
+```
+
+- 与 `-c` 二选一; T×N 常驻内存, 1m×500 级约 24GB——PBO 建议 TF≥30m 或小 N。
+- T<32 或 N<10 的组跳过并明示; φ>0.05 按 Neyman-Pearson 惯例拒绝(C3)。
+- 源码: `src/pbo.rs`(纯 CSCV+单测: 噪声φ高/植入边际φ低) + detail fixedcurve 写读。

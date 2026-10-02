@@ -12,7 +12,15 @@ fn main() -> anyhow::Result<()> {
 
     let cli = cli::parse();
 
-    app::run(&cli.config)?;
+    match (cli.config, cli.pbo) {
+        (Some(cfg), None) => {
+            app::run(&cfg)?;
+        }
+        (None, Some(dir)) => {
+            vta::pbo::run_pbo_report(&dir)?;
+        }
+        _ => anyhow::bail!("必须二选一: `-c <config>` 回测, 或 `--pbo <reports_dir>` 实算 PBO"),
+    }
 
     Ok(())
 }

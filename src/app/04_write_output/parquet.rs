@@ -397,9 +397,108 @@ pub fn write_detail_parquet(details: &[crate::app::DetailResult], dir: &str) -> 
         let mut writer = ArrowWriter::try_new(file, trade_batch.schema(), Some(props))?;
         writer.write(&trade_batch)?;
         writer.close()?;
+
+        // fixed 腿逐 bar 权益: `--pbo` 的 T×N 输入。分组元数据进 schema metadata,
+        // 文件名含 params 明文(含 `_` 清洗)故不做反向解析。
+        let mut bar_idx = UInt64Builder::new();
+        let mut fixed_equity = Float64Builder::new();
+        for d in group {
+            for (i, v) in d.fixed_curve.iter().enumerate() {
+                bar_idx.append_value(i as u64);
+                fixed_equity.append_value(*v);
+            }
+        }
+        let curve_meta = arrow::datatypes::Metadata::new()
+            .with("symbol", symbol.clone())
+            .with("timeframe", tf.clone())
+            .with("strategy", strategy.clone())
+            .with("params", params.clone());
+        let curve_schema = arrow::datatypes::Schema::new_with_metadata(
+            vec![
+                Field::new("bar_idx", DataType::UInt64, false),
+                Field::new("fixed_equity", DataType::Float64, false),
+            ],
+            curve_meta,
+        );
+        let curve_batch = RecordBatch::try_new(
+            Arc::new(curve_schema),
+            vec![Arc::new(bar_idx.finish()), Arc::new(fixed_equity.finish())],
+        )?;
+        let curve_path = path.join(format!(
+            "{}_{}_{}_{}_fixedcurve.parquet",
+            symbol, tf, strategy, clean_params
+        ));
+        let curve_file = File::create(&curve_path)?;
+        let mut curve_writer = ArrowWriter::try_new(
+            curve_file,
+            curve_batch.schema(),
+            Some(WriterProperties::builder().build()),
+        )?;
+        curve_writer.write(&curve_batch)?;
+        curve_writer.close()?;
     }
 
     Ok(())
+}
+
+/// fixed 曲线文件元组(供 `--pbo` 按(币,周期,策略)分组)。
+pub struct FixedCurve {
+    pub symbol: String,
+    pub timeframe: String,
+    pub strategy: String,
+    pub params: String,
+    pub values: Vec<f64>,
+}
+
+/// 读取目录下全部 `*_fixedcurve.parquet`(一般为 detail/ 目录)。
+pub fn read_fixed_curves(dir: &str) -> Result<Vec<FixedCurve>> {
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+    use std::fs;
+    use std::fs::File;
+
+    let mut out = Vec::new();
+    let entries = fs::read_dir(dir)
+        .map_err(|e| crate::error::AppError::Msg(format!("读取 fixedcurve 目录失败 {dir}: {e}")))?;
+    let mut paths: Vec<_> = entries
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| {
+            p.extension().is_some_and(|x| x == "parquet")
+                && p.file_stem()
+                    .is_some_and(|s| s.to_string_lossy().ends_with("_fixedcurve"))
+        })
+        .collect();
+    paths.sort();
+    for path in paths {
+        let file = File::open(&path)?;
+        let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+        let meta = builder.schema().metadata().clone();
+        let get = |k: &str| -> Result<String> {
+            meta.get(k).cloned().ok_or_else(|| {
+                crate::error::AppError::Msg(format!(
+                    "fixedcurve 缺分组元数据 {k}: {}",
+                    path.display()
+                ))
+            })
+        };
+        let symbol = get("symbol")?;
+        let timeframe = get("timeframe")?;
+        let strategy = get("strategy")?;
+        let params = get("params")?;
+        let reader = builder.build()?;
+        let mut values = Vec::new();
+        for batch in reader {
+            let batch = batch?;
+            values.extend(f64_col(&batch, 1));
+        }
+        out.push(FixedCurve {
+            symbol,
+            timeframe,
+            strategy,
+            params,
+            values,
+        });
+    }
+    Ok(out)
 }
 
 fn str_col(batch: &RecordBatch, idx: usize) -> Vec<String> {

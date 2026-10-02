@@ -6,5 +6,6 @@ pub mod engine;
 pub mod error;
 #[path = "app/04_write_output/mod.rs"]
 pub mod output;
+pub mod pbo;
 #[path = "app/05_strategies/mod.rs"]
 pub mod strategies;

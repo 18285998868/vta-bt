@@ -32,6 +32,8 @@ pub struct DetailResult {
     pub params: String,
     pub trades: Vec<engine::Trade>,
     pub equity_curve: Vec<(f64, f64)>,
+    /// fixed 腿逐 bar 权益(与 bar 对齐), 写入 `{...}_fixedcurve.parquet` 供 `--pbo`。
+    pub fixed_curve: Vec<f64>,
 }
 
 /// 参数集合的稳定指纹 (FNV-1a)。写入组合文件名,避免改动参数后误命中旧缓存。
@@ -172,6 +174,7 @@ fn run_combo(
                 summary,
                 trades,
                 equity_curve,
+                fixed_curve,
             } = sim;
             run_rows.push(RunResult {
                 symbol: symbol.to_string(),
@@ -193,6 +196,7 @@ fn run_combo(
                 params,
                 trades,
                 equity_curve,
+                fixed_curve,
             });
         }
 
