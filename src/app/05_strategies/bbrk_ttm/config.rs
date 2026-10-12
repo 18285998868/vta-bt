@@ -2,9 +2,10 @@ use serde::Deserialize;
 
 use crate::config::F64Param;
 
-/// BBRK+TTM Squeeze正统版（用户设计2）：Keltner(EMA20 ± k·ATR14) 上下轨
-/// 落在布林带上下轨内部即 squeeze_on；过去 n 根（含当根）存在 squeeze_on
-/// 且当根 BB 突破 → 进；离场保持中线。
+/// BBRK+TTM Squeeze正统版（用户设计2）：布林带上下轨落在
+/// Keltner(EMA20 ± k·ATR14) 上下轨内部即 squeeze_on（BB inside KC，与书/ToS一致；
+/// 实现见 strategy.rs line144，本注释2026-10-12修正，此前写反但代码一直是对的）；
+/// 过去 n 根（含当根）存在 squeeze_on 且当根 BB 突破 → 进；离场保持中线。
 /// σ × k × n 三笛卡尔（用户指定 k{1,1.5,2,2.5}；n 取 {5,10} 紧/松两档）。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]

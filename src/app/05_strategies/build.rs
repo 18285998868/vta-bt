@@ -9,8 +9,8 @@ use super::bbrk_adx::BbrkAdxStrategy;
 use super::bbrk_atr::BbrkAtrStrategy;
 use super::bbrk_atr_ema::BbrkAtrEmaStrategy;
 use super::bbrk_bb::BbrkBbStrategy;
-use super::bbrk_bw::BbrkBwStrategy;
 use super::bbrk_cross::BbrkCrossStrategy;
+use super::bbrk_kdj::BbrkKdjStrategy;
 use super::bbrk_don::BbrkDonStrategy;
 use super::bbrk_hma::BbrkHmaStrategy;
 use super::bbrk_hma_ema::BbrkHmaEmaStrategy;
@@ -22,10 +22,10 @@ use super::bbrk_pctb::BbrkPctbStrategy;
 use super::bbrk_rex::BbrkRexStrategy;
 use super::bbrk_sma::BbrkSmaStrategy;
 use super::bbrk_sma_ema::BbrkSmaEmaStrategy;
-use super::bbrk_sqz::BbrkSqzStrategy;
 use super::bbrk_str::BbrkStrStrategy;
 use super::bbrk_trail::BbrkTrailStrategy;
 use super::bbrk_ttm::BbrkTtmStrategy;
+use super::bbrk_ttm_fire::BbrkTtmFireStrategy;
 use super::bbrk_vol::BbrkVolStrategy;
 use super::bbrk_vol_ema::BbrkVolEmaStrategy;
 use super::bbrk_zlema_ema::BbrkZlemaEmaStrategy;
@@ -97,8 +97,6 @@ macro_rules! build_ma {
             | StrategyConfig::BbrkTrail(_)
             | StrategyConfig::BbrkDon(_)
             | StrategyConfig::BbrkPctb(_)
-            | StrategyConfig::BbrkSqz(_)
-            | StrategyConfig::BbrkBw(_)
             | StrategyConfig::BbrkAtr(_)
             | StrategyConfig::BbrkStr(_)
             | StrategyConfig::BbrkSma(_)
@@ -113,7 +111,9 @@ macro_rules! build_ma {
             | StrategyConfig::BbrkRex(_)
             | StrategyConfig::BbrkVol(_)
             | StrategyConfig::BbrkTtm(_)
+            | StrategyConfig::BbrkTtmFire(_)
             | StrategyConfig::BbrkCross(_)
+            | StrategyConfig::BbrkKdj(_)
             | StrategyConfig::BbrkM2(_)
             | StrategyConfig::BbrkM3(_)
             | StrategyConfig::BbrkOrth(_)
@@ -156,8 +156,6 @@ pub fn build_strategies(configs: &[StrategyConfig]) -> Vec<Box<dyn Strategy>> {
                     | StrategyConfig::BbrkTrail(_)
                     | StrategyConfig::BbrkDon(_)
                     | StrategyConfig::BbrkPctb(_)
-                    | StrategyConfig::BbrkSqz(_)
-                    | StrategyConfig::BbrkBw(_)
                     | StrategyConfig::BbrkAtr(_)
                     | StrategyConfig::BbrkStr(_)
                     | StrategyConfig::BbrkSma(_)
@@ -172,7 +170,9 @@ pub fn build_strategies(configs: &[StrategyConfig]) -> Vec<Box<dyn Strategy>> {
                     | StrategyConfig::BbrkRex(_)
                     | StrategyConfig::BbrkVol(_)
                     | StrategyConfig::BbrkTtm(_)
+                    | StrategyConfig::BbrkTtmFire(_)
                     | StrategyConfig::BbrkCross(_)
+                    | StrategyConfig::BbrkKdj(_)
                     | StrategyConfig::BbrkM2(_)
                     | StrategyConfig::BbrkM3(_)
                     | StrategyConfig::BbrkOrth(_)
@@ -283,12 +283,6 @@ pub fn build_strategies(configs: &[StrategyConfig]) -> Vec<Box<dyn Strategy>> {
             StrategyConfig::BbrkPctb(c) => {
                 Some(Box::new(BbrkPctbStrategy::new(c.clone())) as Box<dyn Strategy>)
             }
-            StrategyConfig::BbrkSqz(c) => {
-                Some(Box::new(BbrkSqzStrategy::new(c.clone())) as Box<dyn Strategy>)
-            }
-            StrategyConfig::BbrkBw(c) => {
-                Some(Box::new(BbrkBwStrategy::new(c.clone())) as Box<dyn Strategy>)
-            }
             StrategyConfig::BbrkAtr(c) => {
                 Some(Box::new(BbrkAtrStrategy::new(c.clone())) as Box<dyn Strategy>)
             }
@@ -331,8 +325,14 @@ pub fn build_strategies(configs: &[StrategyConfig]) -> Vec<Box<dyn Strategy>> {
             StrategyConfig::BbrkTtm(c) => {
                 Some(Box::new(BbrkTtmStrategy::new(c.clone())) as Box<dyn Strategy>)
             }
+            StrategyConfig::BbrkTtmFire(c) => {
+                Some(Box::new(BbrkTtmFireStrategy::new(c.clone())) as Box<dyn Strategy>)
+            }
             StrategyConfig::BbrkCross(c) => {
                 Some(Box::new(BbrkCrossStrategy::new(c.clone())) as Box<dyn Strategy>)
+            }
+            StrategyConfig::BbrkKdj(c) => {
+                Some(Box::new(BbrkKdjStrategy::new(c.clone())) as Box<dyn Strategy>)
             }
             StrategyConfig::BbrkM2(c) => {
                 Some(Box::new(BbrkM2Strategy::new(c.clone())) as Box<dyn Strategy>)

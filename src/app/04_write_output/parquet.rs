@@ -974,8 +974,6 @@ mod tests {
         assert_eq!(strategy_params_value("sigma=2.5,exitn=10"), 2_500_000_100);
         assert_eq!(strategy_params_value("sigma=2.5,exitb=0.5"), 2_500_000_005);
         assert_eq!(strategy_params_value("sigma=2.5,exitb=0.8"), 2_500_000_008);
-        assert_eq!(strategy_params_value("sigma=2.5,sqzn=50"), 2_500_000_500);
-        assert_eq!(strategy_params_value("sigma=2.5,bwmult=6"), 2_500_000_060);
         assert_eq!(strategy_params_value("sigma=2.5,body=0.5"), 2_500_000_005);
         assert_eq!(strategy_params_value("sigma=2.5,smareg=100"), 2_500_001_000);
         assert_eq!(strategy_params_value("sigma=2.5,hmalen=100"), 2_500_001_000);

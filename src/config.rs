@@ -12,8 +12,8 @@ use crate::strategies::bbrk_adx::BbrkAdxConfig;
 use crate::strategies::bbrk_atr::BbrkAtrConfig;
 use crate::strategies::bbrk_atr_ema::BbrkAtrEmaConfig;
 use crate::strategies::bbrk_bb::BbrkBbConfig;
-use crate::strategies::bbrk_bw::BbrkBwConfig;
 use crate::strategies::bbrk_cross::BbrkCrossConfig;
+use crate::strategies::bbrk_kdj::BbrkKdjConfig;
 use crate::strategies::bbrk_don::BbrkDonConfig;
 use crate::strategies::bbrk_hma::BbrkHmaConfig;
 use crate::strategies::bbrk_hma_ema::BbrkHmaEmaConfig;
@@ -25,10 +25,10 @@ use crate::strategies::bbrk_pctb::BbrkPctbConfig;
 use crate::strategies::bbrk_rex::BbrkRexConfig;
 use crate::strategies::bbrk_sma::BbrkSmaConfig;
 use crate::strategies::bbrk_sma_ema::BbrkSmaEmaConfig;
-use crate::strategies::bbrk_sqz::BbrkSqzConfig;
 use crate::strategies::bbrk_str::BbrkStrConfig;
 use crate::strategies::bbrk_trail::BbrkTrailConfig;
 use crate::strategies::bbrk_ttm::BbrkTtmConfig;
+use crate::strategies::bbrk_ttm_fire::BbrkTtmFireConfig;
 use crate::strategies::bbrk_vol::BbrkVolConfig;
 use crate::strategies::bbrk_vol_ema::BbrkVolEmaConfig;
 use crate::strategies::bbrk_zlema_ema::BbrkZlemaEmaConfig;
@@ -234,20 +234,6 @@ impl Config {
                         return Err(AppError::Msg("bbrk_pctb 参数组合为空".into()));
                     }
                 }
-                StrategyConfig::BbrkSqz(c) => {
-                    c.sigma.validate_range("bbrk_sqz.sigma", 0.1, 10.0)?;
-                    c.sqzn.validate_range("bbrk_sqz.sqzn", 2.0, 500.0)?;
-                    if c.pairs().is_empty() {
-                        return Err(AppError::Msg("bbrk_sqz 参数组合为空".into()));
-                    }
-                }
-                StrategyConfig::BbrkBw(c) => {
-                    c.sigma.validate_range("bbrk_bw.sigma", 0.1, 10.0)?;
-                    c.bwmult.validate_range("bbrk_bw.bwmult", 0.5, 30.0)?;
-                    if c.pairs().is_empty() {
-                        return Err(AppError::Msg("bbrk_bw 参数组合为空".into()));
-                    }
-                }
                 StrategyConfig::BbrkAtr(c) => {
                     c.sigma.validate_range("bbrk_atr.sigma", 0.1, 10.0)?;
                     c.atrthr.validate_range("bbrk_atr.atrthr", 0.1, 5.0)?;
@@ -348,10 +334,23 @@ impl Config {
                         return Err(AppError::Msg("bbrk_ttm 参数组合为空".into()));
                     }
                 }
+                StrategyConfig::BbrkTtmFire(c) => {
+                    c.sigma.validate_range("bbrk_ttm_fire.sigma", 0.1, 10.0)?;
+                    c.kc.validate_range("bbrk_ttm_fire.kc", 0.5, 5.0)?;
+                    if c.pairs().is_empty() {
+                        return Err(AppError::Msg("bbrk_ttm_fire 参数组合为空".into()));
+                    }
+                }
                 StrategyConfig::BbrkCross(c) => {
                     c.sigma.validate_range("bbrk_cross.sigma", 0.1, 10.0)?;
                     if c.values().is_empty() {
                         return Err(AppError::Msg("bbrk_cross 参数组合为空".into()));
+                    }
+                }
+                StrategyConfig::BbrkKdj(c) => {
+                    c.sigma.validate_range("bbrk_kdj.sigma", 0.1, 10.0)?;
+                    if c.values().is_empty() {
+                        return Err(AppError::Msg("bbrk_kdj 参数组合为空".into()));
                     }
                 }
                 StrategyConfig::BbrkM2(c) => {
@@ -474,8 +473,6 @@ impl StrategyConfig {
             | StrategyConfig::BbrkTrail(_)
             | StrategyConfig::BbrkDon(_)
             | StrategyConfig::BbrkPctb(_)
-            | StrategyConfig::BbrkSqz(_)
-            | StrategyConfig::BbrkBw(_)
             | StrategyConfig::BbrkStr(_)
             | StrategyConfig::BbrkSma(_)
             | StrategyConfig::BbrkHma(_)
@@ -489,7 +486,9 @@ impl StrategyConfig {
             | StrategyConfig::BbrkRex(_)
             | StrategyConfig::BbrkVol(_)
             | StrategyConfig::BbrkTtm(_)
+            | StrategyConfig::BbrkTtmFire(_)
             | StrategyConfig::BbrkCross(_)
+            | StrategyConfig::BbrkKdj(_)
             | StrategyConfig::BbrkM2(_)
             | StrategyConfig::BbrkM3(_)
             | StrategyConfig::BbrkOrth(_)
@@ -606,8 +605,6 @@ pub enum StrategyConfig {
     BbrkTrail(BbrkTrailConfig),
     BbrkDon(BbrkDonConfig),
     BbrkPctb(BbrkPctbConfig),
-    BbrkSqz(BbrkSqzConfig),
-    BbrkBw(BbrkBwConfig),
     BbrkAtr(BbrkAtrConfig),
     BbrkStr(BbrkStrConfig),
     BbrkSma(BbrkSmaConfig),
@@ -622,7 +619,9 @@ pub enum StrategyConfig {
     BbrkRex(BbrkRexConfig),
     BbrkVol(BbrkVolConfig),
     BbrkTtm(BbrkTtmConfig),
+    BbrkTtmFire(BbrkTtmFireConfig),
     BbrkCross(BbrkCrossConfig),
+    BbrkKdj(BbrkKdjConfig),
     BbrkM2(BbrkM2Config),
     BbrkM3(BbrkM3Config),
     BbrkOrth(BbrkOrthConfig),
@@ -830,8 +829,6 @@ mod tests {
             "type = \"bbrk_trail\"\nsigma = { start = 2.0, end = 3.0, step = 0.5 }\ntrailk = { start = 2.0, end = 3.0, step = 1.0 }",
             "type = \"bbrk_don\"\nsigma = { start = 2.0, end = 2.5, step = 0.5 }\nexitn = { start = 2.0, end = 3.0, step = 1.0 }",
             "type = \"bbrk_pctb\"\nsigma = { start = 2.0, end = 2.5, step = 0.5 }\nexitb = { start = 0.2, end = 0.5, step = 0.3 }",
-            "type = \"bbrk_sqz\"\nsigma = { start = 2.0, end = 2.5, step = 0.5 }\nsqzn = { start = 20.0, end = 50.0, step = 30.0 }",
-            "type = \"bbrk_bw\"\nsigma = { start = 2.0, end = 2.5, step = 0.5 }\nbwmult = { start = 3.0, end = 6.0, step = 3.0 }",
             "type = \"bbrk_atr\"\nsigma = { start = 2.0, end = 2.5, step = 0.5 }\natrthr = { start = 0.8, end = 1.0, step = 0.2 }",
             "type = \"bbrk_str\"\nsigma = { start = 2.0, end = 2.5, step = 0.5 }\nbody = { start = 0.3, end = 0.5, step = 0.2 }",
             "type = \"bbrk_sma\"\nsigma = 2.5\nsmareg = 100.0",
@@ -846,6 +843,7 @@ mod tests {
             "type = \"bbrk_rex\"\nsigma = { start = 2.0, end = 2.5, step = 0.5 }\nrexn = { start = 3.0, end = 5.0, step = 2.0 }",
             "type = \"bbrk_vol\"\nsigma = 2.5\nvoln = 10.0\nvolmult = 1.5",
             "type = \"bbrk_ttm\"\nsigma = 2.5\nkc = 1.5\nttmn = 5.0",
+            "type = \"bbrk_ttm_fire\"\nsigma = 2.5\nkc = 1.5",
             "type = \"vwap_trend\"\nreset = { start = 0.0, end = 1.0, step = 1.0 }",
         ] {
             let toml = format!(
