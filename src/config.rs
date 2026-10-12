@@ -4,20 +4,50 @@ use serde::Deserialize;
 
 use crate::error::AppError;
 use crate::strategies::aberration::AberrationConfig;
+use crate::strategies::atma::AtmaConfig;
 use crate::strategies::atrband::ATRBandConfig;
 use crate::strategies::bbmr::BBMRConfig;
 use crate::strategies::bbrk::BBRKConfig;
+use crate::strategies::bbrk_adx::BbrkAdxConfig;
+use crate::strategies::bbrk_atr::BbrkAtrConfig;
+use crate::strategies::bbrk_atr_ema::BbrkAtrEmaConfig;
+use crate::strategies::bbrk_bb::BbrkBbConfig;
+use crate::strategies::bbrk_bw::BbrkBwConfig;
+use crate::strategies::bbrk_cross::BbrkCrossConfig;
+use crate::strategies::bbrk_don::BbrkDonConfig;
+use crate::strategies::bbrk_hma::BbrkHmaConfig;
+use crate::strategies::bbrk_hma_ema::BbrkHmaEmaConfig;
+use crate::strategies::bbrk_m2::BbrkM2Config;
+use crate::strategies::bbrk_m3::BbrkM3Config;
+use crate::strategies::bbrk_max::BbrkMaxConfig;
+use crate::strategies::bbrk_orth::BbrkOrthConfig;
+use crate::strategies::bbrk_pctb::BbrkPctbConfig;
+use crate::strategies::bbrk_rex::BbrkRexConfig;
+use crate::strategies::bbrk_sma::BbrkSmaConfig;
+use crate::strategies::bbrk_sma_ema::BbrkSmaEmaConfig;
+use crate::strategies::bbrk_sqz::BbrkSqzConfig;
+use crate::strategies::bbrk_str::BbrkStrConfig;
+use crate::strategies::bbrk_trail::BbrkTrailConfig;
+use crate::strategies::bbrk_ttm::BbrkTtmConfig;
+use crate::strategies::bbrk_vol::BbrkVolConfig;
+use crate::strategies::bbrk_vol_ema::BbrkVolEmaConfig;
+use crate::strategies::bbrk_zlema_ema::BbrkZlemaEmaConfig;
 use crate::strategies::dualthrust::DualThrustConfig;
+use crate::strategies::edma::EdmaConfig;
 use crate::strategies::ema_cross::EmaCrossConfig;
 use crate::strategies::fiali::FialiConfig;
 use crate::strategies::keltner::KeltnerConfig;
+use crate::strategies::macd::MacdConfig;
 use crate::strategies::rbreaker::RBreakerConfig;
 use crate::strategies::rsi2::RSI2Config;
+use crate::strategies::sgma::SgmaConfig;
 use crate::strategies::ssf::SsfConfig;
 use crate::strategies::ssf_cd::SsfCdConfig;
 use crate::strategies::ssf_st::SsfStConfig;
 use crate::strategies::ssf_st_cd::SsfStCdConfig;
 use crate::strategies::turtle::TurtleConfig;
+use crate::strategies::vwap::VwapConfig;
+use crate::strategies::vwap_trend::VwapTrendConfig;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -176,11 +206,211 @@ impl Config {
                         return Err(AppError::Msg("bbrk 参数组合为空".into()));
                     }
                 }
+                StrategyConfig::BbrkAdx(c) => {
+                    c.sigma.validate_range("bbrk_adx.sigma", 0.1, 10.0)?;
+                    c.adx.validate_range("bbrk_adx.adx", 0.0, 100.0)?;
+                    if c.pairs().is_empty() {
+                        return Err(AppError::Msg("bbrk_adx 参数组合为空".into()));
+                    }
+                }
+                StrategyConfig::BbrkTrail(c) => {
+                    c.sigma.validate_range("bbrk_trail.sigma", 0.1, 10.0)?;
+                    c.trailk.validate_range("bbrk_trail.trailk", 0.1, 20.0)?;
+                    if c.pairs().is_empty() {
+                        return Err(AppError::Msg("bbrk_trail 参数组合为空".into()));
+                    }
+                }
+                StrategyConfig::BbrkDon(c) => {
+                    c.sigma.validate_range("bbrk_don.sigma", 0.1, 10.0)?;
+                    c.exitn.validate_range("bbrk_don.exitn", 2.0, 100.0)?;
+                    if c.pairs().is_empty() {
+                        return Err(AppError::Msg("bbrk_don 参数组合为空".into()));
+                    }
+                }
+                StrategyConfig::BbrkPctb(c) => {
+                    c.sigma.validate_range("bbrk_pctb.sigma", 0.1, 10.0)?;
+                    c.exitb.validate_range("bbrk_pctb.exitb", 0.0, 1.0)?;
+                    if c.pairs().is_empty() {
+                        return Err(AppError::Msg("bbrk_pctb 参数组合为空".into()));
+                    }
+                }
+                StrategyConfig::BbrkSqz(c) => {
+                    c.sigma.validate_range("bbrk_sqz.sigma", 0.1, 10.0)?;
+                    c.sqzn.validate_range("bbrk_sqz.sqzn", 2.0, 500.0)?;
+                    if c.pairs().is_empty() {
+                        return Err(AppError::Msg("bbrk_sqz 参数组合为空".into()));
+                    }
+                }
+                StrategyConfig::BbrkBw(c) => {
+                    c.sigma.validate_range("bbrk_bw.sigma", 0.1, 10.0)?;
+                    c.bwmult.validate_range("bbrk_bw.bwmult", 0.5, 30.0)?;
+                    if c.pairs().is_empty() {
+                        return Err(AppError::Msg("bbrk_bw 参数组合为空".into()));
+                    }
+                }
+                StrategyConfig::BbrkAtr(c) => {
+                    c.sigma.validate_range("bbrk_atr.sigma", 0.1, 10.0)?;
+                    c.atrthr.validate_range("bbrk_atr.atrthr", 0.1, 5.0)?;
+                    if c.pairs().is_empty() {
+                        return Err(AppError::Msg("bbrk_atr 参数组合为空".into()));
+                    }
+                }
+                StrategyConfig::BbrkStr(c) => {
+                    c.sigma.validate_range("bbrk_str.sigma", 0.1, 10.0)?;
+                    c.body.validate_range("bbrk_str.body", 0.0, 1.0)?;
+                    if c.pairs().is_empty() {
+                        return Err(AppError::Msg("bbrk_str 参数组合为空".into()));
+                    }
+                }
+                StrategyConfig::BbrkSma(c) => {
+                    c.sigma.validate_range("bbrk_sma.sigma", 0.1, 10.0)?;
+                    c.smareg.validate_range("bbrk_sma.smareg", 2.0, 2000.0)?;
+                    if c.pairs().is_empty() {
+                        return Err(AppError::Msg("bbrk_sma 参数组合为空".into()));
+                    }
+                }
+                StrategyConfig::BbrkHma(c) => {
+                    c.sigma.validate_range("bbrk_hma.sigma", 0.1, 10.0)?;
+                    c.hmalen.validate_range("bbrk_hma.hmalen", 2.0, 2000.0)?;
+                    if c.pairs().is_empty() {
+                        return Err(AppError::Msg("bbrk_hma 参数组合为空".into()));
+                    }
+                }
+                StrategyConfig::BbrkMax(c) => {
+                    c.malen.validate_range("bbrk_max.malen", 2.0, 2000.0)?;
+                    c.validate_names()?;
+                }
+                StrategyConfig::BbrkBb(c) => {
+                    c.bblen.validate_range("bbrk_bb.bblen", 2.0, 2000.0)?;
+                    c.sigma.validate_range("bbrk_bb.sigma", 0.1, 10.0)?;
+                    c.validate_names()?;
+                }
+                StrategyConfig::BbrkVolEma(c) => {
+                    c.sigma.validate_range("bbrk_vol_ema.sigma", 0.1, 10.0)?;
+                    c.voln.validate_range("bbrk_vol_ema.voln", 2.0, 500.0)?;
+                    c.volmult
+                        .validate_range("bbrk_vol_ema.volmult", 0.5, 30.0)?;
+                    if c.pairs().is_empty() {
+                        return Err(AppError::Msg("bbrk_vol_ema 参数组合为空".into()));
+                    }
+                }
+                StrategyConfig::BbrkAtrEma(c) => {
+                    c.sigma.validate_range("bbrk_atr_ema.sigma", 0.1, 10.0)?;
+                    c.atrthr.validate_range("bbrk_atr_ema.atrthr", 0.1, 5.0)?;
+                    if c.pairs().is_empty() {
+                        return Err(AppError::Msg("bbrk_atr_ema 参数组合为空".into()));
+                    }
+                }
+                StrategyConfig::BbrkSmaEma(c) => {
+                    c.sigma.validate_range("bbrk_sma_ema.sigma", 0.1, 10.0)?;
+                    c.smareg
+                        .validate_range("bbrk_sma_ema.smareg", 2.0, 2000.0)?;
+                    if c.pairs().is_empty() {
+                        return Err(AppError::Msg("bbrk_sma_ema 参数组合为空".into()));
+                    }
+                }
+                StrategyConfig::BbrkHmaEma(c) => {
+                    c.sigma.validate_range("bbrk_hma_ema.sigma", 0.1, 10.0)?;
+                    c.hmalen
+                        .validate_range("bbrk_hma_ema.hmalen", 2.0, 2000.0)?;
+                    if c.pairs().is_empty() {
+                        return Err(AppError::Msg("bbrk_hma_ema 参数组合为空".into()));
+                    }
+                }
+                StrategyConfig::BbrkZlemaEma(c) => {
+                    c.sigma.validate_range("bbrk_zlema_ema.sigma", 0.1, 10.0)?;
+                    c.zlemareg
+                        .validate_range("bbrk_zlema_ema.zlemareg", 2.0, 2000.0)?;
+                    if c.pairs().is_empty() {
+                        return Err(AppError::Msg("bbrk_zlema_ema 参数组合为空".into()));
+                    }
+                }
+                StrategyConfig::BbrkRex(c) => {
+                    c.sigma.validate_range("bbrk_rex.sigma", 0.1, 10.0)?;
+                    c.rexn.validate_range("bbrk_rex.rexn", 2.0, 100.0)?;
+                    if c.pairs().is_empty() {
+                        return Err(AppError::Msg("bbrk_rex 参数组合为空".into()));
+                    }
+                }
+                StrategyConfig::BbrkVol(c) => {
+                    c.sigma.validate_range("bbrk_vol.sigma", 0.1, 10.0)?;
+                    c.voln.validate_range("bbrk_vol.voln", 2.0, 500.0)?;
+                    c.volmult.validate_range("bbrk_vol.volmult", 0.5, 30.0)?;
+                    if c.pairs().is_empty() {
+                        return Err(AppError::Msg("bbrk_vol 参数组合为空".into()));
+                    }
+                }
+                StrategyConfig::BbrkTtm(c) => {
+                    c.sigma.validate_range("bbrk_ttm.sigma", 0.1, 10.0)?;
+                    c.kc.validate_range("bbrk_ttm.kc", 0.5, 5.0)?;
+                    c.ttmn.validate_range("bbrk_ttm.ttmn", 2.0, 100.0)?;
+                    if c.pairs().is_empty() {
+                        return Err(AppError::Msg("bbrk_ttm 参数组合为空".into()));
+                    }
+                }
+                StrategyConfig::BbrkCross(c) => {
+                    c.sigma.validate_range("bbrk_cross.sigma", 0.1, 10.0)?;
+                    if c.values().is_empty() {
+                        return Err(AppError::Msg("bbrk_cross 参数组合为空".into()));
+                    }
+                }
+                StrategyConfig::BbrkM2(c) => {
+                    c.sigma.validate_range("bbrk_m2.sigma", 0.1, 10.0)?;
+                    if c.values().is_empty() {
+                        return Err(AppError::Msg("bbrk_m2 参数组合为空".into()));
+                    }
+                }
+                StrategyConfig::BbrkM3(c) => {
+                    c.sigma.validate_range("bbrk_m3.sigma", 0.1, 10.0)?;
+                    if c.values().is_empty() {
+                        return Err(AppError::Msg("bbrk_m3 参数组合为空".into()));
+                    }
+                }
+                StrategyConfig::BbrkOrth(c) => {
+                    c.sigma.validate_range("bbrk_orth.sigma", 0.1, 10.0)?;
+                    if c.values().is_empty() {
+                        return Err(AppError::Msg("bbrk_orth 参数组合为空".into()));
+                    }
+                }
+                StrategyConfig::VwapTrend(c) => {
+                    c.reset.validate_range("vwap_trend.reset", 0.0, 4.0)?;
+                    if c.modes().is_empty() {
+                        return Err(AppError::Msg("vwap_trend 参数组合为空".into()));
+                    }
+                }
                 StrategyConfig::RSI2(c) => {
                     c.buy.validate_range("rsi2.buy", 0.0, 100.0)?;
                     c.sell.validate_range("rsi2.sell", 0.0, 100.0)?;
                     if c.pairs().is_empty() {
                         return Err(AppError::Msg("rsi2 参数组合为空".into()));
+                    }
+                }
+                StrategyConfig::Vwap(c) => {
+                    c.thresh.validate_range("vwap.thresh", 0.5, 10.0)?;
+                    if c.values().is_empty() {
+                        return Err(AppError::Msg("vwap 参数组合为空".into()));
+                    }
+                }
+                StrategyConfig::Edma(c) => {
+                    c.period.validate()?;
+                }
+                StrategyConfig::Atma(c) => {
+                    c.up.validate()?;
+                    c.down.validate()?;
+                }
+                StrategyConfig::Sgma(c) => {
+                    c.period.validate()?;
+                }
+                StrategyConfig::Macd(c) => {
+                    if c.triples().is_empty() {
+                        return Err(AppError::Msg("macd 参数组合为空".into()));
+                    }
+                    for (f, s, g) in c.triples() {
+                        if f == 0 || s == 0 || g == 0 || f >= s {
+                            return Err(AppError::Msg(format!(
+                                "macd 非法三元组 ({f},{s},{g})：需 0<fast<slow, signal>0"
+                            )));
+                        }
                     }
                 }
                 _ => {
@@ -215,6 +445,10 @@ impl StrategyConfig {
             | StrategyConfig::Tilson(c)
             | StrategyConfig::Trima(c)
             | StrategyConfig::Wilders(c)
+            | StrategyConfig::Smma(c)
+            | StrategyConfig::Ehma(c)
+            | StrategyConfig::Frama(c)
+            | StrategyConfig::Dma(c)
             | StrategyConfig::Wma(c)
             | StrategyConfig::Vwma(c)
             | StrategyConfig::Vidya(c)
@@ -227,12 +461,42 @@ impl StrategyConfig {
             | StrategyConfig::DualThrust(_)
             | StrategyConfig::RBreaker(_)
             | StrategyConfig::Fiali(_)
+            | StrategyConfig::Edma(_)
+            | StrategyConfig::Atma(_)
+            | StrategyConfig::Sgma(_)
             | StrategyConfig::Aberration(_)
             | StrategyConfig::ATRBand(_)
+            | StrategyConfig::BbrkAtr(_)
             | StrategyConfig::Keltner(_)
             | StrategyConfig::BBMR(_)
             | StrategyConfig::Bbrk(_)
-            | StrategyConfig::RSI2(_) => None,
+            | StrategyConfig::BbrkAdx(_)
+            | StrategyConfig::BbrkTrail(_)
+            | StrategyConfig::BbrkDon(_)
+            | StrategyConfig::BbrkPctb(_)
+            | StrategyConfig::BbrkSqz(_)
+            | StrategyConfig::BbrkBw(_)
+            | StrategyConfig::BbrkStr(_)
+            | StrategyConfig::BbrkSma(_)
+            | StrategyConfig::BbrkHma(_)
+            | StrategyConfig::BbrkMax(_)
+            | StrategyConfig::BbrkBb(_)
+            | StrategyConfig::BbrkVolEma(_)
+            | StrategyConfig::BbrkAtrEma(_)
+            | StrategyConfig::BbrkSmaEma(_)
+            | StrategyConfig::BbrkHmaEma(_)
+            | StrategyConfig::BbrkZlemaEma(_)
+            | StrategyConfig::BbrkRex(_)
+            | StrategyConfig::BbrkVol(_)
+            | StrategyConfig::BbrkTtm(_)
+            | StrategyConfig::BbrkCross(_)
+            | StrategyConfig::BbrkM2(_)
+            | StrategyConfig::BbrkM3(_)
+            | StrategyConfig::BbrkOrth(_)
+            | StrategyConfig::VwapTrend(_)
+            | StrategyConfig::RSI2(_)
+            | StrategyConfig::Macd(_)
+            | StrategyConfig::Vwap(_) => None,
             // 双均线无单一 period, 调用方走 validate() 的 EmaCross 分支。
             StrategyConfig::EmaCross(_) => None,
         }
@@ -313,6 +577,10 @@ pub enum StrategyConfig {
     Trima(MaGridCfg),
     Wilders(MaGridCfg),
     Wma(MaGridCfg),
+    Smma(MaGridCfg),
+    Ehma(MaGridCfg),
+    Frama(MaGridCfg),
+    Dma(MaGridCfg),
     Vwma(MaGridCfg),
     Vidya(MaGridCfg),
     McGinley(MaGridCfg),
@@ -325,14 +593,44 @@ pub enum StrategyConfig {
     RBreaker(RBreakerConfig),
     Fiali(FialiConfig),
     Aberration(AberrationConfig),
+    Edma(EdmaConfig),
+    Atma(AtmaConfig),
+    Sgma(SgmaConfig),
     #[serde(rename = "atr_band")]
     ATRBand(ATRBandConfig),
     Keltner(KeltnerConfig),
     #[serde(rename = "bbmr")]
     BBMR(BBMRConfig),
     Bbrk(BBRKConfig),
+    BbrkAdx(BbrkAdxConfig),
+    BbrkTrail(BbrkTrailConfig),
+    BbrkDon(BbrkDonConfig),
+    BbrkPctb(BbrkPctbConfig),
+    BbrkSqz(BbrkSqzConfig),
+    BbrkBw(BbrkBwConfig),
+    BbrkAtr(BbrkAtrConfig),
+    BbrkStr(BbrkStrConfig),
+    BbrkSma(BbrkSmaConfig),
+    BbrkHma(BbrkHmaConfig),
+    BbrkMax(BbrkMaxConfig),
+    BbrkBb(BbrkBbConfig),
+    BbrkVolEma(BbrkVolEmaConfig),
+    BbrkAtrEma(BbrkAtrEmaConfig),
+    BbrkSmaEma(BbrkSmaEmaConfig),
+    BbrkHmaEma(BbrkHmaEmaConfig),
+    BbrkZlemaEma(BbrkZlemaEmaConfig),
+    BbrkRex(BbrkRexConfig),
+    BbrkVol(BbrkVolConfig),
+    BbrkTtm(BbrkTtmConfig),
+    BbrkCross(BbrkCrossConfig),
+    BbrkM2(BbrkM2Config),
+    BbrkM3(BbrkM3Config),
+    BbrkOrth(BbrkOrthConfig),
+    VwapTrend(VwapTrendConfig),
     #[serde(rename = "rsi2")]
     RSI2(RSI2Config),
+    Vwap(VwapConfig),
+    Macd(MacdConfig),
     EmaCross(EmaCrossConfig),
 }
 
@@ -528,6 +826,27 @@ mod tests {
             "type = \"bbmr\"\nsigma = { start = 2.0, end = 3.0, step = 0.5 }",
             "type = \"rsi2\"\nbuy = { start = 5.0, end = 10.0, step = 5.0 }\nsell = { start = 90.0, end = 95.0, step = 5.0 }",
             "type = \"bbrk\"\nsigma = { start = 1.5, end = 2.5, step = 0.5 }",
+            "type = \"bbrk_adx\"\nsigma = { start = 2.0, end = 3.0, step = 0.5 }\nadx = { start = 20.0, end = 25.0, step = 5.0 }",
+            "type = \"bbrk_trail\"\nsigma = { start = 2.0, end = 3.0, step = 0.5 }\ntrailk = { start = 2.0, end = 3.0, step = 1.0 }",
+            "type = \"bbrk_don\"\nsigma = { start = 2.0, end = 2.5, step = 0.5 }\nexitn = { start = 2.0, end = 3.0, step = 1.0 }",
+            "type = \"bbrk_pctb\"\nsigma = { start = 2.0, end = 2.5, step = 0.5 }\nexitb = { start = 0.2, end = 0.5, step = 0.3 }",
+            "type = \"bbrk_sqz\"\nsigma = { start = 2.0, end = 2.5, step = 0.5 }\nsqzn = { start = 20.0, end = 50.0, step = 30.0 }",
+            "type = \"bbrk_bw\"\nsigma = { start = 2.0, end = 2.5, step = 0.5 }\nbwmult = { start = 3.0, end = 6.0, step = 3.0 }",
+            "type = \"bbrk_atr\"\nsigma = { start = 2.0, end = 2.5, step = 0.5 }\natrthr = { start = 0.8, end = 1.0, step = 0.2 }",
+            "type = \"bbrk_str\"\nsigma = { start = 2.0, end = 2.5, step = 0.5 }\nbody = { start = 0.3, end = 0.5, step = 0.2 }",
+            "type = \"bbrk_sma\"\nsigma = 2.5\nsmareg = 100.0",
+            "type = \"bbrk_hma\"\nsigma = 2.5\nhmalen = 100.0",
+            "type = \"bbrk_max\"\nma = [\"sma\", \"hma\"]\nmalen = 100.0",
+            "type = \"bbrk_bb\"\nma = [\"sma\"]\nbblen = 20.0\nsigma = 2.5",
+            "type = \"bbrk_vol_ema\"\nsigma = 2.5\nvoln = 10.0\nvolmult = 1.5",
+            "type = \"bbrk_atr_ema\"\nsigma = 2.5\natrthr = 1.0",
+            "type = \"bbrk_sma_ema\"\nsigma = 2.5\nsmareg = 100.0",
+            "type = \"bbrk_hma_ema\"\nsigma = 2.5\nhmalen = 100.0",
+            "type = \"bbrk_zlema_ema\"\nsigma = 2.5\nzlemareg = 100.0",
+            "type = \"bbrk_rex\"\nsigma = { start = 2.0, end = 2.5, step = 0.5 }\nrexn = { start = 3.0, end = 5.0, step = 2.0 }",
+            "type = \"bbrk_vol\"\nsigma = 2.5\nvoln = 10.0\nvolmult = 1.5",
+            "type = \"bbrk_ttm\"\nsigma = 2.5\nkc = 1.5\nttmn = 5.0",
+            "type = \"vwap_trend\"\nreset = { start = 0.0, end = 1.0, step = 1.0 }",
         ] {
             let toml = format!(
                 "[data]\ntype = \"binance\"\ndir = \"/tmp\"\nsymbol = \"BTCUSDT\"\ntimeframe = \"1d\"\n\n[backtest]\ninitial_balance = 10000.0\n\n[[strategy]]\n{st}\n"

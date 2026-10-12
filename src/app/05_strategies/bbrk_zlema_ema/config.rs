@@ -1,0 +1,48 @@
+use serde::Deserialize;
+
+use crate::config::F64Param;
+
+/// BBRK+HMA regime门（入场验证#6）：SMA门嫌滞后，换 Hull 均线
+/// （平滑+低滞后，vector-ta 现成指标直接用）。
+/// close > HMA(L) 只允许多头，close < HMA(L) 只允许空头，相等不开仓。
+/// L{50,100,200,400} × σ3档 = 12组+BBRK对照，与 SMA 版逐位可比。
+/// 离场保持中线。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BbrkZlemaEmaConfig {
+    pub sigma: F64Param,
+    pub zlemareg: F64Param,
+}
+
+impl BbrkZlemaEmaConfig {
+    pub fn pairs(&self) -> Vec<(f64, usize)> {
+        let ss = self.sigma.values();
+        let ls = self.zlemareg.values();
+        let mut out = Vec::new();
+        for &s in &ss {
+            for &l in &ls {
+                out.push((s, l.round() as usize));
+            }
+        }
+        out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::RangeParam;
+
+    #[test]
+    fn pairs_cartesian() {
+        let c = BbrkZlemaEmaConfig {
+            sigma: F64Param::Single(2.5),
+            zlemareg: F64Param::Range(RangeParam {
+                start: 50.0,
+                end: 100.0,
+                step: 50.0,
+            }),
+        };
+        assert_eq!(c.pairs(), vec![(2.5, 50), (2.5, 100)]);
+    }
+}

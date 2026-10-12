@@ -24,17 +24,8 @@ impl BBRKStrategy {
 }
 
 /// 纯决策函数(可手算单测)。
-pub fn bbrk_signals(
-    close: &[f64],
-    lower: &[f64],
-    mid: &[f64],
-    upper: &[f64],
-) -> Vec<Signal> {
-    let n = close
-        .len()
-        .min(lower.len())
-        .min(mid.len())
-        .min(upper.len());
+pub fn bbrk_signals(close: &[f64], lower: &[f64], mid: &[f64], upper: &[f64]) -> Vec<Signal> {
+    let n = close.len().min(lower.len()).min(mid.len()).min(upper.len());
     let mut sig = vec![Signal::Hold; n];
     let mut pos: i8 = 0;
     for i in 0..n {
@@ -115,7 +106,12 @@ impl BBRKStrategy {
             Ok(v) => v,
             Err(_) => return Ok(vec![Signal::Hold; close.len()]),
         };
-        Ok(bbrk_signals(close, &bb.lower_band, &bb.middle_band, &bb.upper_band))
+        Ok(bbrk_signals(
+            close,
+            &bb.lower_band,
+            &bb.middle_band,
+            &bb.upper_band,
+        ))
     }
 }
 

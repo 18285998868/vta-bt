@@ -24,7 +24,11 @@ mod tests {
     #[test]
     fn values_expand() {
         let c = BBRKConfig {
-            sigma: F64Param::Range(RangeParam { start: 1.5, end: 2.5, step: 0.5 }),
+            sigma: F64Param::Range(RangeParam {
+                start: 1.5,
+                end: 2.5,
+                step: 0.5,
+            }),
         };
         assert_eq!(c.values(), vec![1.5, 2.0, 2.5]);
     }

@@ -49,9 +49,9 @@ pub fn price_cross_signal(indicator: &[f64], close: &[f64]) -> Vec<Signal> {
         if indicator[i].is_nan() || indicator[i - 1].is_nan() {
             continue;
         }
-        if close[i - 1] < indicator[i - 1] && close[i] >= indicator[i] {
+        if close[i - 1] < indicator[i - 1] && close[i] > indicator[i] {
             sig[i] = Signal::Buy;
-        } else if close[i - 1] > indicator[i - 1] && close[i] <= indicator[i] {
+        } else if close[i - 1] > indicator[i - 1] && close[i] < indicator[i] {
             sig[i] = Signal::Sell;
         }
     }
@@ -275,6 +275,78 @@ pub fn aggregate_days(
     days
 }
 
+/// Money Flow Index（Bollinger Method II 确认用，官方口径：MFI 周期取带宽
+/// 周期之半，BB20 → MFI10）。TP=(H+L+C)/3；MF=TP×V；N 根内 TP 上升根的 MF
+/// 求和为 pos、下降根为 neg；MFI=100−100/(1+pos/neg)。
+/// 首个完整窗不足（下标 <N）、窗内任一比较无效（非有限/量能<=0）、
+/// pos==neg==0 → NaN，调用方统一按 NaN→Hold（P7）。O(n) 滑动窗。
+pub fn money_flow_index(
+    high: &[f64],
+    low: &[f64],
+    close: &[f64],
+    volume: &[f64],
+    n: usize,
+) -> Vec<f64> {
+    let len = high.len().min(low.len()).min(close.len()).min(volume.len());
+    let mut out = vec![f64::NAN; len];
+    if n < 2 || len <= n {
+        return out;
+    }
+    let tp: Vec<f64> = (0..len)
+        .map(|i| {
+            let (h, l, c, v) = (high[i], low[i], close[i], volume[i]);
+            if h.is_finite() && l.is_finite() && c.is_finite() && v.is_finite() && v > 0.0 {
+                (h + l + c) / 3.0
+            } else {
+                f64::NAN
+            }
+        })
+        .collect();
+    // 比较项 j≥1：(pos, neg, 无效标记)；out[i] 覆盖比较窗 j∈[i−n+1, i]。
+    let mut pos_sum = 0.0;
+    let mut neg_sum = 0.0;
+    let mut bad = 0usize;
+    let mut win: std::collections::VecDeque<(f64, f64, bool)> = std::collections::VecDeque::new();
+    for i in 1..len {
+        let entry = if tp[i].is_finite() && tp[i - 1].is_finite() {
+            let mf = tp[i] * volume[i];
+            if tp[i] > tp[i - 1] {
+                (mf, 0.0, false)
+            } else if tp[i] < tp[i - 1] {
+                (0.0, mf, false)
+            } else {
+                (0.0, 0.0, false)
+            }
+        } else {
+            (0.0, 0.0, true)
+        };
+        win.push_back(entry);
+        pos_sum += entry.0;
+        neg_sum += entry.1;
+        if entry.2 {
+            bad += 1;
+        }
+        if win.len() > n {
+            let old = win.pop_front().expect("刚 push 后超窗，队非空");
+            pos_sum -= old.0;
+            neg_sum -= old.1;
+            if old.2 {
+                bad -= 1;
+            }
+        }
+        if win.len() == n {
+            out[i] = if bad > 0 {
+                f64::NAN
+            } else if neg_sum == 0.0 {
+                if pos_sum > 0.0 { 100.0 } else { f64::NAN }
+            } else {
+                100.0 - 100.0 / (1.0 + pos_sum / neg_sum)
+            };
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -472,5 +544,55 @@ mod tests {
         assert_eq!(minutes("1h"), 60.0);
         assert_eq!(minutes("4h"), 240.0);
         assert_eq!(minutes("1d"), 1440.0);
+    }
+
+    #[test]
+    fn test_mfi_all_up_is_100() {
+        // TP 严格递增、量恒定：neg==0 → 100；前 N 个下标为 NaN。
+        let n = 10;
+        let t: Vec<f64> = (0..15).map(|i| i as f64).collect();
+        let v = vec![100.0; 15];
+        let m = money_flow_index(&t, &t, &t, &v, n);
+        assert_eq!(m.len(), 15);
+        assert!(m[..n].iter().all(|x| !x.is_finite()));
+        for x in &m[n..] {
+            assert_eq!(*x, 100.0);
+        }
+    }
+
+    #[test]
+    fn test_mfi_all_down_is_0() {
+        let n = 10;
+        let t: Vec<f64> = (0..15).map(|i| (15 - i) as f64).collect();
+        let v = vec![100.0; 15];
+        let m = money_flow_index(&t, &t, &t, &v, n);
+        assert!(m[..n].iter().all(|x| !x.is_finite()));
+        for x in &m[n..] {
+            assert_eq!(*x, 0.0);
+        }
+    }
+
+    #[test]
+    fn test_mfi_hand_computed() {
+        // TP=[10,11,10]，V=100：j1 pos=1100，j2 neg=1000；
+        // n=2 → 100−100/(1+1.1)=52.3809…。
+        let t = vec![10.0, 11.0, 10.0];
+        let v = vec![100.0; 3];
+        let m = money_flow_index(&t, &t, &t, &v, 2);
+        assert_eq!(m.len(), 3);
+        assert!(!m[0].is_finite() && !m[1].is_finite());
+        assert!((m[2] - 52.380_952_380_952_38).abs() < 1e-9, "m={m:?}");
+    }
+
+    #[test]
+    fn test_mfi_bad_data_is_nan() {
+        // 零量能 / NaN → 含该比较的窗全 NaN（P7，不静默）。
+        let t = vec![10.0, 11.0, 12.0, 13.0];
+        let z = vec![100.0, 0.0, 100.0, 100.0];
+        let m = money_flow_index(&t, &t, &t, &z, 2);
+        assert!(m.iter().all(|x| !x.is_finite()));
+        let nan = vec![f64::NAN; 4];
+        let m2 = money_flow_index(&nan, &nan, &nan, &vec![100.0; 4], 2);
+        assert!(m2.iter().all(|x| !x.is_finite()));
     }
 }

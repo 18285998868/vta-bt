@@ -1,28 +1,60 @@
 pub mod aberration;
 pub mod alma;
+pub mod atma;
 pub mod atrband;
 pub mod bbmr;
 pub mod bbrk;
+pub mod bbrk_adx;
+pub mod bbrk_atr;
+pub mod bbrk_atr_ema;
+pub mod bbrk_bb;
+pub mod bbrk_bw;
+pub mod bbrk_cross;
+pub mod bbrk_don;
+pub mod bbrk_hma;
+pub mod bbrk_hma_ema;
+pub mod bbrk_m2;
+pub mod bbrk_m3;
+pub mod bbrk_max;
+pub mod bbrk_orth;
+pub mod bbrk_pctb;
+pub mod bbrk_rex;
+pub mod bbrk_sma;
+pub mod bbrk_sma_ema;
+pub mod bbrk_sqz;
+pub mod bbrk_str;
+pub mod bbrk_trail;
+pub mod bbrk_ttm;
+pub mod bbrk_vol;
+pub mod bbrk_vol_ema;
+pub mod bbrk_zlema_ema;
 pub mod build;
 pub mod dema;
+pub mod dma;
 pub mod dualthrust;
+pub mod edma;
+pub mod ehma;
 pub mod ema;
 pub mod ema_cross;
 pub mod fiali;
+pub mod frama;
 pub mod fwma;
 pub mod hma;
 pub mod jma;
 pub mod kama;
 pub mod keltner;
 pub mod linreg;
+pub mod macd;
 pub mod mcginley;
 pub mod pwma;
 pub mod rbreaker;
 pub mod rsi2;
+pub mod sgma;
 mod shared;
 pub mod sinwma;
 pub mod sma;
 pub mod sma_cd;
+pub mod smma;
 pub mod ssf;
 pub mod ssf_cd;
 pub mod ssf_st;
@@ -33,6 +65,8 @@ pub mod tilson;
 pub mod trima;
 pub mod turtle;
 pub mod vidya;
+pub mod vwap;
+pub mod vwap_trend;
 pub mod vwma;
 pub mod wilders;
 pub mod wma;
@@ -40,8 +74,8 @@ pub mod zlema;
 
 pub use shared::{
     DayBar, PoleCount, Signal, aggregate_days, bars_per_year, candle_direction_filter,
-    expand_f64_range, is_known_timeframe, price_cross_signal, rolling_highest, rolling_lowest,
-    shift_right_1, supersmoother_3_pole, utc_day_index,
+    expand_f64_range, is_known_timeframe, money_flow_index, price_cross_signal, rolling_highest,
+    rolling_lowest, shift_right_1, supersmoother_3_pole, utc_day_index,
 };
 pub use sma_cd::SmaCdStrategy;
 

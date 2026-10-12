@@ -23,7 +23,9 @@ fn params_to_json(params: &str) -> String {
         return format!("{{\"fast\":{},\"slow\":{}}}", f, s);
     }
     // 新策略 param_str 原样转 JSON 键(键名即含义, 各策略内唯一)。
-    for prefix in ["entry=", "n=", "stop=", "k=", "sigma=", "buy="] {
+    for prefix in [
+        "entry=", "n=", "stop=", "k=", "sigma=", "buy=", "reset=", "ma=",
+    ] {
         if clean.strip_prefix(prefix).is_some() {
             let mut parts = Vec::new();
             for kv in clean.split(',') {
@@ -99,6 +101,51 @@ fn strategy_params_value(params: &str) -> u32 {
             .unwrap_or(0);
         return n.saturating_mul(1_000_000).saturating_add(second);
     }
+    // BBRK_MAX "ma=NAME,malen=L" → idx(NAME)*1M+L(idx按 MA_NAMES 顺序)。各策略内唯一。
+    // BBRK_BB "ma=NAME,len=L,sigma=S" → idx(NAME)*10M+L*10k+round(S*1000)(idx按 BB_MA_NAMES 顺序)。
+    if let Some(rest) = clean.strip_prefix("ma=") {
+        if rest.contains("malen=") {
+            let mut it = rest.split(',');
+            let name = it.next().unwrap_or("");
+            let len: u32 = it
+                .next()
+                .unwrap_or("0")
+                .split('=')
+                .nth(1)
+                .unwrap_or("0")
+                .parse::<u32>()
+                .unwrap_or(0);
+            let idx = crate::strategies::bbrk_max::MA_NAMES
+                .iter()
+                .position(|&m| m == name)
+                .unwrap_or(0) as u32;
+            return idx.saturating_mul(1_000_000).saturating_add(len);
+        }
+        let mut len: u32 = 0;
+        let mut sig: u32 = 0;
+        let name = rest.split(',').next().unwrap_or("");
+        for kv in rest.split(',').skip(1) {
+            let mut kvit = kv.splitn(2, '=');
+            match (kvit.next().unwrap_or(""), kvit.next().unwrap_or("0")) {
+                ("len", v) => len = v.parse::<u32>().unwrap_or(0),
+                ("sigma", v) => {
+                    sig = v
+                        .parse::<f64>()
+                        .map(|f| (f * 1000.0).round() as u32)
+                        .unwrap_or(0)
+                }
+                _ => {}
+            }
+        }
+        let idx = crate::strategies::bbrk_bb::BB_MA_NAMES
+            .iter()
+            .position(|&m| m == name)
+            .unwrap_or(0) as u32;
+        return idx
+            .saturating_mul(10_000_000)
+            .saturating_add(len.saturating_mul(10_000))
+            .saturating_add(sig);
+    }
     // R-Breaker "stop=S" → round(S*100); ATR带/Keltner "k=K" → round(K*1000);
     // BBMR "sigma=S" → round(S*1000)。各策略内唯一。
     if let Some(rest) = clean.strip_prefix("stop=") {
@@ -114,6 +161,49 @@ fn strategy_params_value(params: &str) -> u32 {
             .unwrap_or(0);
     }
     if let Some(rest) = clean.strip_prefix("sigma=") {
+        // BBRK_ADX "sigma=S,adx=T" / BBRK_TRAIL "sigma=S,trailk=K"
+        // → round(S*1000)*1M+round(T*10)，各策略内唯一。
+        // 三键形如 "sigma=S,kc=K,ttmn=N"(BBRK_TTM) 或 "sigma=S,voln=N,volmult=M"(BBRK_VOL)：
+        // round(S*100)*1M + 后续键折叠(h=h*1000+slot，整数键直接取值、小数键×10)，
+        // 各策略网格内唯一（strategy 列隔离跨策略）。
+        if rest.matches(',').count() >= 2 {
+            let mut it = rest.split(',');
+            let s: u32 = it
+                .next()
+                .unwrap_or("0")
+                .parse::<f64>()
+                .map(|v| (v * 100.0).round() as u32)
+                .unwrap_or(0);
+            let mut h: u32 = 0;
+            for kv in it {
+                let v = kv.split('=').nth(1).unwrap_or("0");
+                let slot: u32 = v.parse::<u32>().unwrap_or_else(|_| {
+                    v.parse::<f64>()
+                        .map(|f| (f * 10.0).round() as u32)
+                        .unwrap_or(0)
+                });
+                h = h.saturating_mul(1000).saturating_add(slot);
+            }
+            return s.saturating_mul(1_000_000).saturating_add(h);
+        }
+        if let Some(comma) = rest.find(',') {
+            let s: u32 = rest[..comma]
+                .parse::<f64>()
+                .map(|v| (v * 1000.0).round() as u32)
+                .unwrap_or(0);
+            let t: u32 = rest[comma + 1..]
+                .split('=')
+                .nth(1)
+                .unwrap_or("0")
+                .parse::<f64>()
+                .map(|v| (v * 10.0).round() as u32)
+                .unwrap_or(0);
+            // 纯 sigma 形如 "2.5" 无逗号才走旧口径；含逗号但解析失败则回落 0(测试锁定)。
+            if s != 0 || t != 0 {
+                return s.saturating_mul(1_000_000).saturating_add(t);
+            }
+            return 0;
+        }
         return rest
             .parse::<f64>()
             .map(|v| (v * 1000.0).round() as u32)
@@ -137,6 +227,15 @@ fn strategy_params_value(params: &str) -> u32 {
             .map(|v| (v * 10.0).round() as u32)
             .unwrap_or(0);
         return b.saturating_mul(10_000).saturating_add(s);
+    }
+    // VWAP_TREND "reset=M"(0=连续24h,1=UTC日切) → M。各策略内唯一。
+    if let Some(rest) = clean.strip_prefix("reset=") {
+        return rest
+            .split(',')
+            .next()
+            .unwrap_or("0")
+            .parse::<u32>()
+            .unwrap_or(0);
     }
     if let Some(rest) = clean.strip_prefix("period=") {
         rest.split(',')
@@ -870,6 +969,38 @@ mod tests {
         assert_eq!(strategy_params_value("sigma=2.5"), 2500);
         assert_eq!(strategy_params_value("buy=10,sell=90"), 1_000_900);
         assert_eq!(strategy_params_value("buy=5,sell=95"), 500_950);
+        assert_eq!(strategy_params_value("sigma=2.5,adx=20"), 2_500_000_200);
+        assert_eq!(strategy_params_value("sigma=2,adx=25"), 2_000_000_250);
+        assert_eq!(strategy_params_value("sigma=2.5,exitn=10"), 2_500_000_100);
+        assert_eq!(strategy_params_value("sigma=2.5,exitb=0.5"), 2_500_000_005);
+        assert_eq!(strategy_params_value("sigma=2.5,exitb=0.8"), 2_500_000_008);
+        assert_eq!(strategy_params_value("sigma=2.5,sqzn=50"), 2_500_000_500);
+        assert_eq!(strategy_params_value("sigma=2.5,bwmult=6"), 2_500_000_060);
+        assert_eq!(strategy_params_value("sigma=2.5,body=0.5"), 2_500_000_005);
+        assert_eq!(strategy_params_value("sigma=2.5,smareg=100"), 2_500_001_000);
+        assert_eq!(strategy_params_value("sigma=2.5,hmalen=100"), 2_500_001_000);
+        assert_eq!(strategy_params_value("ma=hma,malen=100"), 7_000_100);
+        assert_eq!(strategy_params_value("ma=sma,malen=200"), 200);
+        assert_eq!(strategy_params_value("ma=sma,len=20,sigma=2.5"), 202_500);
+        assert_eq!(strategy_params_value("ma=hma,len=5,sigma=3"), 20_053_000);
+        assert_eq!(
+            params_to_json("ma=hma,malen=100"),
+            "{\"ma\":hma,\"malen\":100}"
+        );
+        assert_eq!(strategy_params_value("sigma=2.5,rexn=7"), 2_500_000_070);
+        assert_eq!(
+            strategy_params_value("sigma=2.5,voln=10,volmult=1.5"),
+            250_010_015
+        );
+        assert_eq!(strategy_params_value("sigma=2.5,atrthr=1"), 2_500_000_010);
+        assert_eq!(
+            strategy_params_value("sigma=2.5,kc=1.5,ttmn=5"),
+            250_015_005
+        );
+        assert_eq!(strategy_params_value("sigma=3,kc=2.5,ttmn=10"), 300_025_010);
+        assert_eq!(strategy_params_value("reset=0"), 0);
+        assert_eq!(strategy_params_value("reset=1"), 1);
+        assert_eq!(strategy_params_value("sigma=2.5,trailk=3"), 2_500_000_030);
         assert_eq!(strategy_params_value("base"), 0);
     }
 

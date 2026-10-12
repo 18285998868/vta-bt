@@ -1,0 +1,141 @@
+[data]
+type = "binance"
+dir = "/data/nutilustrader/data/futures/um/daily/klines"
+symbol = ["BCHUSDT","BTCUSDT","ETHUSDT","XRPUSDT","LTCUSDT","TRXUSDT","LINKUSDT","XLMUSDT","ETCUSDT","ADAUSDT","XMRUSDT","DASHUSDT","ZECUSDT","XTZUSDT","ATOMUSDT","BNBUSDT","ONTUSDT","BATUSDT","IOTAUSDT","VETUSDT","NEOUSDT","QTUMUSDT","IOSTUSDT","THETAUSDT","ALGOUSDT","ZILUSDT","KNCUSDT","ZRXUSDT","COMPUSDT","DOGEUSDT","KAVAUSDT","BANDUSDT","RLCUSDT","SNXUSDT","DOTUSDT","CRVUSDT","TRBUSDT","RUNEUSDT","SUSHIUSDT","EGLDUSDT","SOLUSDT","ICXUSDT","STORJUSDT","UNIUSDT","ENJUSDT","YFIUSDT","KSMUSDT","NEARUSDT","AAVEUSDT","FILUSDT","RSRUSDT","BELUSDT","AXSUSDT","ZENUSDT","SKLUSDT","GRTUSDT","1INCHUSDT","CHZUSDT","SANDUSDT","ANKRUSDT","RVNUSDT","SFPUSDT","COTIUSDT","CHRUSDT","MANAUSDT","ALICEUSDT","HBARUSDT","ONEUSDT","CELRUSDT","HOTUSDT","MTLUSDT","OGNUSDT","1000SHIBUSDT","AVAXUSDT","GTCUSDT","IOTXUSDT","C98USDT","MASKUSDT","DYDXUSDT","1000XECUSDT","GALAUSDT","CELOUSDT","ARUSDT","ARPAUSDT","CTSIUSDT","LPTUSDT","ENSUSDT","PEOPLEUSDT","ROSEUSDT","DUSKUSDT","FLOWUSDT","IMXUSDT","API3USDT","GMTUSDT","APEUSDT","WOOUSDT","JASMYUSDT","OPUSDT","INJUSDT","STGUSDT"]
+timeframe = ["15m", "30m", "12h", "1d"]
+start_date = "2020-01-01"
+end_date = "2026-09-30"
+
+[backtest]
+initial_balance = 10000.0
+delay_bars = 1
+fee_bps = 0.0
+slippage_bps = 0.0
+
+[output]
+dir = "/data/nutilustrader/reports/ma_extra_tfs"
+detail = false
+overwrite = false
+
+[[strategy]]
+type = "alma"
+period = { start = 1, end = 500, step = 1 }
+
+[[strategy]]
+type = "dema"
+period = { start = 1, end = 500, step = 1 }
+
+[[strategy]]
+type = "dma"
+period = { start = 1, end = 500, step = 1 }
+
+[[strategy]]
+type = "ema"
+period = { start = 1, end = 500, step = 1 }
+
+[[strategy]]
+type = "edma"
+period = { start = 1, end = 500, step = 1 }
+offset = { start = 0, end = 0, step = 1 }
+
+[[strategy]]
+type = "ehma"
+period = { start = 1, end = 500, step = 1 }
+
+[[strategy]]
+type = "fwma"
+period = { start = 1, end = 500, step = 1 }
+
+[[strategy]]
+type = "frama"
+period = { start = 1, end = 500, step = 1 }
+
+[[strategy]]
+type = "hma"
+period = { start = 1, end = 500, step = 1 }
+
+[[strategy]]
+type = "jma"
+period = { start = 1, end = 500, step = 1 }
+
+[[strategy]]
+type = "kama"
+period = { start = 1, end = 500, step = 1 }
+
+[[strategy]]
+type = "lin_reg"
+period = { start = 1, end = 500, step = 1 }
+
+[[strategy]]
+type = "mc_ginley"
+period = { start = 1, end = 500, step = 1 }
+
+[[strategy]]
+type = "pwma"
+period = { start = 1, end = 500, step = 1 }
+
+[[strategy]]
+type = "sin_wma"
+period = { start = 1, end = 500, step = 1 }
+
+[[strategy]]
+type = "sma"
+period = { start = 1, end = 500, step = 1 }
+
+[[strategy]]
+type = "smma"
+period = { start = 1, end = 500, step = 1 }
+
+[[strategy]]
+type = "ssf"
+period = { start = 1, end = 500, step = 1 }
+
+[[strategy]]
+type = "ssf_st"
+period = { start = 1, end = 500, step = 1 }
+
+[[strategy]]
+type = "swma"
+period = { start = 1, end = 500, step = 1 }
+
+[[strategy]]
+type = "tema"
+period = { start = 1, end = 500, step = 1 }
+
+[[strategy]]
+type = "tilson"
+period = { start = 1, end = 500, step = 1 }
+
+[[strategy]]
+type = "trima"
+period = { start = 1, end = 500, step = 1 }
+
+[[strategy]]
+type = "vidya"
+period = { start = 1, end = 500, step = 1 }
+
+[[strategy]]
+type = "vwma"
+period = { start = 1, end = 500, step = 1 }
+
+[[strategy]]
+type = "wma"
+period = { start = 1, end = 500, step = 1 }
+
+[[strategy]]
+type = "wilders"
+period = { start = 1, end = 500, step = 1 }
+
+[[strategy]]
+type = "zlma"
+period = { start = 1, end = 500, step = 1 }
+
+[[strategy]]
+type = "atma"
+up = { start = 1, end = 500, step = 25 }
+down = { start = 1, end = 500, step = 25 }
+
+[[strategy]]
+type = "sgma"
+period = { start = 1, end = 500, step = 1 }
+poly_order = { start = 2, end = 2, step = 1 }
