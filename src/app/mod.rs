@@ -89,6 +89,7 @@ fn combo_parquet_path(temps_dir: &str, symbol: &str, tf: &str, strategy: &str, f
 struct ComboCtx {
     balance: f64,
     detail: bool,
+    fixed_curves: bool,
     overwrite: bool,
     temps_dir: String,
     detail_dir: String,
@@ -176,18 +177,21 @@ fn run_combo(
         let mut run_rows = Vec::with_capacity(n);
         for start in (0..n).step_by(chunk.max(1)) {
             let end = (start + chunk).min(n);
-            let sims: Vec<(String, crate::engine::SimResult)> = (start..end)
+            let batch = strategy.generate_signals_batch(
+                &cols.open,
+                &cols.high,
+                &cols.low,
+                &cols.close,
+                &cols.volume,
+                &cols.time,
+                start..end,
+            )?;
+            assert_eq!(batch.len(), end - start, "batch 信号数必须与参数区间对齐");
+            let sims: Vec<(String, crate::engine::SimResult)> = batch
                 .into_par_iter()
-                .map(|i| {
-                    let signals = strategy.generate_signals_full(
-                        &cols.open,
-                        &cols.high,
-                        &cols.low,
-                        &cols.close,
-                        &cols.volume,
-                        &cols.time,
-                        i,
-                    )?;
+                .enumerate()
+                .map(|(k, signals)| {
+                    let i = start + k;
                     let sim = crate::engine::simulate_detailed(
                         &cols.time,
                         &cols.close,
@@ -232,24 +236,26 @@ fn run_combo(
                     fixed_curve,
                 });
             }
-            output::write_detail_parquet(&detail_rows, &ctx.detail_dir)?;
+            output::write_detail_parquet(&detail_rows, &ctx.detail_dir, ctx.fixed_curves)?;
         }
 
         output::write_single_parquet(&run_rows, &combo_path, ctx.balance)?;
     } else {
         let (bh_pnl, bh_ret) = crate::engine::buy_hold_pnl(&cols.close, ctx.balance);
-        let run_rows: Vec<RunResult> = (0..n)
+        let batch = strategy.generate_signals_batch(
+            &cols.open,
+            &cols.high,
+            &cols.low,
+            &cols.close,
+            &cols.volume,
+            &cols.time,
+            0..n,
+        )?;
+        assert_eq!(batch.len(), n, "batch 信号数必须与参数总数对齐");
+        let run_rows: Vec<RunResult> = batch
             .into_par_iter()
-            .map(|i| {
-                let signals = strategy.generate_signals_full(
-                    &cols.open,
-                    &cols.high,
-                    &cols.low,
-                    &cols.close,
-                    &cols.volume,
-                    &cols.time,
-                    i,
-                )?;
+            .enumerate()
+            .map(|(i, signals)| {
                 let metrics = crate::engine::simulate(
                     &cols.close,
                     &cols.open,
@@ -302,6 +308,7 @@ pub fn run(config_path: &str) -> crate::error::Result<()> {
     config.validate()?;
     let strategies = build_strategies(&config.strategy);
     let detail = config.output.as_ref().is_some_and(|o| o.detail);
+    let fixed_curves = config.output.as_ref().is_some_and(|o| o.fixed_curves);
     let overwrite = config.output.as_ref().is_some_and(|o| o.overwrite);
     let balance = config.backtest.initial_balance;
     let window = format!(
@@ -330,6 +337,7 @@ pub fn run(config_path: &str) -> crate::error::Result<()> {
     let ctx = ComboCtx {
         balance,
         detail,
+        fixed_curves,
         overwrite,
         temps_dir: temps_dir.clone(),
         detail_dir: detail_dir.clone(),

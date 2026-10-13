@@ -1,6 +1,6 @@
-use vector_ta::indicators::atr::{AtrInput, AtrParams, atr};
+use vector_ta::indicators::atr::{atr, AtrInput, AtrParams};
 use vector_ta::indicators::bollinger_bands::{
-    BollingerBandsInput, BollingerBandsParams, bollinger_bands,
+    bollinger_bands, BollingerBandsInput, BollingerBandsParams,
 };
 
 use crate::strategies::{Signal, Strategy};
@@ -15,7 +15,7 @@ const ATR_LONG: usize = 20;
 /// `ATR5/ATR20 > thr` → Buy/Sell；持仓后中线离场（与 BBRK 相同）。
 /// ATR NaN（预热）/ATR20非正 → 不开仓（P7）。
 pub struct BbrkAtrStrategy {
-    pairs: Vec<(f64, f64)>,
+    pairs: Vec<(f64, usize, f64)>,
 }
 
 impl BbrkAtrStrategy {
@@ -103,12 +103,13 @@ fn compute(
     low: &[f64],
     close: &[f64],
     sigma: f64,
+    bblen: usize,
     thr: f64,
 ) -> crate::error::Result<Vec<Signal>> {
     let bb = match bollinger_bands(&BollingerBandsInput::from_slice(
         close,
         BollingerBandsParams {
-            period: Some(20),
+            period: Some(bblen),
             devup: Some(sigma),
             devdn: Some(sigma),
             matype: Some("sma".to_string()),
@@ -162,8 +163,8 @@ impl Strategy for BbrkAtrStrategy {
     }
 
     fn param_str(&self, idx: usize) -> String {
-        let (s, t) = self.pairs[idx];
-        format!("sigma={s},atrthr={t}")
+        let (s, l, t) = self.pairs[idx];
+        format!("sigma={s},bblen={l},atrthr={t}")
     }
 
     fn generate_signals(
@@ -174,8 +175,8 @@ impl Strategy for BbrkAtrStrategy {
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
         // 无 high/low 时 ATR 无从算起 → 用 close 充当（ATR=0 → 门全拦，P7）。
-        let (s, t) = self.pairs[param_idx];
-        compute(open, close, close, close, s, t)
+        let (s, l, t) = self.pairs[param_idx];
+        compute(open, close, close, close, s, l, t)
     }
 
     fn generate_signals_full(
@@ -188,8 +189,81 @@ impl Strategy for BbrkAtrStrategy {
         _time: &[i64],
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
-        let (s, t) = self.pairs[param_idx];
-        compute(open, high, low, close, s, t)
+        let (s, l, t) = self.pairs[param_idx];
+        compute(open, high, low, close, s, l, t)
+    }
+
+    /// 批量版：ATR5/ATR20 与参数无关算一次（396×→1×），BB 按 (sigma, bblen)
+    /// 去重（396×→36×），再并行跑各 thr。输出与逐个调逐位一致（单测锁定）。
+    fn generate_signals_batch(
+        &self,
+        open: &[f64],
+        high: &[f64],
+        low: &[f64],
+        close: &[f64],
+        _volume: &[f64],
+        _time: &[i64],
+        range: std::ops::Range<usize>,
+    ) -> crate::error::Result<Vec<Vec<Signal>>> {
+        use rayon::prelude::*;
+        use std::collections::HashMap;
+        use vector_ta::indicators::bollinger_bands::{
+            bollinger_bands, BollingerBandsInput, BollingerBandsParams,
+        };
+        let atr_pair: Option<(Vec<f64>, Vec<f64>)> = (|| {
+            let a5 = atr(&AtrInput::from_slices(
+                high,
+                low,
+                close,
+                AtrParams {
+                    length: Some(ATR_SHORT),
+                },
+            ))
+            .ok()?
+            .values;
+            let a20 = atr(&AtrInput::from_slices(
+                high,
+                low,
+                close,
+                AtrParams {
+                    length: Some(ATR_LONG),
+                },
+            ))
+            .ok()?
+            .values;
+            Some((a5, a20))
+        })();
+        let mut bbmap: HashMap<(u64, usize), crate::strategies::CachedBands> =
+            HashMap::new();
+        for idx in range.clone() {
+            let (s, l, _) = self.pairs[idx];
+            bbmap.entry((s.to_bits(), l)).or_insert_with(|| {
+                bollinger_bands(&BollingerBandsInput::from_slice(
+                    close,
+                    BollingerBandsParams {
+                        period: Some(l),
+                        devup: Some(s),
+                        devdn: Some(s),
+                        matype: Some("sma".to_string()),
+                        devtype: Some(0),
+                    },
+                ))
+                .ok()
+                .map(|bb| (bb.lower_band, bb.middle_band, bb.upper_band))
+            });
+        }
+        range
+            .into_par_iter()
+            .map(|idx| {
+                let (s, l, t) = self.pairs[idx];
+                match (&atr_pair, bbmap.get(&(s.to_bits(), l))) {
+                    (Some((a5, a20)), Some(Some((lower, mid, upper)))) => {
+                        Ok(bbrk_atr_signals(open, close, lower, mid, upper, a5, a20, t))
+                    }
+                    _ => Ok(vec![Signal::Hold; close.len()]),
+                }
+            })
+            .collect()
     }
 }
 
@@ -249,11 +323,37 @@ mod tests {
     }
 
     #[test]
+    fn test_batch_matches_single() {
+        let n = 60;
+        let base: Vec<f64> = (0..n)
+            .map(|i| 100.0 + (i as f64 * 0.2).sin() * 6.0)
+            .collect();
+        let open = base.clone();
+        let high: Vec<f64> = base.iter().map(|v| v + 2.0).collect();
+        let low: Vec<f64> = base.iter().map(|v| v - 2.0).collect();
+        let close: Vec<f64> = base.iter().map(|v| v + 0.5).collect();
+        let time: Vec<i64> = (0..n as i64).collect();
+        let st = BbrkAtrStrategy {
+            pairs: vec![(2.5, 20, 1.0), (2.5, 20, 1.2), (2.0, 10, 0.8)],
+        };
+        let batched = st
+            .generate_signals_batch(&open, &high, &low, &close, &[], &time, 0..3)
+            .unwrap();
+        assert_eq!(batched.len(), 3);
+        for (i, sig) in batched.iter().enumerate() {
+            let one = st
+                .generate_signals_full(&open, &high, &low, &close, &[], &time, i)
+                .unwrap();
+            assert_eq!(*sig, one, "param {i} 不一致");
+        }
+    }
+
+    #[test]
     fn test_name_and_params() {
         let s = BbrkAtrStrategy {
-            pairs: vec![(2.5, 1.0)],
+            pairs: vec![(2.5, 20, 1.0)],
         };
         assert_eq!(s.name(), "BBRK_ATR");
-        assert_eq!(s.param_str(0), "sigma=2.5,atrthr=1");
+        assert_eq!(s.param_str(0), "sigma=2.5,bblen=20,atrthr=1");
     }
 }

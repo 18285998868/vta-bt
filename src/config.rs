@@ -13,10 +13,20 @@ use crate::strategies::bbrk_atr::BbrkAtrConfig;
 use crate::strategies::bbrk_atr_ema::BbrkAtrEmaConfig;
 use crate::strategies::bbrk_bb::BbrkBbConfig;
 use crate::strategies::bbrk_cross::BbrkCrossConfig;
-use crate::strategies::bbrk_kdj::BbrkKdjConfig;
 use crate::strategies::bbrk_don::BbrkDonConfig;
 use crate::strategies::bbrk_hma::BbrkHmaConfig;
 use crate::strategies::bbrk_hma_ema::BbrkHmaEmaConfig;
+use crate::strategies::bbrk_hma_v1::BbrkHmaV1Config;
+use crate::strategies::bbrk_hma_v1_sl::BbrkHmaV1SlConfig;
+use crate::strategies::bbrk_hma_v2::BbrkHmaV2Config;
+use crate::strategies::bbrk_hma_v2_sl::BbrkHmaV2SlConfig;
+use crate::strategies::bbrk_hma_v3::BbrkHmaV3Config;
+use crate::strategies::bbrk_hma_v3_sl::BbrkHmaV3SlConfig;
+use crate::strategies::bbrk_hma_v4::BbrkHmaV4Config;
+use crate::strategies::bbrk_hma_v4_sl::BbrkHmaV4SlConfig;
+use crate::strategies::bbrk_hma_v5::BbrkHmaV5Config;
+use crate::strategies::bbrk_hma_v5_sl::BbrkHmaV5SlConfig;
+use crate::strategies::bbrk_kdj::BbrkKdjConfig;
 use crate::strategies::bbrk_m2::BbrkM2Config;
 use crate::strategies::bbrk_m3::BbrkM3Config;
 use crate::strategies::bbrk_max::BbrkMaxConfig;
@@ -37,6 +47,8 @@ use crate::strategies::edma::EdmaConfig;
 use crate::strategies::ema_cross::EmaCrossConfig;
 use crate::strategies::fiali::FialiConfig;
 use crate::strategies::keltner::KeltnerConfig;
+use crate::strategies::mabb_long::MabbLongConfig;
+use crate::strategies::mabb_short::MabbShortConfig;
 use crate::strategies::macd::MacdConfig;
 use crate::strategies::rbreaker::RBreakerConfig;
 use crate::strategies::rsi2::RSI2Config;
@@ -236,6 +248,7 @@ impl Config {
                 }
                 StrategyConfig::BbrkAtr(c) => {
                     c.sigma.validate_range("bbrk_atr.sigma", 0.1, 10.0)?;
+                    c.bblen.validate_range("bbrk_atr.bblen", 2.0, 2000.0)?;
                     c.atrthr.validate_range("bbrk_atr.atrthr", 0.1, 5.0)?;
                     if c.pairs().is_empty() {
                         return Err(AppError::Msg("bbrk_atr 参数组合为空".into()));
@@ -303,6 +316,98 @@ impl Config {
                         return Err(AppError::Msg("bbrk_hma_ema 参数组合为空".into()));
                     }
                 }
+                StrategyConfig::BbrkHmaV1(c) => {
+                    c.sigma.validate_range("bbrk_hma_v1.sigma", 0.1, 10.0)?;
+                    c.bblen.validate_range("bbrk_hma_v1.bblen", 2.0, 2000.0)?;
+                    c.hmalen
+                        .validate_range("bbrk_hma_v1.hmalen", 2.0, 2000.0)?;
+                    if c.triples().is_empty() {
+                        return Err(AppError::Msg("bbrk_hma_v1 参数组合为空".into()));
+                    }
+                }
+                StrategyConfig::BbrkHmaV2(c) => {
+                    c.sigma.validate_range("bbrk_hma_v2.sigma", 0.1, 10.0)?;
+                    c.bblen.validate_range("bbrk_hma_v2.bblen", 2.0, 2000.0)?;
+                    c.hmalen
+                        .validate_range("bbrk_hma_v2.hmalen", 2.0, 2000.0)?;
+                    if c.triples().is_empty() {
+                        return Err(AppError::Msg("bbrk_hma_v2 参数组合为空".into()));
+                    }
+                }
+                StrategyConfig::BbrkHmaV3(c) => {
+                    c.sigma.validate_range("bbrk_hma_v3.sigma", 0.1, 10.0)?;
+                    c.bblen.validate_range("bbrk_hma_v3.bblen", 2.0, 2000.0)?;
+                    if c.pairs().is_empty() {
+                        return Err(AppError::Msg("bbrk_hma_v3 参数组合为空".into()));
+                    }
+                }
+                StrategyConfig::BbrkHmaV4(c) => {
+                    c.sigma.validate_range("bbrk_hma_v4.sigma", 0.1, 10.0)?;
+                    c.bblen.validate_range("bbrk_hma_v4.bblen", 2.0, 2000.0)?;
+                    if c.pairs().is_empty() {
+                        return Err(AppError::Msg("bbrk_hma_v4 参数组合为空".into()));
+                    }
+                }
+                StrategyConfig::BbrkHmaV5(c) => {
+                    c.sigma.validate_range("bbrk_hma_v5.sigma", 0.1, 10.0)?;
+                    c.bblen.validate_range("bbrk_hma_v5.bblen", 2.0, 2000.0)?;
+                    c.hmalen
+                        .validate_range("bbrk_hma_v5.hmalen", 2.0, 2000.0)?;
+                    if c.triples().is_empty() {
+                        return Err(AppError::Msg("bbrk_hma_v5 参数组合为空".into()));
+                    }
+                }
+                StrategyConfig::BbrkHmaV1Sl(c) => {
+                    c.sigma.validate_range("bbrk_hma_v1_sl.sigma", 0.1, 10.0)?;
+                    c.bblen.validate_range("bbrk_hma_v1_sl.bblen", 2.0, 2000.0)?;
+                    c.hmalen
+                        .validate_range("bbrk_hma_v1_sl.hmalen", 2.0, 2000.0)?;
+                    c.stopk.validate_range("bbrk_hma_v1_sl.stopk", 0.5, 10.0)?;
+                    c.atrlen.validate_range("bbrk_hma_v1_sl.atrlen", 2.0, 500.0)?;
+                    if c.quints().is_empty() {
+                        return Err(AppError::Msg("bbrk_hma_v1_sl 参数组合为空".into()));
+                    }
+                }
+                StrategyConfig::BbrkHmaV2Sl(c) => {
+                    c.sigma.validate_range("bbrk_hma_v2_sl.sigma", 0.1, 10.0)?;
+                    c.bblen.validate_range("bbrk_hma_v2_sl.bblen", 2.0, 2000.0)?;
+                    c.hmalen
+                        .validate_range("bbrk_hma_v2_sl.hmalen", 2.0, 2000.0)?;
+                    c.stopk.validate_range("bbrk_hma_v2_sl.stopk", 0.5, 10.0)?;
+                    c.atrlen.validate_range("bbrk_hma_v2_sl.atrlen", 2.0, 500.0)?;
+                    if c.quints().is_empty() {
+                        return Err(AppError::Msg("bbrk_hma_v2_sl 参数组合为空".into()));
+                    }
+                }
+                StrategyConfig::BbrkHmaV3Sl(c) => {
+                    c.sigma.validate_range("bbrk_hma_v3_sl.sigma", 0.1, 10.0)?;
+                    c.bblen.validate_range("bbrk_hma_v3_sl.bblen", 2.0, 2000.0)?;
+                    c.stopk.validate_range("bbrk_hma_v3_sl.stopk", 0.5, 10.0)?;
+                    c.atrlen.validate_range("bbrk_hma_v3_sl.atrlen", 2.0, 500.0)?;
+                    if c.quads().is_empty() {
+                        return Err(AppError::Msg("bbrk_hma_v3_sl 参数组合为空".into()));
+                    }
+                }
+                StrategyConfig::BbrkHmaV4Sl(c) => {
+                    c.sigma.validate_range("bbrk_hma_v4_sl.sigma", 0.1, 10.0)?;
+                    c.bblen.validate_range("bbrk_hma_v4_sl.bblen", 2.0, 2000.0)?;
+                    c.stopk.validate_range("bbrk_hma_v4_sl.stopk", 0.5, 10.0)?;
+                    c.atrlen.validate_range("bbrk_hma_v4_sl.atrlen", 2.0, 500.0)?;
+                    if c.quads().is_empty() {
+                        return Err(AppError::Msg("bbrk_hma_v4_sl 参数组合为空".into()));
+                    }
+                }
+                StrategyConfig::BbrkHmaV5Sl(c) => {
+                    c.sigma.validate_range("bbrk_hma_v5_sl.sigma", 0.1, 10.0)?;
+                    c.bblen.validate_range("bbrk_hma_v5_sl.bblen", 2.0, 2000.0)?;
+                    c.hmalen
+                        .validate_range("bbrk_hma_v5_sl.hmalen", 2.0, 2000.0)?;
+                    c.stopk.validate_range("bbrk_hma_v5_sl.stopk", 0.5, 10.0)?;
+                    c.atrlen.validate_range("bbrk_hma_v5_sl.atrlen", 2.0, 500.0)?;
+                    if c.quints().is_empty() {
+                        return Err(AppError::Msg("bbrk_hma_v5_sl 参数组合为空".into()));
+                    }
+                }
                 StrategyConfig::BbrkZlemaEma(c) => {
                     c.sigma.validate_range("bbrk_zlema_ema.sigma", 0.1, 10.0)?;
                     c.zlemareg
@@ -313,13 +418,16 @@ impl Config {
                 }
                 StrategyConfig::BbrkRex(c) => {
                     c.sigma.validate_range("bbrk_rex.sigma", 0.1, 10.0)?;
+                    c.bblen.validate_range("bbrk_rex.bblen", 2.0, 2000.0)?;
                     c.rexn.validate_range("bbrk_rex.rexn", 2.0, 100.0)?;
+                    c.rexmult.validate_range("bbrk_rex.rexmult", 0.5, 30.0)?;
                     if c.pairs().is_empty() {
                         return Err(AppError::Msg("bbrk_rex 参数组合为空".into()));
                     }
                 }
                 StrategyConfig::BbrkVol(c) => {
                     c.sigma.validate_range("bbrk_vol.sigma", 0.1, 10.0)?;
+                    c.bblen.validate_range("bbrk_vol.bblen", 2.0, 2000.0)?;
                     c.voln.validate_range("bbrk_vol.voln", 2.0, 500.0)?;
                     c.volmult.validate_range("bbrk_vol.volmult", 0.5, 30.0)?;
                     if c.pairs().is_empty() {
@@ -383,6 +491,20 @@ impl Config {
                     if c.pairs().is_empty() {
                         return Err(AppError::Msg("rsi2 参数组合为空".into()));
                     }
+                }
+                StrategyConfig::MabbLong(c) => {
+                    c.sigma.validate_range("mabb_long.sigma", 0.1, 10.0)?;
+                    c.bblen.validate_range("mabb_long.bblen", 2.0, 2000.0)?;
+                    c.stopk.validate_range("mabb_long.stopk", 0.0, 10.0)?;
+                    c.atrlen.validate_range("mabb_long.atrlen", 0.0, 500.0)?;
+                    c.validate_names()?;
+                }
+                StrategyConfig::MabbShort(c) => {
+                    c.sigma.validate_range("mabb_short.sigma", 0.1, 10.0)?;
+                    c.bblen.validate_range("mabb_short.bblen", 2.0, 2000.0)?;
+                    c.stopk.validate_range("mabb_short.stopk", 0.0, 10.0)?;
+                    c.atrlen.validate_range("mabb_short.atrlen", 0.0, 500.0)?;
+                    c.validate_names()?;
                 }
                 StrategyConfig::Vwap(c) => {
                     c.thresh.validate_range("vwap.thresh", 0.5, 10.0)?;
@@ -482,6 +604,16 @@ impl StrategyConfig {
             | StrategyConfig::BbrkAtrEma(_)
             | StrategyConfig::BbrkSmaEma(_)
             | StrategyConfig::BbrkHmaEma(_)
+            | StrategyConfig::BbrkHmaV1(_)
+            | StrategyConfig::BbrkHmaV2(_)
+            | StrategyConfig::BbrkHmaV3(_)
+            | StrategyConfig::BbrkHmaV4(_)
+            | StrategyConfig::BbrkHmaV5(_)
+            | StrategyConfig::BbrkHmaV1Sl(_)
+            | StrategyConfig::BbrkHmaV2Sl(_)
+            | StrategyConfig::BbrkHmaV3Sl(_)
+            | StrategyConfig::BbrkHmaV4Sl(_)
+            | StrategyConfig::BbrkHmaV5Sl(_)
             | StrategyConfig::BbrkZlemaEma(_)
             | StrategyConfig::BbrkRex(_)
             | StrategyConfig::BbrkVol(_)
@@ -494,6 +626,8 @@ impl StrategyConfig {
             | StrategyConfig::BbrkOrth(_)
             | StrategyConfig::VwapTrend(_)
             | StrategyConfig::RSI2(_)
+            | StrategyConfig::MabbLong(_)
+            | StrategyConfig::MabbShort(_)
             | StrategyConfig::Macd(_)
             | StrategyConfig::Vwap(_) => None,
             // 双均线无单一 period, 调用方走 validate() 的 EmaCross 分支。
@@ -542,6 +676,10 @@ pub struct OutputConfig {
     /// 是否导出逐笔交易和权益曲线详细数据
     #[serde(default)]
     pub detail: bool,
+    /// 是否写 fixedcurve 文件（`--pbo` 的 T×N 输入）。默认 false：
+    /// detail 只落逐笔 trades，省掉 GB 级曲线 I/O；做 PBO 时显式开 true。
+    #[serde(default)]
+    pub fixed_curves: bool,
     /// 是否覆盖已存在的回测结果文件，默认 false（跳过已完成的组合）
     #[serde(default)]
     pub overwrite: bool,
@@ -615,6 +753,16 @@ pub enum StrategyConfig {
     BbrkAtrEma(BbrkAtrEmaConfig),
     BbrkSmaEma(BbrkSmaEmaConfig),
     BbrkHmaEma(BbrkHmaEmaConfig),
+    BbrkHmaV1(BbrkHmaV1Config),
+    BbrkHmaV2(BbrkHmaV2Config),
+    BbrkHmaV3(BbrkHmaV3Config),
+    BbrkHmaV4(BbrkHmaV4Config),
+    BbrkHmaV5(BbrkHmaV5Config),
+    BbrkHmaV1Sl(BbrkHmaV1SlConfig),
+    BbrkHmaV2Sl(BbrkHmaV2SlConfig),
+    BbrkHmaV3Sl(BbrkHmaV3SlConfig),
+    BbrkHmaV4Sl(BbrkHmaV4SlConfig),
+    BbrkHmaV5Sl(BbrkHmaV5SlConfig),
     BbrkZlemaEma(BbrkZlemaEmaConfig),
     BbrkRex(BbrkRexConfig),
     BbrkVol(BbrkVolConfig),
@@ -629,6 +777,8 @@ pub enum StrategyConfig {
     #[serde(rename = "rsi2")]
     RSI2(RSI2Config),
     Vwap(VwapConfig),
+    MabbLong(MabbLongConfig),
+    MabbShort(MabbShortConfig),
     Macd(MacdConfig),
     EmaCross(EmaCrossConfig),
 }
@@ -839,8 +989,20 @@ mod tests {
             "type = \"bbrk_atr_ema\"\nsigma = 2.5\natrthr = 1.0",
             "type = \"bbrk_sma_ema\"\nsigma = 2.5\nsmareg = 100.0",
             "type = \"bbrk_hma_ema\"\nsigma = 2.5\nhmalen = 100.0",
+            "type = \"bbrk_hma_v1\"\nsigma = 2.5\nbblen = 20.0\nhmalen = 450.0",
+            "type = \"bbrk_hma_v2\"\nsigma = 2.5\nbblen = 20.0\nhmalen = 450.0",
+            "type = \"bbrk_hma_v3\"\nsigma = 2.5\nbblen = 20.0",
+            "type = \"bbrk_hma_v4\"\nsigma = 2.5\nbblen = 20.0",
+            "type = \"bbrk_hma_v5\"\nsigma = 2.5\nbblen = 20.0\nhmalen = 450.0",
+            "type = \"bbrk_hma_v1_sl\"\nsigma = 2.5\nbblen = 20.0\nhmalen = 450.0\nstopk = 2.0\natrlen = 50.0",
+            "type = \"bbrk_hma_v2_sl\"\nsigma = 2.5\nbblen = 20.0\nhmalen = 450.0\nstopk = 2.0\natrlen = 50.0",
+            "type = \"bbrk_hma_v3_sl\"\nsigma = 2.5\nbblen = 20.0\nstopk = 2.0\natrlen = 50.0",
+            "type = \"bbrk_hma_v4_sl\"\nsigma = 2.5\nbblen = 20.0\nstopk = 2.0\natrlen = 50.0",
+            "type = \"bbrk_hma_v5_sl\"\nsigma = 2.5\nbblen = 20.0\nhmalen = 450.0\nstopk = 2.0\natrlen = 50.0",
+            "type = \"mabb_long\"\nma = [\"sma\"]\nbblen = 20.0\nsigma = 2.5\nstopk = 0.0\natrlen = 14.0",
+            "type = \"mabb_short\"\nma = [\"ema\"]\nbblen = 20.0\nsigma = 2.5\nstopk = 2.0\natrlen = 14.0",
             "type = \"bbrk_zlema_ema\"\nsigma = 2.5\nzlemareg = 100.0",
-            "type = \"bbrk_rex\"\nsigma = { start = 2.0, end = 2.5, step = 0.5 }\nrexn = { start = 3.0, end = 5.0, step = 2.0 }",
+            "type = \"bbrk_rex\"\nsigma = { start = 2.0, end = 2.5, step = 0.5 }\nrexn = { start = 3.0, end = 5.0, step = 2.0 }\nrexmult = 1.5",
             "type = \"bbrk_vol\"\nsigma = 2.5\nvoln = 10.0\nvolmult = 1.5",
             "type = \"bbrk_ttm\"\nsigma = 2.5\nkc = 1.5\nttmn = 5.0",
             "type = \"bbrk_ttm_fire\"\nsigma = 2.5\nkc = 1.5",

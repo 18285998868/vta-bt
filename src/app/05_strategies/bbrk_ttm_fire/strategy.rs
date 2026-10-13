@@ -215,6 +215,84 @@ impl Strategy for BbrkTtmFireStrategy {
         let (s, k) = self.pairs[param_idx];
         compute(high, low, close, s, k)
     }
+
+    /// 批量版：动量柱/EMA基线/ATR14 与参数无关各算一次，
+    /// BB 按 σ 去重，sqz 数组每 (σ,k) 现拼（O(n) 纯算术），再并行跑信号。
+    /// 输出与逐个调逐位一致（单测锁定）。
+    fn generate_signals_batch(
+        &self,
+        _open: &[f64],
+        high: &[f64],
+        low: &[f64],
+        close: &[f64],
+        _volume: &[f64],
+        _time: &[i64],
+        range: std::ops::Range<usize>,
+    ) -> crate::error::Result<Vec<Vec<Signal>>> {
+        use rayon::prelude::*;
+        use std::collections::HashMap;
+        use vector_ta::indicators::bollinger_bands::{
+            bollinger_bands, BollingerBandsInput, BollingerBandsParams,
+        };
+        let hist = momentum(high, low, close);
+        let basis: Option<Vec<f64>> = ema(&EmaInput::from_slice(
+            close,
+            EmaParams {
+                period: Some(KC_PERIOD),
+            },
+        ))
+        .ok()
+        .map(|v| v.values);
+        let atr_vals: Option<Vec<f64>> = atr(&AtrInput::from_slices(
+            high,
+            low,
+            close,
+            AtrParams {
+                length: Some(ATR_LEN),
+            },
+        ))
+        .ok()
+        .map(|v| v.values);
+        let mut bbmap: HashMap<u64, crate::strategies::CachedBands> = HashMap::new();
+        for idx in range.clone() {
+            let (s, _) = self.pairs[idx];
+            bbmap.entry(s.to_bits()).or_insert_with(|| {
+                bollinger_bands(&BollingerBandsInput::from_slice(
+                    close,
+                    BollingerBandsParams {
+                        period: Some(20),
+                        devup: Some(s),
+                        devdn: Some(s),
+                        matype: Some("sma".to_string()),
+                        devtype: Some(0),
+                    },
+                ))
+                .ok()
+                .map(|bb| (bb.lower_band, bb.middle_band, bb.upper_band))
+            });
+        }
+        range
+            .into_par_iter()
+            .map(|idx| {
+                let (s, k) = self.pairs[idx];
+                let (lower, mid, upper, em, a_all) =
+                    match (bbmap.get(&s.to_bits()), &basis, &atr_vals) {
+                        (Some(Some((lo, m, up))), Some(em), Some(a_all)) => (lo, m, up, em, a_all),
+                        _ => return Ok(vec![Signal::Hold; close.len()]),
+                    };
+                let n = close.len().min(lower.len()).min(em.len()).min(a_all.len());
+                let mut sqz = vec![false; n];
+                for i in 0..n {
+                    let a = a_all[i];
+                    if ![upper[i], lower[i], em[i], a].iter().all(|v| v.is_finite()) || a <= 0.0 {
+                        continue;
+                    }
+                    sqz[i] = upper[i] < em[i] + k * a && lower[i] > em[i] - k * a;
+                }
+                Ok(bbrk_ttm_fire_signals(close, mid, &sqz, &hist))
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -284,6 +362,32 @@ mod tests {
         let sig = bbrk_ttm_fire_signals(&close, &mid, &sqz, &[0.5, 1.0, 2.0, 3.0]);
         assert_eq!(sig[2], Signal::Buy);
         assert_eq!(sig[3], Signal::Close);
+    }
+
+    #[test]
+    fn test_batch_matches_single() {
+        let n = 60;
+        let base: Vec<f64> = (0..n)
+            .map(|i| 100.0 + (i as f64 * 0.2).sin() * 6.0)
+            .collect();
+        let open = base.clone();
+        let high: Vec<f64> = base.iter().map(|v| v + 2.0).collect();
+        let low: Vec<f64> = base.iter().map(|v| v - 2.0).collect();
+        let close: Vec<f64> = base.iter().map(|v| v + 0.5).collect();
+        let time: Vec<i64> = (0..n as i64).collect();
+        let st = BbrkTtmFireStrategy {
+            pairs: vec![(2.5, 1.5), (2.5, 2.0), (2.0, 1.5)],
+        };
+        let batched = st
+            .generate_signals_batch(&open, &high, &low, &close, &[], &time, 0..3)
+            .unwrap();
+        assert_eq!(batched.len(), 3);
+        for (i, sig) in batched.iter().enumerate() {
+            let one = st
+                .generate_signals_full(&open, &high, &low, &close, &[], &time, i)
+                .unwrap();
+            assert_eq!(*sig, one, "param {i} 不一致");
+        }
     }
 
     #[test]

@@ -1,17 +1,17 @@
 use vector_ta::indicators::bollinger_bands::{
-    BollingerBandsInput, BollingerBandsParams, bollinger_bands,
+    bollinger_bands, BollingerBandsInput, BollingerBandsParams,
 };
 
 use crate::strategies::{Signal, Strategy};
 
-use super::config::{BbrkRexConfig, REX_MULT};
+use super::config::BbrkRexConfig;
 
 /// BBRK+振幅扩张过滤：flat + close突破 **且** 方向一致 **且**
-/// `(high−low) > 1.5 × mean(high−low, n)` → Buy/Sell；
+/// `(high−low) > k × mean(high−low, n)` → Buy/Sell；
 /// 持仓后中线离场（与 BBRK 相同）。
 /// 振幅均值用前 n 根（含当根）滑动平均；NaN/窗口不足/均值非正 → 不开仓（P7）。
 pub struct BbrkRexStrategy {
-    pairs: Vec<(f64, usize)>,
+    pairs: Vec<(f64, usize, usize, f64)>,
 }
 
 impl BbrkRexStrategy {
@@ -33,6 +33,7 @@ pub fn bbrk_rex_signals(
     mid: &[f64],
     upper: &[f64],
     win_n: usize,
+    mult: f64,
 ) -> Vec<Signal> {
     let n = close
         .len()
@@ -75,7 +76,7 @@ pub fn bbrk_rex_signals(
             if (brk_up && c <= o) || (brk_dn && c >= o) {
                 continue;
             }
-            // 扩张门：整窗 n 根有效振幅 + 当根振幅 > 1.5×均值。
+            // 扩张门：整窗 n 根有效振幅 + 当根振幅 > k×均值。
             if win_n == 0 {
                 continue;
             }
@@ -87,7 +88,7 @@ pub fn bbrk_rex_signals(
             if !mean.is_finite() || mean <= 0.0 || !range[i].is_finite() {
                 continue;
             }
-            if range[i] <= REX_MULT * mean {
+            if range[i] <= mult * mean {
                 continue;
             }
             if brk_up {
@@ -118,18 +119,21 @@ pub fn bbrk_rex_signals(
     sig
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compute(
     open: &[f64],
     high: &[f64],
     low: &[f64],
     close: &[f64],
     sigma: f64,
+    bblen: usize,
     win_n: usize,
+    mult: f64,
 ) -> crate::error::Result<Vec<Signal>> {
     let bb = match bollinger_bands(&BollingerBandsInput::from_slice(
         close,
         BollingerBandsParams {
-            period: Some(20),
+            period: Some(bblen),
             devup: Some(sigma),
             devdn: Some(sigma),
             matype: Some("sma".to_string()),
@@ -148,6 +152,7 @@ fn compute(
         &bb.middle_band,
         &bb.upper_band,
         win_n,
+        mult,
     ))
 }
 
@@ -161,8 +166,8 @@ impl Strategy for BbrkRexStrategy {
     }
 
     fn param_str(&self, idx: usize) -> String {
-        let (s, n) = self.pairs[idx];
-        format!("sigma={s},rexn={n}")
+        let (s, l, n, m) = self.pairs[idx];
+        format!("sigma={s},bblen={l},rexn={n},rexmult={m}")
     }
 
     fn generate_signals(
@@ -172,8 +177,8 @@ impl Strategy for BbrkRexStrategy {
         _volume: &[f64],
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
-        let (s, n) = self.pairs[param_idx];
-        compute(close, close, close, close, s, n)
+        let (s, l, n, m) = self.pairs[param_idx];
+        compute(close, close, close, close, s, l, n, m)
     }
 
     fn generate_signals_full(
@@ -186,8 +191,58 @@ impl Strategy for BbrkRexStrategy {
         _time: &[i64],
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
-        let (s, n) = self.pairs[param_idx];
-        compute(open, high, low, close, s, n)
+        let (s, l, n, m) = self.pairs[param_idx];
+        compute(open, high, low, close, s, l, n, m)
+    }
+
+    /// 批量版：BB 按去重后的 (sigma, bblen) 只算一次，再并行跑各 (N, k)。
+    /// 输出与逐个调逐位一致（单测锁定）。
+    fn generate_signals_batch(
+        &self,
+        open: &[f64],
+        high: &[f64],
+        low: &[f64],
+        close: &[f64],
+        _volume: &[f64],
+        _time: &[i64],
+        range: std::ops::Range<usize>,
+    ) -> crate::error::Result<Vec<Vec<Signal>>> {
+        use rayon::prelude::*;
+        use std::collections::HashMap;
+        use vector_ta::indicators::bollinger_bands::{
+            bollinger_bands, BollingerBandsInput, BollingerBandsParams,
+        };
+        let mut bbmap: HashMap<(u64, usize), crate::strategies::CachedBands> =
+            HashMap::new();
+        for idx in range.clone() {
+            let (s, l, _, _) = self.pairs[idx];
+            bbmap.entry((s.to_bits(), l)).or_insert_with(|| {
+                bollinger_bands(&BollingerBandsInput::from_slice(
+                    close,
+                    BollingerBandsParams {
+                        period: Some(l),
+                        devup: Some(s),
+                        devdn: Some(s),
+                        matype: Some("sma".to_string()),
+                        devtype: Some(0),
+                    },
+                ))
+                .ok()
+                .map(|bb| (bb.lower_band, bb.middle_band, bb.upper_band))
+            });
+        }
+        range
+            .into_par_iter()
+            .map(|idx| {
+                let (s, l, n, m) = self.pairs[idx];
+                match bbmap.get(&(s.to_bits(), l)) {
+                    Some(Some((lower, mid, upper))) => Ok(bbrk_rex_signals(
+                        open, high, low, close, lower, mid, upper, n, m,
+                    )),
+                    _ => Ok(vec![Signal::Hold; close.len()]),
+                }
+            })
+            .collect()
     }
 }
 
@@ -212,7 +267,7 @@ mod tests {
         high[n - 1] = 113.0;
         low[n - 1] = 99.0;
         close[n - 1] = 112.0;
-        let sig = bbrk_rex_signals(&open, &high, &low, &close, &lower, &mid, &upper, 20);
+        let sig = bbrk_rex_signals(&open, &high, &low, &close, &lower, &mid, &upper, 20, 1.5);
         assert_eq!(sig[n - 1], Signal::Buy);
     }
 
@@ -226,7 +281,7 @@ mod tests {
         let low = vec![99.0; n];
         let mut close = vec![100.0; n];
         close[n - 1] = 111.0; // 突破但振幅正常
-        let sig = bbrk_rex_signals(&open, &high, &low, &close, &lower, &mid, &upper, 20);
+        let sig = bbrk_rex_signals(&open, &high, &low, &close, &lower, &mid, &upper, 20, 1.5);
         assert!(sig.iter().all(|&s| s == Signal::Hold));
     }
 
@@ -243,16 +298,43 @@ mod tests {
             &mid,
             &upper,
             20,
+            2.0,
         );
         assert!(sig.iter().all(|&s| s == Signal::Hold));
     }
 
     #[test]
+    fn test_batch_matches_single() {
+        let n = 60;
+        let base: Vec<f64> = (0..n)
+            .map(|i| 100.0 + (i as f64 * 0.2).sin() * 6.0)
+            .collect();
+        let open = base.clone();
+        let high: Vec<f64> = base.iter().map(|v| v + 2.0).collect();
+        let low: Vec<f64> = base.iter().map(|v| v - 2.0).collect();
+        let close: Vec<f64> = base.iter().map(|v| v + 0.5).collect();
+        let time: Vec<i64> = (0..n as i64).collect();
+        let st = BbrkRexStrategy {
+            pairs: vec![(2.5, 20, 7, 1.5), (2.5, 20, 7, 2.5), (2.0, 10, 5, 2.0)],
+        };
+        let batched = st
+            .generate_signals_batch(&open, &high, &low, &close, &[], &time, 0..3)
+            .unwrap();
+        assert_eq!(batched.len(), 3);
+        for (i, sig) in batched.iter().enumerate() {
+            let one = st
+                .generate_signals_full(&open, &high, &low, &close, &[], &time, i)
+                .unwrap();
+            assert_eq!(*sig, one, "param {i} 不一致");
+        }
+    }
+
+    #[test]
     fn test_name_and_params() {
         let s = BbrkRexStrategy {
-            pairs: vec![(2.5, 7)],
+            pairs: vec![(2.5, 20, 7, 2.0)],
         };
         assert_eq!(s.name(), "BBRK_REX");
-        assert_eq!(s.param_str(0), "sigma=2.5,rexn=7");
+        assert_eq!(s.param_str(0), "sigma=2.5,bblen=20,rexn=7,rexmult=2");
     }
 }

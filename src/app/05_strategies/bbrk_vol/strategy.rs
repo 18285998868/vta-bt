@@ -1,5 +1,5 @@
 use vector_ta::indicators::bollinger_bands::{
-    BollingerBandsInput, BollingerBandsParams, bollinger_bands,
+    bollinger_bands, BollingerBandsInput, BollingerBandsParams,
 };
 
 use crate::strategies::{Signal, Strategy};
@@ -11,7 +11,7 @@ use super::config::BbrkVolConfig;
 /// 持仓后中线离场（与 BBRK 相同）。
 /// 均值窗要求整窗有效且>0（volume<=0/NaN 即 portion 缺失 → 不开仓，P7）。
 pub struct BbrkVolStrategy {
-    pairs: Vec<(f64, usize, f64)>,
+    pairs: Vec<(f64, usize, usize, f64)>,
 }
 
 impl BbrkVolStrategy {
@@ -116,13 +116,14 @@ fn compute(
     close: &[f64],
     volume: &[f64],
     sigma: f64,
+    bblen: usize,
     win_n: usize,
     mult: f64,
 ) -> crate::error::Result<Vec<Signal>> {
     let bb = match bollinger_bands(&BollingerBandsInput::from_slice(
         close,
         BollingerBandsParams {
-            period: Some(20),
+            period: Some(bblen),
             devup: Some(sigma),
             devdn: Some(sigma),
             matype: Some("sma".to_string()),
@@ -154,8 +155,8 @@ impl Strategy for BbrkVolStrategy {
     }
 
     fn param_str(&self, idx: usize) -> String {
-        let (s, n, m) = self.pairs[idx];
-        format!("sigma={s},voln={n},volmult={m}")
+        let (s, l, n, m) = self.pairs[idx];
+        format!("sigma={s},bblen={l},voln={n},volmult={m}")
     }
 
     fn generate_signals(
@@ -166,8 +167,8 @@ impl Strategy for BbrkVolStrategy {
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
         // 量能门三要素 open/close/volume 本入口齐备（无需 high/low）。
-        let (s, n, m) = self.pairs[param_idx];
-        compute(open, close, volume, s, n, m)
+        let (s, l, n, m) = self.pairs[param_idx];
+        compute(open, close, volume, s, l, n, m)
     }
 
     fn generate_signals_full(
@@ -180,8 +181,58 @@ impl Strategy for BbrkVolStrategy {
         _time: &[i64],
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
-        let (s, n, m) = self.pairs[param_idx];
-        compute(open, close, volume, s, n, m)
+        let (s, l, n, m) = self.pairs[param_idx];
+        compute(open, close, volume, s, l, n, m)
+    }
+
+    /// 批量版：BB 按去重后的 (sigma, bblen) 只算一次（720×→36×），
+    /// 再并行跑各 (N, m) 的门逻辑。输出与逐个调逐位一致（单测锁定）。
+    fn generate_signals_batch(
+        &self,
+        open: &[f64],
+        _high: &[f64],
+        _low: &[f64],
+        close: &[f64],
+        volume: &[f64],
+        _time: &[i64],
+        range: std::ops::Range<usize>,
+    ) -> crate::error::Result<Vec<Vec<Signal>>> {
+        use rayon::prelude::*;
+        use std::collections::HashMap;
+        use vector_ta::indicators::bollinger_bands::{
+            bollinger_bands, BollingerBandsInput, BollingerBandsParams,
+        };
+        let mut bbmap: HashMap<(u64, usize), crate::strategies::CachedBands> =
+            HashMap::new();
+        for idx in range.clone() {
+            let (s, l, _, _) = self.pairs[idx];
+            bbmap.entry((s.to_bits(), l)).or_insert_with(|| {
+                bollinger_bands(&BollingerBandsInput::from_slice(
+                    close,
+                    BollingerBandsParams {
+                        period: Some(l),
+                        devup: Some(s),
+                        devdn: Some(s),
+                        matype: Some("sma".to_string()),
+                        devtype: Some(0),
+                    },
+                ))
+                .ok()
+                .map(|bb| (bb.lower_band, bb.middle_band, bb.upper_band))
+            });
+        }
+        range
+            .into_par_iter()
+            .map(|idx| {
+                let (s, l, n, m) = self.pairs[idx];
+                match bbmap.get(&(s.to_bits(), l)) {
+                    Some(Some((lower, mid, upper))) => Ok(bbrk_vol_signals(
+                        open, close, volume, lower, mid, upper, n, m,
+                    )),
+                    _ => Ok(vec![Signal::Hold; close.len()]),
+                }
+            })
+            .collect()
     }
 }
 
@@ -234,11 +285,38 @@ mod tests {
     }
 
     #[test]
+    fn test_batch_matches_single() {
+        // 批量版必须与逐个调逐位一致（hoist 只复用共享指标）。
+        let n = 60;
+        let open: Vec<f64> = (0..n)
+            .map(|i| 100.0 + (i as f64 * 0.3).sin() * 4.0)
+            .collect();
+        let close: Vec<f64> = open.iter().map(|v| v + 0.5).collect();
+        let vol: Vec<f64> = (0..n)
+            .map(|i| 10.0 + (i as f64).sin().abs() * 50.0)
+            .collect();
+        let time: Vec<i64> = (0..n as i64).collect();
+        let st = BbrkVolStrategy {
+            pairs: vec![(2.5, 20, 10, 1.5), (2.5, 20, 10, 3.0), (2.0, 10, 5, 2.0)],
+        };
+        let batched = st
+            .generate_signals_batch(&open, &[], &[], &close, &vol, &time, 0..3)
+            .unwrap();
+        assert_eq!(batched.len(), 3);
+        for (i, sig) in batched.iter().enumerate() {
+            let one = st
+                .generate_signals_full(&open, &[], &[], &close, &vol, &time, i)
+                .unwrap();
+            assert_eq!(*sig, one, "param {i} 不一致");
+        }
+    }
+
+    #[test]
     fn test_name_and_params() {
         let s = BbrkVolStrategy {
-            pairs: vec![(2.5, 10, 1.5)],
+            pairs: vec![(2.5, 20, 10, 1.5)],
         };
         assert_eq!(s.name(), "BBRK_VOL");
-        assert_eq!(s.param_str(0), "sigma=2.5,voln=10,volmult=1.5");
+        assert_eq!(s.param_str(0), "sigma=2.5,bblen=20,voln=10,volmult=1.5");
     }
 }

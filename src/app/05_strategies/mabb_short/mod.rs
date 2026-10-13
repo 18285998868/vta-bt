@@ -1,0 +1,52 @@
+mod config;
+mod strategy;
+pub use config::MabbShortConfig;
+pub use strategy::MabbShortStrategy;
+
+/// 单均线BB候选中轨（vector-ta `ma()` Slice可算口径；已剔除edma（无分发）/uma（需成交量））。
+/// 覆盖 unknown-type 时 compute 降级为全Hold（单测锁定全表可用）。
+pub const MABB_MA_NAMES: [&str; 43] = [
+    "sma",
+    "ema",
+    "wma",
+    "dema",
+    "tema",
+    "trima",
+    "smma",
+    "wilders",
+    "hma",
+    "zlema",
+    "kama",
+    "frama",
+    "jma",
+    "alma",
+    "dma",
+    "ehma",
+    "fwma",
+    "swma",
+    "pwma",
+    "sinwma",
+    "hwma",
+    "nma",
+    "linreg",
+    "tilson",
+    "mama",
+    "gaussian",
+    "sama",
+    "epma",
+    "cwma",
+    "mwdx",
+    "jsa",
+    "cora_wave",
+    "wave_smoother",
+    "reflex",
+    "trendflex",
+    "sqwma",
+    "srwma",
+    "supersmoother",
+    "supersmoother_3_pole",
+    "sgf",
+    "highpass",
+    "highpass2",
+    "n_order_ema",
+];

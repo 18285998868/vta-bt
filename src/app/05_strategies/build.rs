@@ -14,6 +14,16 @@ use super::bbrk_kdj::BbrkKdjStrategy;
 use super::bbrk_don::BbrkDonStrategy;
 use super::bbrk_hma::BbrkHmaStrategy;
 use super::bbrk_hma_ema::BbrkHmaEmaStrategy;
+use super::bbrk_hma_v1::BbrkHmaV1Strategy;
+use super::bbrk_hma_v1_sl::BbrkHmaV1SlStrategy;
+use super::bbrk_hma_v2::BbrkHmaV2Strategy;
+use super::bbrk_hma_v2_sl::BbrkHmaV2SlStrategy;
+use super::bbrk_hma_v3::BbrkHmaV3Strategy;
+use super::bbrk_hma_v3_sl::BbrkHmaV3SlStrategy;
+use super::bbrk_hma_v4::BbrkHmaV4Strategy;
+use super::bbrk_hma_v4_sl::BbrkHmaV4SlStrategy;
+use super::bbrk_hma_v5::BbrkHmaV5Strategy;
+use super::bbrk_hma_v5_sl::BbrkHmaV5SlStrategy;
 use super::bbrk_m2::BbrkM2Strategy;
 use super::bbrk_m3::BbrkM3Strategy;
 use super::bbrk_max::BbrkMaxStrategy;
@@ -44,6 +54,8 @@ use super::jma::JmaStrategy;
 use super::kama::KamaStrategy;
 use super::keltner::KeltnerStrategy;
 use super::linreg::LinRegStrategy;
+use super::mabb_long::MabbLongStrategy;
+use super::mabb_short::MabbShortStrategy;
 use super::macd::MacdStrategy;
 use super::mcginley::McGinleyStrategy;
 use super::pwma::PwmaStrategy;
@@ -107,6 +119,16 @@ macro_rules! build_ma {
             | StrategyConfig::BbrkAtrEma(_)
             | StrategyConfig::BbrkSmaEma(_)
             | StrategyConfig::BbrkHmaEma(_)
+            | StrategyConfig::BbrkHmaV1(_)
+            | StrategyConfig::BbrkHmaV1Sl(_)
+            | StrategyConfig::BbrkHmaV2(_)
+            | StrategyConfig::BbrkHmaV2Sl(_)
+            | StrategyConfig::BbrkHmaV3(_)
+            | StrategyConfig::BbrkHmaV3Sl(_)
+            | StrategyConfig::BbrkHmaV4(_)
+            | StrategyConfig::BbrkHmaV4Sl(_)
+            | StrategyConfig::BbrkHmaV5(_)
+            | StrategyConfig::BbrkHmaV5Sl(_)
             | StrategyConfig::BbrkZlemaEma(_)
             | StrategyConfig::BbrkRex(_)
             | StrategyConfig::BbrkVol(_)
@@ -119,6 +141,8 @@ macro_rules! build_ma {
             | StrategyConfig::BbrkOrth(_)
             | StrategyConfig::VwapTrend(_)
             | StrategyConfig::RSI2(_)
+            | StrategyConfig::MabbLong(_)
+            | StrategyConfig::MabbShort(_)
             | StrategyConfig::Macd(_)
             | StrategyConfig::Vwap(_)
             | StrategyConfig::Edma(_)
@@ -166,6 +190,16 @@ pub fn build_strategies(configs: &[StrategyConfig]) -> Vec<Box<dyn Strategy>> {
                     | StrategyConfig::BbrkAtrEma(_)
                     | StrategyConfig::BbrkSmaEma(_)
                     | StrategyConfig::BbrkHmaEma(_)
+                    | StrategyConfig::BbrkHmaV1(_)
+                    | StrategyConfig::BbrkHmaV1Sl(_)
+                    | StrategyConfig::BbrkHmaV2(_)
+                    | StrategyConfig::BbrkHmaV2Sl(_)
+                    | StrategyConfig::BbrkHmaV3(_)
+                    | StrategyConfig::BbrkHmaV3Sl(_)
+                    | StrategyConfig::BbrkHmaV4(_)
+                    | StrategyConfig::BbrkHmaV4Sl(_)
+                    | StrategyConfig::BbrkHmaV5(_)
+                    | StrategyConfig::BbrkHmaV5Sl(_)
                     | StrategyConfig::BbrkZlemaEma(_)
                     | StrategyConfig::BbrkRex(_)
                     | StrategyConfig::BbrkVol(_)
@@ -178,6 +212,8 @@ pub fn build_strategies(configs: &[StrategyConfig]) -> Vec<Box<dyn Strategy>> {
                     | StrategyConfig::BbrkOrth(_)
                     | StrategyConfig::VwapTrend(_)
                     | StrategyConfig::RSI2(_)
+                    | StrategyConfig::MabbLong(_)
+                    | StrategyConfig::MabbShort(_)
                     | StrategyConfig::Macd(_)
                     | StrategyConfig::Vwap(_)
             )
@@ -313,6 +349,36 @@ pub fn build_strategies(configs: &[StrategyConfig]) -> Vec<Box<dyn Strategy>> {
             StrategyConfig::BbrkHmaEma(c) => {
                 Some(Box::new(BbrkHmaEmaStrategy::new(c.clone())) as Box<dyn Strategy>)
             }
+            StrategyConfig::BbrkHmaV1(c) => {
+                Some(Box::new(BbrkHmaV1Strategy::new(c.clone())) as Box<dyn Strategy>)
+            }
+            StrategyConfig::BbrkHmaV2(c) => {
+                Some(Box::new(BbrkHmaV2Strategy::new(c.clone())) as Box<dyn Strategy>)
+            }
+            StrategyConfig::BbrkHmaV3(c) => {
+                Some(Box::new(BbrkHmaV3Strategy::new(c.clone())) as Box<dyn Strategy>)
+            }
+            StrategyConfig::BbrkHmaV4(c) => {
+                Some(Box::new(BbrkHmaV4Strategy::new(c.clone())) as Box<dyn Strategy>)
+            }
+            StrategyConfig::BbrkHmaV5(c) => {
+                Some(Box::new(BbrkHmaV5Strategy::new(c.clone())) as Box<dyn Strategy>)
+            }
+            StrategyConfig::BbrkHmaV1Sl(c) => {
+                Some(Box::new(BbrkHmaV1SlStrategy::new(c.clone())) as Box<dyn Strategy>)
+            }
+            StrategyConfig::BbrkHmaV2Sl(c) => {
+                Some(Box::new(BbrkHmaV2SlStrategy::new(c.clone())) as Box<dyn Strategy>)
+            }
+            StrategyConfig::BbrkHmaV3Sl(c) => {
+                Some(Box::new(BbrkHmaV3SlStrategy::new(c.clone())) as Box<dyn Strategy>)
+            }
+            StrategyConfig::BbrkHmaV4Sl(c) => {
+                Some(Box::new(BbrkHmaV4SlStrategy::new(c.clone())) as Box<dyn Strategy>)
+            }
+            StrategyConfig::BbrkHmaV5Sl(c) => {
+                Some(Box::new(BbrkHmaV5SlStrategy::new(c.clone())) as Box<dyn Strategy>)
+            }
             StrategyConfig::BbrkZlemaEma(c) => {
                 Some(Box::new(BbrkZlemaEmaStrategy::new(c.clone())) as Box<dyn Strategy>)
             }
@@ -348,6 +414,12 @@ pub fn build_strategies(configs: &[StrategyConfig]) -> Vec<Box<dyn Strategy>> {
             }
             StrategyConfig::RSI2(c) => {
                 Some(Box::new(RSI2Strategy::new(c.clone())) as Box<dyn Strategy>)
+            }
+            StrategyConfig::MabbLong(c) => {
+                Some(Box::new(MabbLongStrategy::new(c.clone())) as Box<dyn Strategy>)
+            }
+            StrategyConfig::MabbShort(c) => {
+                Some(Box::new(MabbShortStrategy::new(c.clone())) as Box<dyn Strategy>)
             }
             StrategyConfig::Macd(c) => {
                 Some(Box::new(MacdStrategy::new(c.clone())) as Box<dyn Strategy>)

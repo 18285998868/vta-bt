@@ -59,6 +59,16 @@ fn params_to_json(params: &str) -> String {
     }
 }
 
+/// FNV-1a 32（编码槽位溢出时的回退口径，确定性；见 `strategy_params_value`）。
+fn fnv1a_32(s: &str) -> u32 {
+    let mut h: u32 = 0x811c_9dc5;
+    for b in s.bytes() {
+        h ^= b as u32;
+        h = h.wrapping_mul(0x0100_0193);
+    }
+    h
+}
+
 fn strategy_params_value(params: &str) -> u32 {
     let clean = params.replace(' ', "");
     // 双均线 "fast=F,slow=S" 编码为 F*1_000_000+S(F/S<1_000_000, 本项目网格内唯一)。
@@ -166,6 +176,9 @@ fn strategy_params_value(params: &str) -> u32 {
         // 三键形如 "sigma=S,kc=K,ttmn=N"(BBRK_TTM) 或 "sigma=S,voln=N,volmult=M"(BBRK_VOL)：
         // round(S*100)*1M + 后续键折叠(h=h*1000+slot，整数键直接取值、小数键×10)，
         // 各策略网格内唯一（strategy 列隔离跨策略）。
+        // 溢出修正（2026-10-12）：四键起 h 可 ≥1M（如 VOL 的 bblen 格），旧式
+        // s*1M+h 会跨 s 槽碰撞（如 sigma=1.5/bblen=60 ≡ sigma=2/bblen=10）。
+        // h<1M 走旧口径（全部封存编码逐位不变）；h≥1M 走 FNV 回退。
         if rest.matches(',').count() >= 2 {
             let mut it = rest.split(',');
             let s: u32 = it
@@ -184,7 +197,10 @@ fn strategy_params_value(params: &str) -> u32 {
                 });
                 h = h.saturating_mul(1000).saturating_add(slot);
             }
-            return s.saturating_mul(1_000_000).saturating_add(h);
+            if h < 1_000_000 {
+                return s.saturating_mul(1_000_000).saturating_add(h);
+            }
+            return fnv1a_32(&clean);
         }
         if let Some(comma) = rest.find(',') {
             let s: u32 = rest[..comma]
@@ -495,7 +511,11 @@ pub fn write_parquet(path: &str, results: &[RunResult], balance: f64) -> Result<
     Ok(())
 }
 
-pub fn write_detail_parquet(details: &[crate::app::DetailResult], dir: &str) -> Result<()> {
+pub fn write_detail_parquet(
+    details: &[crate::app::DetailResult],
+    dir: &str,
+    write_curves: bool,
+) -> Result<()> {
     use parquet::arrow::ArrowWriter;
     use parquet::file::properties::WriterProperties;
     use std::collections::HashMap;
@@ -602,6 +622,10 @@ pub fn write_detail_parquet(details: &[crate::app::DetailResult], dir: &str) -> 
 
         // fixed 腿逐 bar 权益: `--pbo` 的 T×N 输入。分组元数据进 schema metadata,
         // 文件名含 params 明文(含 `_` 清洗)故不做反向解析。
+        // `write_curves=false`（默认）时跳过：GB 级 I/O 只在做 PBO 时花。
+        if !write_curves {
+            continue;
+        }
         let mut bar_idx = UInt64Builder::new();
         let mut fixed_equity = Float64Builder::new();
         for d in group {
@@ -990,6 +1014,11 @@ mod tests {
             strategy_params_value("sigma=2.5,voln=10,volmult=1.5"),
             250_010_015
         );
+        // 溢出回退（2026-10-12）：旧4键碰撞对必须分开，且VOL全网格720串唯一。
+        assert_ne!(
+            strategy_params_value("sigma=1.5,bblen=60,voln=5,volmult=2"),
+            strategy_params_value("sigma=2,bblen=10,voln=5,volmult=2")
+        );
         assert_eq!(strategy_params_value("sigma=2.5,atrthr=1"), 2_500_000_010);
         assert_eq!(
             strategy_params_value("sigma=2.5,kc=1.5,ttmn=5"),
@@ -1000,6 +1029,57 @@ mod tests {
         assert_eq!(strategy_params_value("reset=1"), 1);
         assert_eq!(strategy_params_value("sigma=2.5,trailk=3"), 2_500_000_030);
         assert_eq!(strategy_params_value("base"), 0);
+    }
+
+    #[test]
+    fn test_params_value_vol_4key_grid_unique() {
+        // VOL宽网格（σ6×len6×N4×m5=720）编码无碰撞。
+        use std::collections::HashSet;
+        let mut seen = HashSet::new();
+        for s in ["1.5", "2", "2.5", "3", "3.5", "4"] {
+            for l in [10, 20, 30, 40, 50, 60] {
+                for n in [5, 10, 15, 20] {
+                    for m in ["1.2", "1.5", "2", "2.5", "3"] {
+                        let p = format!("sigma={s},bblen={l},voln={n},volmult={m}");
+                        assert!(seen.insert(strategy_params_value(&p)), "collision: {p}");
+                    }
+                }
+            }
+        }
+        assert_eq!(seen.len(), 720);
+    }
+
+    #[test]
+    fn test_fixed_curves_gated_by_flag() {
+        // fixed_curves=false 只落逐笔 trades，不写 *_fixedcurve.parquet。
+        let d = crate::app::DetailResult {
+            symbol: "BTCUSDT".into(),
+            timeframe: "1h".into(),
+            strategy: "BBRK".into(),
+            params: "sigma=2.5".into(),
+            trades: vec![],
+            equity_curve: vec![],
+            fixed_curve: vec![1.0, 2.0, 3.0],
+        };
+        let dir = std::env::temp_dir().join("vta_test_nocurves");
+        let _ = std::fs::remove_dir_all(&dir);
+        write_detail_parquet(std::slice::from_ref(&d), dir.to_str().unwrap(), false).unwrap();
+        let names: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(names.iter().any(|f| !f.contains("fixedcurve")), "{names:?}");
+        assert!(!names.iter().any(|f| f.contains("fixedcurve")), "{names:?}");
+        let dir2 = std::env::temp_dir().join("vta_test_curves");
+        let _ = std::fs::remove_dir_all(&dir2);
+        write_detail_parquet(std::slice::from_ref(&d), dir2.to_str().unwrap(), true).unwrap();
+        let names2: Vec<String> = std::fs::read_dir(&dir2)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(names2.iter().any(|f| f.contains("fixedcurve")), "{names2:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir2);
     }
 
     #[test]

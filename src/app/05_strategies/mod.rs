@@ -12,6 +12,16 @@ pub mod bbrk_cross;
 pub mod bbrk_don;
 pub mod bbrk_hma;
 pub mod bbrk_hma_ema;
+pub mod bbrk_hma_v1;
+pub mod bbrk_hma_v1_sl;
+pub mod bbrk_hma_v2;
+pub mod bbrk_hma_v2_sl;
+pub mod bbrk_hma_v3;
+pub mod bbrk_hma_v3_sl;
+pub mod bbrk_hma_v4;
+pub mod bbrk_hma_v4_sl;
+pub mod bbrk_hma_v5;
+pub mod bbrk_hma_v5_sl;
 pub mod bbrk_kdj;
 pub mod bbrk_m2;
 pub mod bbrk_m3;
@@ -44,6 +54,8 @@ pub mod jma;
 pub mod kama;
 pub mod keltner;
 pub mod linreg;
+pub mod mabb_long;
+pub mod mabb_short;
 pub mod macd;
 pub mod mcginley;
 pub mod pwma;
@@ -73,7 +85,7 @@ pub mod wma;
 pub mod zlema;
 
 pub use shared::{
-    DayBar, PoleCount, Signal, aggregate_days, bars_per_year, candle_direction_filter,
+    CachedBands, DayBar, PoleCount, Signal, aggregate_days, bars_per_year, candle_direction_filter,
     expand_f64_range, is_known_timeframe, money_flow_index, price_cross_signal, rolling_highest,
     rolling_lowest, shift_right_1, supersmoother_3_pole, utc_day_index,
 };
@@ -108,5 +120,30 @@ pub trait Strategy: Send + Sync {
     ) -> crate::error::Result<Vec<Signal>> {
         let _ = (high, low, time);
         self.generate_signals(open, close, volume, param_idx)
+    }
+
+    /// 批量信号入口：一次算出 [start, end) 参数的全部信号（与 range 一一对应，
+    /// 顺序保证），允许重参数策略在内部复用跨参数共享指标
+    /// （如:**同σ的BB、与参数无关的ATR/量能前缀和/动量柱**）。
+    /// 默认实现 = 按参数并行逐个调（与旧引擎循环等价）；重参数策略重写本方法做hoist。
+    /// 引擎是唯一调用方（逐批调，内存预算逻辑不变）。
+    #[allow(clippy::too_many_arguments)]
+    fn generate_signals_batch(
+        &self,
+        open: &[f64],
+        high: &[f64],
+        low: &[f64],
+        close: &[f64],
+        volume: &[f64],
+        time: &[i64],
+        range: std::ops::Range<usize>,
+    ) -> crate::error::Result<Vec<Vec<Signal>>> {
+        use rayon::prelude::*;
+        range
+            .into_par_iter()
+            .map(|i| {
+                self.generate_signals_full(open, high, low, close, volume, time, i)
+            })
+            .collect()
     }
 }

@@ -347,6 +347,10 @@ pub fn money_flow_index(
     out
 }
 
+/// BB 三轨缓存值：(lower, mid, upper)；None = 该参数算不出（P7 全 Hold）。
+/// 给 `generate_signals_batch` 的跨参数复用表用。
+pub type CachedBands = Option<(Vec<f64>, Vec<f64>, Vec<f64>)>;
+
 #[cfg(test)]
 mod tests {
     use super::*;
