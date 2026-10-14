@@ -1,6 +1,6 @@
 [data]
 type = "binance"
-dir = "/data/nutilustrader/data/futures/um/daily/klines"
+dir = "/data/nutilustrader/data/binance/data/um/daily/klines"
 symbol = "BTCUSDT"
 timeframe = "1d"
 start_date = "2020-01-01"

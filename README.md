@@ -21,7 +21,7 @@
 ```toml
 [data]
 type = "binance" # 必填, 数据源类型: "binance" | "dukascopy"
-dir = "/data/nutilustrader/data/futures/um/daily/klines" # 必填, K线数据根目录
+dir = "/data/nutilustrader/data/binance/data/um/daily/klines" # 必填, K线数据根目录
 symbol = ["BTCUSDT"] # 必填, 回测品种列表
 timeframes = ["1d"] # 必填, 可选 ["1m","3m","5m","15m","30m","1h","2h","4h","6h","8h","12h","1d"]
 # start_date = "2024-01-01" # 可选, 数据起始日期, 格式 YYYY-MM-DD

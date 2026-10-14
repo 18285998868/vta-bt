@@ -5,7 +5,7 @@
 # 必须, 数据源类型: "binance" | "dukascopy"
 type = "binance"
 # 必须, K线数据目录
-dir = "/data/nutilustrader/data/futures/um/daily/klines"
+dir = "/data/nutilustrader/data/binance/data/um/daily/klines"
 # 必须, 回测品种
 # 可为单值或数组: symbol = "BTCUSDT" / symbol = ["BTCUSDT", "ETHUSDT"]
 symbol = "BTCUSDT"
