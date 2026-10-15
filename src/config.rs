@@ -138,6 +138,11 @@ impl Config {
                 "backtest.fee_bps / slippage_bps 不能为负".into(),
             ));
         }
+        if self.backtest.delay_bars < 1 {
+            return Err(AppError::Msg(
+                "backtest.delay_bars = 0 已删除(信号当根成交, 前视乐观); 只允许≥1(次根 fill bar 起)".into(),
+            ));
+        }
         if self.data.symbols().iter().any(|s| s.is_empty()) || self.data.symbols().is_empty() {
             return Err(AppError::Msg("data.symbol 不能为空".into()));
         }
@@ -220,6 +225,8 @@ impl Config {
                 }
                 StrategyConfig::BbrkAdx(c) => {
                     c.sigma.validate_range("bbrk_adx.sigma", 0.1, 10.0)?;
+                    c.bblen.validate_range("bbrk_adx.bblen", 2.0, 2000.0)?;
+                    c.adxlen.validate_range("bbrk_adx.adxlen", 2.0, 200.0)?;
                     c.adx.validate_range("bbrk_adx.adx", 0.0, 100.0)?;
                     if c.pairs().is_empty() {
                         return Err(AppError::Msg("bbrk_adx 参数组合为空".into()));
@@ -249,6 +256,8 @@ impl Config {
                 StrategyConfig::BbrkAtr(c) => {
                     c.sigma.validate_range("bbrk_atr.sigma", 0.1, 10.0)?;
                     c.bblen.validate_range("bbrk_atr.bblen", 2.0, 2000.0)?;
+                    c.atr1.validate_range("bbrk_atr.atr1", 2.0, 500.0)?;
+                    c.atr2.validate_range("bbrk_atr.atr2", 2.0, 500.0)?;
                     c.atrthr.validate_range("bbrk_atr.atrthr", 0.1, 5.0)?;
                     if c.pairs().is_empty() {
                         return Err(AppError::Msg("bbrk_atr 参数组合为空".into()));
@@ -270,6 +279,7 @@ impl Config {
                 }
                 StrategyConfig::BbrkHma(c) => {
                     c.sigma.validate_range("bbrk_hma.sigma", 0.1, 10.0)?;
+                    c.bblen.validate_range("bbrk_hma.bblen", 2.0, 2000.0)?;
                     c.hmalen.validate_range("bbrk_hma.hmalen", 2.0, 2000.0)?;
                     if c.pairs().is_empty() {
                         return Err(AppError::Msg("bbrk_hma 参数组合为空".into()));
@@ -640,9 +650,9 @@ impl StrategyConfig {
 #[serde(deny_unknown_fields)]
 pub struct BacktestConfig {
     pub initial_balance: f64,
-    /// 信号到成交的延迟(bar 数)。0 = 现状: 信号当根收盘成交(前视乐观);
-    /// 1 = 信号次根 fill bar 成交(推荐, 消除同 bar 前视)。
-    #[serde(default)]
+    /// 信号到成交的延迟(bar 数)。只允许≥1: 信号次根 fill bar 成交;
+    /// delay = 0(信号当根收盘成交, 前视乐观)已删除, 写0直接报错。
+    #[serde(default = "default_delay_bars")]
     pub delay_bars: usize,
     /// 单边佣金(bp)。如 taker 2bp 填 2.0, maker 零费填 0。
     #[serde(default)]
@@ -650,13 +660,18 @@ pub struct BacktestConfig {
     /// 单边逆向滑点(bp)。买入抬价、卖出压价; 与 fee 叠加扣除。
     #[serde(default)]
     pub slippage_bps: f64,
-    /// delay>0 时 fill bar 的成交价: "open"(默认, 次根开盘)或 "close"(次根收盘)。
+    /// fill bar 的成交价: "open"(默认, 次根开盘)或 "close"(次根收盘)。
     /// 旧配置文件无此键时回退为 open, 历史结果不受影响。
     #[serde(default)]
     pub fill_bar_price: FillBarPrice,
 }
 
-/// delay>0 时 fill bar 的成交价位。
+/// 缺省延迟 1 bar (次根 fill bar 成交); delay = 0 已删除, 见 validate。
+fn default_delay_bars() -> usize {
+    1
+}
+
+/// fill bar 的成交价位 (delay恒≥1)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum FillBarPrice {
@@ -914,6 +929,23 @@ mod tests {
     fn validate_rejects_zero_balance() {
         let cfg: Config = toml::from_str(&make_toml(0.0, true, true)).unwrap();
         assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_zero_delay_bars() {
+        let toml = make_toml(10000.0, true, true).replace(
+            "initial_balance = 10000",
+            "initial_balance = 10000.0\ndelay_bars = 0",
+        );
+        let cfg: Config = toml::from_str(&toml).unwrap();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn missing_delay_bars_defaults_to_one() {
+        let cfg: Config = toml::from_str(&make_toml(10000.0, true, true)).unwrap();
+        assert_eq!(cfg.backtest.delay_bars, 1);
+        assert!(cfg.validate().is_ok());
     }
 
     #[test]

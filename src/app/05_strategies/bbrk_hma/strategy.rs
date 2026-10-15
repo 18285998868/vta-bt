@@ -12,7 +12,7 @@ use super::config::BbrkHmaConfig;
 /// 持仓后中线离场（与 BBRK 相同）。
 /// HMA 预热不足/NaN → 不开仓（P7）。
 pub struct BbrkHmaStrategy {
-    pairs: Vec<(f64, usize)>,
+    pairs: Vec<(f64, usize, usize)>,
 }
 
 impl BbrkHmaStrategy {
@@ -75,11 +75,11 @@ pub fn bbrk_hma_signals(
     sig
 }
 
-fn compute(close: &[f64], sigma: f64, len: usize) -> crate::error::Result<Vec<Signal>> {
+fn compute(close: &[f64], sigma: f64, bblen: usize, hmalen: usize) -> crate::error::Result<Vec<Signal>> {
     let bb = match bollinger_bands(&BollingerBandsInput::from_slice(
         close,
         BollingerBandsParams {
-            period: Some(20),
+            period: Some(bblen),
             devup: Some(sigma),
             devdn: Some(sigma),
             matype: Some("sma".to_string()),
@@ -91,7 +91,7 @@ fn compute(close: &[f64], sigma: f64, len: usize) -> crate::error::Result<Vec<Si
     };
     let ma = match hma(&HmaInput::from_slice(
         close,
-        HmaParams { period: Some(len) },
+        HmaParams { period: Some(hmalen) },
     )) {
         Ok(v) => v.values,
         Err(_) => return Ok(vec![Signal::Hold; close.len()]),
@@ -115,8 +115,8 @@ impl Strategy for BbrkHmaStrategy {
     }
 
     fn param_str(&self, idx: usize) -> String {
-        let (s, l) = self.pairs[idx];
-        format!("sigma={s},hmalen={l}")
+        let (s, b, l) = self.pairs[idx];
+        format!("sigma={s},bblen={b},hmalen={l}")
     }
 
     fn generate_signals(
@@ -126,8 +126,8 @@ impl Strategy for BbrkHmaStrategy {
         _volume: &[f64],
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
-        let (s, l) = self.pairs[param_idx];
-        compute(close, s, l)
+        let (s, b, l) = self.pairs[param_idx];
+        compute(close, s, b, l)
     }
 
     fn generate_signals_full(
@@ -140,8 +140,8 @@ impl Strategy for BbrkHmaStrategy {
         _time: &[i64],
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
-        let (s, l) = self.pairs[param_idx];
-        compute(close, s, l)
+        let (s, b, l) = self.pairs[param_idx];
+        compute(close, s, b, l)
     }
 }
 
@@ -169,9 +169,9 @@ mod tests {
     #[test]
     fn test_name_and_params() {
         let s = BbrkHmaStrategy {
-            pairs: vec![(2.5, 100)],
+            pairs: vec![(2.5, 20, 100)],
         };
         assert_eq!(s.name(), "BBRK_HMA");
-        assert_eq!(s.param_str(0), "sigma=2.5,hmalen=100");
+        assert_eq!(s.param_str(0), "sigma=2.5,bblen=20,hmalen=100");
     }
 }

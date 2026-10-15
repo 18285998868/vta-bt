@@ -7,15 +7,11 @@ use crate::strategies::{Signal, Strategy};
 
 use super::config::BbrkAtrConfig;
 
-/// ATR短长窗口（固定，经典短长配）。
-const ATR_SHORT: usize = 5;
-const ATR_LONG: usize = 20;
-
 /// BBRK+ATR扩张门：flat + close突破 **且** 方向一致 **且**
-/// `ATR5/ATR20 > thr` → Buy/Sell；持仓后中线离场（与 BBRK 相同）。
-/// ATR NaN（预热）/ATR20非正 → 不开仓（P7）。
+/// `ATR(atr1)/ATR(atr2) > thr` → Buy/Sell；持仓后中线离场（与 BBRK 相同）。
+/// ATR NaN（预热）/长窗ATR非正 → 不开仓（P7）。
 pub struct BbrkAtrStrategy {
-    pairs: Vec<(f64, usize, f64)>,
+    pairs: Vec<(f64, usize, usize, usize, f64)>,
 }
 
 impl BbrkAtrStrategy {
@@ -34,8 +30,8 @@ pub fn bbrk_atr_signals(
     lower: &[f64],
     mid: &[f64],
     upper: &[f64],
-    atr5: &[f64],
-    atr20: &[f64],
+    atr_short: &[f64],
+    atr_long: &[f64],
     thr: f64,
 ) -> Vec<Signal> {
     let n = close
@@ -44,8 +40,8 @@ pub fn bbrk_atr_signals(
         .min(lower.len())
         .min(mid.len())
         .min(upper.len())
-        .min(atr5.len())
-        .min(atr20.len());
+        .min(atr_short.len())
+        .min(atr_long.len());
     let mut sig = vec![Signal::Hold; n];
     let mut pos: i8 = 0;
     for i in 0..n {
@@ -62,11 +58,11 @@ pub fn bbrk_atr_signals(
             if (brk_up && c <= o) || (brk_dn && c >= o) {
                 continue;
             }
-            let (a5, a20) = (atr5[i], atr20[i]);
-            if ![a5, a20].iter().all(|v| v.is_finite()) || a20 <= 0.0 {
+            let (a1, a2) = (atr_short[i], atr_long[i]);
+            if ![a1, a2].iter().all(|v| v.is_finite()) || a2 <= 0.0 {
                 continue;
             }
-            if a5 / a20 <= thr {
+            if a1 / a2 <= thr {
                 continue;
             }
             if brk_up {
@@ -97,6 +93,7 @@ pub fn bbrk_atr_signals(
     sig
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compute(
     open: &[f64],
     high: &[f64],
@@ -104,6 +101,8 @@ fn compute(
     close: &[f64],
     sigma: f64,
     bblen: usize,
+    atr1: usize,
+    atr2: usize,
     thr: f64,
 ) -> crate::error::Result<Vec<Signal>> {
     let bb = match bollinger_bands(&BollingerBandsInput::from_slice(
@@ -119,23 +118,23 @@ fn compute(
         Ok(v) => v,
         Err(_) => return Ok(vec![Signal::Hold; close.len()]),
     };
-    let a5 = match atr(&AtrInput::from_slices(
+    let a1 = match atr(&AtrInput::from_slices(
         high,
         low,
         close,
         AtrParams {
-            length: Some(ATR_SHORT),
+            length: Some(atr1),
         },
     )) {
         Ok(v) => v.values,
         Err(_) => return Ok(vec![Signal::Hold; close.len()]),
     };
-    let a20 = match atr(&AtrInput::from_slices(
+    let a2 = match atr(&AtrInput::from_slices(
         high,
         low,
         close,
         AtrParams {
-            length: Some(ATR_LONG),
+            length: Some(atr2),
         },
     )) {
         Ok(v) => v.values,
@@ -147,8 +146,8 @@ fn compute(
         &bb.lower_band,
         &bb.middle_band,
         &bb.upper_band,
-        &a5,
-        &a20,
+        &a1,
+        &a2,
         thr,
     ))
 }
@@ -163,8 +162,8 @@ impl Strategy for BbrkAtrStrategy {
     }
 
     fn param_str(&self, idx: usize) -> String {
-        let (s, l, t) = self.pairs[idx];
-        format!("sigma={s},bblen={l},atrthr={t}")
+        let (s, l, a1, a2, t) = self.pairs[idx];
+        format!("sigma={s},bblen={l},atr1={a1},atr2={a2},atrthr={t}")
     }
 
     fn generate_signals(
@@ -175,8 +174,8 @@ impl Strategy for BbrkAtrStrategy {
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
         // 无 high/low 时 ATR 无从算起 → 用 close 充当（ATR=0 → 门全拦，P7）。
-        let (s, l, t) = self.pairs[param_idx];
-        compute(open, close, close, close, s, l, t)
+        let (s, l, a1, a2, t) = self.pairs[param_idx];
+        compute(open, close, close, close, s, l, a1, a2, t)
     }
 
     fn generate_signals_full(
@@ -189,12 +188,12 @@ impl Strategy for BbrkAtrStrategy {
         _time: &[i64],
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
-        let (s, l, t) = self.pairs[param_idx];
-        compute(open, high, low, close, s, l, t)
+        let (s, l, a1, a2, t) = self.pairs[param_idx];
+        compute(open, high, low, close, s, l, a1, a2, t)
     }
 
-    /// 批量版：ATR5/ATR20 与参数无关算一次（396×→1×），BB 按 (sigma, bblen)
-    /// 去重（396×→36×），再并行跑各 thr。输出与逐个调逐位一致（单测锁定）。
+    /// 批量版：ATR 按窗长去重（各unique长度算一次），BB 按 (sigma, bblen)
+    /// 去重，再并行跑各 (atr1, atr2, thr)。输出与逐个调逐位一致（单测锁定）。
     fn generate_signals_batch(
         &self,
         open: &[f64],
@@ -210,33 +209,28 @@ impl Strategy for BbrkAtrStrategy {
         use vector_ta::indicators::bollinger_bands::{
             bollinger_bands, BollingerBandsInput, BollingerBandsParams,
         };
-        let atr_pair: Option<(Vec<f64>, Vec<f64>)> = (|| {
-            let a5 = atr(&AtrInput::from_slices(
-                high,
-                low,
-                close,
-                AtrParams {
-                    length: Some(ATR_SHORT),
-                },
-            ))
-            .ok()?
-            .values;
-            let a20 = atr(&AtrInput::from_slices(
-                high,
-                low,
-                close,
-                AtrParams {
-                    length: Some(ATR_LONG),
-                },
-            ))
-            .ok()?
-            .values;
-            Some((a5, a20))
-        })();
+        let mut atrmap: HashMap<usize, Option<Vec<f64>>> = HashMap::new();
+        for idx in range.clone() {
+            let (_, _, a1, a2, _) = self.pairs[idx];
+            for len in [a1, a2] {
+                atrmap.entry(len).or_insert_with(|| {
+                    atr(&AtrInput::from_slices(
+                        high,
+                        low,
+                        close,
+                        AtrParams {
+                            length: Some(len),
+                        },
+                    ))
+                    .ok()
+                    .map(|a| a.values)
+                });
+            }
+        }
         let mut bbmap: HashMap<(u64, usize), crate::strategies::CachedBands> =
             HashMap::new();
         for idx in range.clone() {
-            let (s, l, _) = self.pairs[idx];
+            let (s, l, _, _, _) = self.pairs[idx];
             bbmap.entry((s.to_bits(), l)).or_insert_with(|| {
                 bollinger_bands(&BollingerBandsInput::from_slice(
                     close,
@@ -255,11 +249,19 @@ impl Strategy for BbrkAtrStrategy {
         range
             .into_par_iter()
             .map(|idx| {
-                let (s, l, t) = self.pairs[idx];
-                match (&atr_pair, bbmap.get(&(s.to_bits(), l))) {
-                    (Some((a5, a20)), Some(Some((lower, mid, upper)))) => {
-                        Ok(bbrk_atr_signals(open, close, lower, mid, upper, a5, a20, t))
-                    }
+                let (s, l, a1, a2, t) = self.pairs[idx];
+                match (
+                    atrmap.get(&a1),
+                    atrmap.get(&a2),
+                    bbmap.get(&(s.to_bits(), l)),
+                ) {
+                    (
+                        Some(Some(short)),
+                        Some(Some(long)),
+                        Some(Some((lower, mid, upper))),
+                    ) => Ok(bbrk_atr_signals(
+                        open, close, lower, mid, upper, short, long, t,
+                    )),
                     _ => Ok(vec![Signal::Hold; close.len()]),
                 }
             })
@@ -334,7 +336,11 @@ mod tests {
         let close: Vec<f64> = base.iter().map(|v| v + 0.5).collect();
         let time: Vec<i64> = (0..n as i64).collect();
         let st = BbrkAtrStrategy {
-            pairs: vec![(2.5, 20, 1.0), (2.5, 20, 1.2), (2.0, 10, 0.8)],
+            pairs: vec![
+                (2.5, 20, 5, 20, 1.0),
+                (2.5, 20, 5, 20, 1.2),
+                (2.0, 10, 5, 10, 0.8),
+            ],
         };
         let batched = st
             .generate_signals_batch(&open, &high, &low, &close, &[], &time, 0..3)
@@ -351,9 +357,9 @@ mod tests {
     #[test]
     fn test_name_and_params() {
         let s = BbrkAtrStrategy {
-            pairs: vec![(2.5, 20, 1.0)],
+            pairs: vec![(2.5, 20, 5, 20, 1.0)],
         };
         assert_eq!(s.name(), "BBRK_ATR");
-        assert_eq!(s.param_str(0), "sigma=2.5,bblen=20,atrthr=1");
+        assert_eq!(s.param_str(0), "sigma=2.5,bblen=20,atr1=5,atr2=20,atrthr=1");
     }
 }

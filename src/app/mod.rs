@@ -242,43 +242,62 @@ fn run_combo(
         output::write_single_parquet(&run_rows, &combo_path, ctx.balance)?;
     } else {
         let (bh_pnl, bh_ret) = crate::engine::buy_hold_pnl(&cols.close, ctx.balance);
-        let batch = strategy.generate_signals_batch(
-            &cols.open,
-            &cols.high,
-            &cols.low,
-            &cols.close,
-            &cols.volume,
-            &cols.time,
-            0..n,
-        )?;
-        assert_eq!(batch.len(), n, "batch 信号数必须与参数总数对齐");
-        let run_rows: Vec<RunResult> = batch
-            .into_par_iter()
-            .enumerate()
-            .map(|(i, signals)| {
-                let metrics = crate::engine::simulate(
-                    &cols.close,
-                    &cols.open,
-                    &signals,
-                    ctx.balance,
-                    bpy,
-                    &ctx.exec,
-                );
-                Ok(RunResult {
-                    symbol: symbol.to_string(),
-                    timeframe: tf.to_string(),
-                    strategy: strategy.name().to_string(),
-                    params: strategy.param_str(i),
-                    metrics,
-                    delay_bars: ctx.exec.delay_bars as u32,
-                    fee_bps: ctx.exec.fee_rate * 10_000.0,
-                    slippage_bps: ctx.exec.slip_rate * 10_000.0,
-                    fill_close: ctx.exec.fill_close,
-                    buy_hold_pnl: bh_pnl,
-                    buy_hold_return: bh_ret,
+        // 非 detail 也按信号内存分块: 全量 batch 常驻曾 OOM (35k×2.6M)。
+        // 单 param 约 T×size_of::<Signal>()B; 峰值钳在 BATCH_MEM_BUDGET, 超量分批。
+        const BATCH_MEM_BUDGET: u64 = 4 * 1024 * 1024 * 1024;
+        let per_param = cols.len() as u64 * size_of::<crate::strategies::Signal>() as u64;
+        let chunk = ((BATCH_MEM_BUDGET / per_param.max(1)).max(1).min(n.max(1) as u64)) as usize;
+        if n > chunk {
+            println!(
+                "  [{}] batch 分块: {} 参数, 分 {} 批",
+                strategy.name(),
+                n,
+                n.div_ceil(chunk.max(1)),
+            );
+        }
+        let mut run_rows: Vec<RunResult> = Vec::with_capacity(n);
+        for start in (0..n).step_by(chunk.max(1)) {
+            let end = (start + chunk).min(n);
+            let batch = strategy.generate_signals_batch(
+                &cols.open,
+                &cols.high,
+                &cols.low,
+                &cols.close,
+                &cols.volume,
+                &cols.time,
+                start..end,
+            )?;
+            assert_eq!(batch.len(), end - start, "batch 信号数必须与参数区间对齐");
+            let mut rows: Vec<RunResult> = batch
+                .into_par_iter()
+                .enumerate()
+                .map(|(k, signals)| {
+                    let i = start + k;
+                    let metrics = crate::engine::simulate(
+                        &cols.close,
+                        &cols.open,
+                        &signals,
+                        ctx.balance,
+                        bpy,
+                        &ctx.exec,
+                    );
+                    Ok(RunResult {
+                        symbol: symbol.to_string(),
+                        timeframe: tf.to_string(),
+                        strategy: strategy.name().to_string(),
+                        params: strategy.param_str(i),
+                        metrics,
+                        delay_bars: ctx.exec.delay_bars as u32,
+                        fee_bps: ctx.exec.fee_rate * 10_000.0,
+                        slippage_bps: ctx.exec.slip_rate * 10_000.0,
+                        fill_close: ctx.exec.fill_close,
+                        buy_hold_pnl: bh_pnl,
+                        buy_hold_return: bh_ret,
+                    })
                 })
-            })
-            .collect::<crate::error::Result<Vec<_>>>()?;
+                .collect::<crate::error::Result<Vec<_>>>()?;
+            run_rows.append(&mut rows);
+        }
 
         output::write_single_parquet(&run_rows, &combo_path, ctx.balance)?;
     }
@@ -295,7 +314,7 @@ fn run_combo(
 /// 5.      for strategy in strategies                      // 策略层
 /// 6.        run_combo(...) → 单个组合处理, 内部:
 /// 7.          a. 跳过判断: 非 overwrite 且组合缓存文件(含参数指纹)可读 → 跳过(仍并入合并)
-/// 8.          b. 参数并行: (0..n).into_par_iter 单遍 生成信号 + simulate(/detailed)
+/// 8.          b. 参数并行: 按信号内存预算分批, 批内并行 生成信号 + simulate(/detailed)
 /// 9.          c. detail 模式收集 trades/equity_curve
 /// 10.         d. 写出: write_single_parquet(temps/) [+ write_detail_parquet(detail/)]
 /// 11. merge_parquet_files(combo_files) → result.parquet  // 只合并本次运行组合(新算+跳过)

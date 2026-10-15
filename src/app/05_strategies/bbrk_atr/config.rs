@@ -3,9 +3,11 @@ use serde::Deserialize;
 use crate::config::F64Param;
 
 /// BBRK+ATR扩张门（入场验证#4）：进场仍 BB突破 + 方向一致，
-/// 叠加 `ATR5/ATR20 > thr`（Wilder口径，长度5/20固定）。
-/// thr{0.8,1.0,1.2}：1.0为扩张/收缩天然分界。σ × len × thr 笛卡尔积。
+/// 叠加 `ATR(atr1)/ATR(atr2) > thr`（Wilder口径）。
+/// thr{0.8,1.0,1.2}：1.0为扩张/收缩天然分界。σ × len × atr1 × atr2 × thr 笛卡尔积，
+/// 只取 atr1<atr2（短长语义，ema_cross同口径）。
 /// BB周期bblen（2026-10-12起参数化；缺省20＝旧串语义）。
+/// ATR短长窗（缺省5/20＝旧串语义，经典短长配）。
 /// 离场保持中线。逐笔统计预判：thr剂量单调（0.8<1.0<1.2）。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -14,6 +16,12 @@ pub struct BbrkAtrConfig {
     /// BB周期（缺省20＝旧串语义，封存数据即len20）。
     #[serde(default = "default_bblen")]
     pub bblen: F64Param,
+    /// ATR短窗（缺省5＝旧串语义）。
+    #[serde(default = "default_atr1")]
+    pub atr1: F64Param,
+    /// ATR长窗（缺省20＝旧串语义）。
+    #[serde(default = "default_atr2")]
+    pub atr2: F64Param,
     pub atrthr: F64Param,
 }
 
@@ -21,16 +29,34 @@ fn default_bblen() -> F64Param {
     F64Param::Single(20.0)
 }
 
+fn default_atr1() -> F64Param {
+    F64Param::Single(5.0)
+}
+
+fn default_atr2() -> F64Param {
+    F64Param::Single(20.0)
+}
+
 impl BbrkAtrConfig {
-    pub fn pairs(&self) -> Vec<(f64, usize, f64)> {
+    pub fn pairs(&self) -> Vec<(f64, usize, usize, usize, f64)> {
         let ss = self.sigma.values();
         let ls = self.bblen.values();
+        let a1 = self.atr1.values();
+        let a2 = self.atr2.values();
         let ts = self.atrthr.values();
         let mut out = Vec::new();
         for &s in &ss {
             for &l in &ls {
-                for &t in &ts {
-                    out.push((s, l.round() as usize, t));
+                for &x in &a1 {
+                    for &y in &a2 {
+                        let (xi, yi) = (x.round() as usize, y.round() as usize);
+                        if xi >= yi {
+                            continue;
+                        }
+                        for &t in &ts {
+                            out.push((s, l.round() as usize, xi, yi, t));
+                        }
+                    }
                 }
             }
         }
@@ -44,9 +70,18 @@ mod tests {
     use crate::config::RangeParam;
 
     #[test]
-    fn missing_bblen_defaults_to_20() {
+    fn missing_bblen_atr_defaults_to_20_5_20() {
         let c: BbrkAtrConfig = toml::from_str("sigma = 2.5\natrthr = 1.0").unwrap();
-        assert_eq!(c.pairs(), vec![(2.5, 20, 1.0)]);
+        assert_eq!(c.pairs(), vec![(2.5, 20, 5, 20, 1.0)]);
+    }
+
+    #[test]
+    fn short_not_less_than_long_filtered() {
+        let c: BbrkAtrConfig = toml::from_str(
+            "sigma = 2.5\nbblen = 20.0\natr1 = 10.0\natr2 = 10.0\natrthr = 1.0",
+        )
+        .unwrap();
+        assert!(c.pairs().is_empty());
     }
 
     #[test]
@@ -54,12 +89,17 @@ mod tests {
         let c = BbrkAtrConfig {
             sigma: F64Param::Single(2.5),
             bblen: F64Param::Single(20.0),
+            atr1: F64Param::Single(5.0),
+            atr2: F64Param::Single(20.0),
             atrthr: F64Param::Range(RangeParam {
                 start: 0.8,
                 end: 1.0,
                 step: 0.2,
             }),
         };
-        assert_eq!(c.pairs(), vec![(2.5, 20, 0.8), (2.5, 20, 1.0)]);
+        assert_eq!(
+            c.pairs(),
+            vec![(2.5, 20, 5, 20, 0.8), (2.5, 20, 5, 20, 1.0)]
+        );
     }
 }

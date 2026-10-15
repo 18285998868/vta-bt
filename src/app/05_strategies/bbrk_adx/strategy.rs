@@ -12,7 +12,7 @@ use super::config::BbrkAdxConfig;
 /// long + close<=mid → Close；short + close>=mid → Close(中线离场不过滤，
 /// 避免震荡中无法离场)。BB 或 ADX 为 NaN 时不开仓(NaN→Hold，P7)。
 pub struct BbrkAdxStrategy {
-    pairs: Vec<(f64, f64)>,
+    pairs: Vec<(f64, usize, usize, f64)>,
 }
 
 impl BbrkAdxStrategy {
@@ -83,12 +83,14 @@ fn compute(
     low: &[f64],
     close: &[f64],
     sigma: f64,
+    bblen: usize,
+    adxlen: usize,
     adx_thr: f64,
 ) -> crate::error::Result<Vec<Signal>> {
     let bb = match bollinger_bands(&BollingerBandsInput::from_slice(
         close,
         BollingerBandsParams {
-            period: Some(20),
+            period: Some(bblen),
             devup: Some(sigma),
             devdn: Some(sigma),
             matype: Some("sma".to_string()),
@@ -102,7 +104,9 @@ fn compute(
         high,
         low,
         close,
-        AdxParams { period: Some(14) },
+        AdxParams {
+            period: Some(adxlen),
+        },
     )) {
         Ok(v) => v.values,
         Err(_) => return Ok(vec![Signal::Hold; close.len()]),
@@ -127,8 +131,8 @@ impl Strategy for BbrkAdxStrategy {
     }
 
     fn param_str(&self, idx: usize) -> String {
-        let (s, t) = self.pairs[idx];
-        format!("sigma={s},adx={t}")
+        let (s, l, a, t) = self.pairs[idx];
+        format!("sigma={s},len={l},adxlen={a},adx={t}")
     }
 
     fn generate_signals(
@@ -139,8 +143,8 @@ impl Strategy for BbrkAdxStrategy {
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
         // 无 high/low 入口：用 close 充当(ADX≈0→开仓被门限拦住，P7 不静默退化)。
-        let (s, t) = self.pairs[param_idx];
-        compute(close, close, close, s, t)
+        let (s, l, a, t) = self.pairs[param_idx];
+        compute(close, close, close, s, l, a, t)
     }
 
     fn generate_signals_full(
@@ -153,8 +157,8 @@ impl Strategy for BbrkAdxStrategy {
         _time: &[i64],
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
-        let (s, t) = self.pairs[param_idx];
-        compute(high, low, close, s, t)
+        let (s, l, a, t) = self.pairs[param_idx];
+        compute(high, low, close, s, l, a, t)
     }
 }
 
@@ -204,9 +208,9 @@ mod tests {
     #[test]
     fn test_name_and_params() {
         let s = BbrkAdxStrategy {
-            pairs: vec![(2.5, 20.0)],
+            pairs: vec![(2.5, 20, 14, 20.0)],
         };
         assert_eq!(s.name(), "BBRK_ADX");
-        assert_eq!(s.param_str(0), "sigma=2.5,adx=20");
+        assert_eq!(s.param_str(0), "sigma=2.5,len=20,adxlen=14,adx=20");
     }
 }
