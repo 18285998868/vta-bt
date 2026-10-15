@@ -1,6 +1,7 @@
 use thiserror::Error;
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum AppError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
@@ -9,7 +10,7 @@ pub enum AppError {
     Config(String),
 
     #[error("Data error: {0}")]
-    Data(#[from] crate::data_loader::DataError),
+    Data(#[from] crate::app::data_loader::DataError),
 
     #[error("Parse error: {0}")]
     Parse(String),

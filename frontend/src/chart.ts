@@ -9,8 +9,9 @@ import {
   type LineData,
   type HistogramData,
   type UTCTimestamp,
+  type SeriesMarker,
 } from 'lightweight-charts';
-import type { Kline } from './types';
+import type { Kline, StrategyMarker, StrategyOverlay } from './types';
 import type { ActiveIndicator, SubSeries } from './indicators';
 import { safeCalc } from './indicators';
 
@@ -29,6 +30,7 @@ export interface ChartManager {
   getFirstTime(): number | null;
   getLastTime(): number | null;
   applyIndicators(indicators: ActiveIndicator[], klines: Kline[]): void;
+  setStrategy(markers: StrategyMarker[], overlays: StrategyOverlay[]): void;
   jumpToTime(time: number): void;
   destroy(): void;
 }
@@ -94,6 +96,11 @@ export function createChartManager(
 
   const candleSeries = chart.addCandlestickSeries(candleOpts);
   const overlaySeries: ISeriesApi<'Line'>[] = [];
+  // 策略层全量缓存，只渲染已加载窗口（避免污染时间轴逻辑坐标）。
+  // 注意：资金曲线不在主图绘制（与价格同轴会压缩K线），绩效只看面板。
+  let strategyMarkers: StrategyMarker[] = [];
+  let strategyOverlays: StrategyOverlay[] = [];
+  const strategyOverlaySeries: ISeriesApi<'Line'>[] = [];
   const subPanes: { chart: IChartApi; container: HTMLElement; series: ISeriesApi<any>[] }[] = [];
   const allCharts: IChartApi[] = [chart];
 
@@ -186,6 +193,49 @@ export function createChartManager(
     overlaySeries.length = 0;
   }
 
+  function renderStrategyWindow() {
+    for (const s of strategyOverlaySeries) {
+      chart.removeSeries(s);
+    }
+    strategyOverlaySeries.length = 0;
+    if (allKlines.length === 0) {
+      candleSeries.setMarkers([]);
+      return;
+    }
+    const from = allKlines[0].time;
+    const to = allKlines[allKlines.length - 1].time;
+    const inWindow = (t: number) => t >= from && t <= to;
+    candleSeries.setMarkers(toMarkers(strategyMarkers.filter((m) => inWindow(m.time))));
+    strategyOverlays.forEach((ov, i) => {
+      const s = chart.addLineSeries({
+        color: colorPalette[i % colorPalette.length],
+        lineWidth: 1,
+        lastValueVisible: true,
+        priceLineVisible: false,
+      });
+      s.setData(
+        ov.points
+          .filter((p) => inWindow(p.time))
+          .map((p) => ({ time: (p.time / 1000) as UTCTimestamp, value: p.value })),
+      );
+      strategyOverlaySeries.push(s);
+    });
+  }
+
+  function toMarkers(markers: StrategyMarker[]): SeriesMarker<UTCTimestamp>[] {
+    return markers.map((m) => {
+      const entry = m.kind === 'entry';
+      const long = m.side === 'long';
+      return {
+        time: (m.time / 1000) as UTCTimestamp,
+        position: entry ? (long ? 'belowBar' : 'aboveBar') : long ? 'aboveBar' : 'belowBar',
+        color: entry ? (long ? '#a6e3a1' : '#f38ba8') : '#94e2d5',
+        shape: entry ? (long ? 'arrowUp' : 'arrowDown') : 'circle',
+        text: entry ? (long ? 'L' : 'S') : 'X',
+      };
+    });
+  }
+
   function clearSubPanes() {
     for (const pane of subPanes) {
       pane.chart.remove();
@@ -223,6 +273,9 @@ export function createChartManager(
       clearOverlays();
       clearSubPanes();
       allKlines = klines;
+      strategyMarkers = [];
+      strategyOverlays = [];
+      renderStrategyWindow();
       candleSeries.setData(toCandle(klines));
       const len = klines.length;
       if (len > INITIAL_VISIBLE_BARS) {
@@ -244,6 +297,7 @@ export function createChartManager(
         chart.timeScale().setVisibleLogicalRange({ from: savedRange.from + shift, to: savedRange.to + shift });
         suppressEdgeCheck = false;
       }
+      renderStrategyWindow();
     },
 
     appendData(klines: Kline[]) {
@@ -256,6 +310,7 @@ export function createChartManager(
         chart.timeScale().setVisibleLogicalRange(savedRange);
         suppressEdgeCheck = false;
       }
+      renderStrategyWindow();
     },
 
     getAllKlines() {
@@ -373,6 +428,12 @@ export function createChartManager(
           try { c.timeScale().setVisibleLogicalRange(savedRange); } catch (_) { /* */ }
         }
       }
+    },
+
+    setStrategy(markers: StrategyMarker[], overlays: StrategyOverlay[]) {
+      strategyMarkers = markers;
+      strategyOverlays = overlays;
+      renderStrategyWindow();
     },
 
     jumpToTime(time: number) {

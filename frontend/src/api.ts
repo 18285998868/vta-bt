@@ -1,4 +1,4 @@
-import type { ApiResponse, KlinesData, MarketTypesData, PairsData, TimeframesData } from './types';
+import type { ApiResponse, KlinesData, MarketTypesData, PairsData, StrategyResult, TimeframesData } from './types';
 
 const BASE = '/api';
 
@@ -43,6 +43,37 @@ export async function fetchKlines(params: KlinesParams): Promise<KlinesData> {
   if (params.before !== undefined) url += `&before=${params.before}`;
   if (params.after !== undefined) url += `&after=${params.after}`;
   const json = await fetchJson<ApiResponse<KlinesData>>(url);
+  if (!json.success || !json.data) throw new Error(json.error ?? 'unknown error');
+  return json.data;
+}
+
+export async function fetchStrategies(): Promise<string[]> {
+  const json = await fetchJson<ApiResponse<{ strategies: string[] }>>(`${BASE}/strategies`);
+  if (!json.success || !json.data) throw new Error(json.error ?? 'unknown error');
+  return json.data.strategies;
+}
+
+export interface StrategyParams {
+  marketType: string;
+  pair: string;
+  timeframe: string;
+  strategyToml: string;
+  initialBalance?: number;
+  feeBps?: number;
+  slippageBps?: number;
+  before?: number;
+  after?: number;
+}
+
+export async function fetchStrategy(params: StrategyParams): Promise<StrategyResult> {
+  let url = `${BASE}/strategy?market_type=${params.marketType}&pair=${params.pair}&timeframe=${params.timeframe}`;
+  url += `&strategy_toml=${encodeURIComponent(params.strategyToml)}`;
+  if (params.initialBalance !== undefined) url += `&initial_balance=${params.initialBalance}`;
+  if (params.feeBps !== undefined) url += `&fee_bps=${params.feeBps}`;
+  if (params.slippageBps !== undefined) url += `&slippage_bps=${params.slippageBps}`;
+  if (params.before !== undefined) url += `&before=${params.before}`;
+  if (params.after !== undefined) url += `&after=${params.after}`;
+  const json = await fetchJson<ApiResponse<StrategyResult>>(url);
   if (!json.success || !json.data) throw new Error(json.error ?? 'unknown error');
   return json.data;
 }

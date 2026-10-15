@@ -1,14 +1,14 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use polars::prelude::*;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use thiserror::Error;
 use tracing::instrument;
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+use crate::utils::{has_kline_files, timeframe_order};
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MarketType {
     #[default]
     Futures,
@@ -45,17 +45,14 @@ pub enum DataError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
-    #[error("Polars error: {0}")]
-    Polars(#[from] PolarsError),
+    #[error("kline-reader error: {0}")]
+    Reader(#[from] kline_reader::ReaderError),
 
     #[error("directory not found: {0}")]
     NotFound(String),
-
-    #[error("missing required column (tried: {0})")]
-    MissingColumn(String),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Kline {
     pub time: i64,
     pub open: f64,
@@ -83,20 +80,27 @@ impl DataLoader {
         }
     }
 
-    fn base_path(&self, market_type: MarketType) -> PathBuf {
+    /// Futures 复用 kline-reader 的 binance 布局
+    /// (`{dir}/binance/data/um/daily/klines/{symbol}/{tf}/*.zip`)；
+    /// Spot 暂无对应数据源（kline-reader 仅 binance），返回 `None`，调用方按空/404 处理。
+    fn base_path(&self, market_type: MarketType) -> Option<PathBuf> {
         match market_type {
-            MarketType::Futures => self
-                .data_dir
-                .join("futures")
-                .join("um")
-                .join("daily")
-                .join("klines"),
-            MarketType::Spot => self.data_dir.join("spot").join("daily").join("klines"),
+            MarketType::Futures => Some(
+                self.data_dir
+                    .join("binance")
+                    .join("data")
+                    .join("um")
+                    .join("daily")
+                    .join("klines"),
+            ),
+            MarketType::Spot => None,
         }
     }
 
     pub fn list_pairs(&self, market_type: MarketType) -> Result<Vec<String>, DataError> {
-        let base = self.base_path(market_type);
+        let Some(base) = self.base_path(market_type) else {
+            return Ok(vec![]);
+        };
         if !base.exists() {
             return Ok(vec![]);
         }
@@ -114,14 +118,17 @@ impl DataLoader {
         market_type: MarketType,
         pair: &str,
     ) -> Result<Vec<String>, DataError> {
-        let pair_dir = self.base_path(market_type).join(pair);
+        let Some(base) = self.base_path(market_type) else {
+            return Ok(vec![]);
+        };
+        let pair_dir = base.join(pair);
         if !pair_dir.exists() {
             return Ok(vec![]);
         }
         let mut timeframes: Vec<String> = std::fs::read_dir(&pair_dir)?
             .filter_map(|e| e.ok())
             .filter(|e| e.path().is_dir())
-            .filter(|e| has_parquet_files(&e.path()))
+            .filter(|e| has_kline_files(&e.path()))
             .filter_map(|e| e.file_name().into_string().ok())
             .collect();
         timeframes.sort_by_key(|a| timeframe_order(a));
@@ -165,24 +172,75 @@ impl DataLoader {
             tracing::debug!(?key, "cache hit");
             return Ok(cached);
         }
-        tracing::debug!(?key, "cache miss — reading parquet files");
+        tracing::debug!(?key, "cache miss — reading kline files");
 
-        let tf_dir = self.base_path(market_type).join(pair).join(timeframe);
+        let Some(tf_dir) = self
+            .base_path(market_type)
+            .map(|base| base.join(pair).join(timeframe))
+        else {
+            tracing::warn!("market not backed by kline-reader yet");
+            return Err(DataError::NotFound(format!(
+                "market not supported: {pair}/{timeframe}"
+            )));
+        };
         if !tf_dir.exists() {
             tracing::warn!(path = %tf_dir.display(), "kline directory not found");
             return Err(DataError::NotFound(format!("{:?}", tf_dir)));
         }
 
-        let files = list_parquet_files(&tf_dir)?;
-        if files.is_empty() {
-            tracing::warn!(path = %tf_dir.display(), "no parquet files");
+        if !has_kline_files(&tf_dir) {
+            tracing::warn!(path = %tf_dir.display(), "no kline zip files");
             return Err(DataError::NotFound(format!(
-                "no parquet files in {:?}",
+                "no kline zip files in {:?}",
                 tf_dir
             )));
         }
 
-        let klines = read_parquet_files(&files)?;
+        let cfg = kline_reader::DataConfig {
+            source_type: kline_reader::DataSource::Binance,
+            dir: self.data_dir.clone(),
+            symbol: pair.to_owned(),
+            timeframe: timeframe.to_owned(),
+            start_date: None,
+            end_date: None,
+        };
+        let cols = kline_reader::load_columns(&cfg)?;
+        if cols.is_empty() {
+            return Err(DataError::NotFound(format!(
+                "no klines loaded for {pair}/{timeframe}"
+            )));
+        }
+        if cols.len() > 500_000 {
+            tracing::warn!(
+                rows = cols.len(),
+                "large kline dataset loaded — consider using before/after filters to reduce memory"
+            );
+        }
+
+        let mut klines = Vec::with_capacity(cols.len());
+        for i in 0..cols.len() {
+            let (o, h, l, c, v) = (
+                cols.open[i],
+                cols.high[i],
+                cols.low[i],
+                cols.close[i],
+                cols.volume[i],
+            );
+            if o.is_nan() || h.is_nan() || l.is_nan() || c.is_nan() || v.is_nan() {
+                continue;
+            }
+            klines.push(Kline {
+                time: cols.time[i],
+                open: o,
+                high: h,
+                low: l,
+                close: c,
+                volume: v,
+            });
+        }
+
+        klines.dedup_by_key(|k| k.time);
+        tracing::debug!(count = klines.len(), "klines after dedup");
         let result = Arc::new(klines);
         self.klines_cache.insert(key, result.clone());
         Ok(result)
@@ -193,210 +251,47 @@ impl DataLoader {
     }
 }
 
-fn has_parquet_files(dir: &Path) -> bool {
-    std::fs::read_dir(dir)
-        .map(|rd| {
-            rd.flatten()
-                .any(|e| e.path().extension().and_then(|ext| ext.to_str()) == Some("parquet"))
-        })
-        .unwrap_or(false)
-}
-
-fn list_parquet_files(dir: &Path) -> Result<Vec<PathBuf>, DataError> {
-    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)?
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().and_then(|ext| ext.to_str()) == Some("parquet"))
-        .map(|e| e.path())
-        .collect();
-    files.sort();
-    Ok(files)
-}
-
-fn get_i64_col(df: &DataFrame, names: &[&str]) -> Result<Int64Chunked, DataError> {
-    for name in names {
-        if let Ok(col) = df.column(name) {
-            if let Ok(chunked) = col.i64() {
-                return Ok(chunked.clone());
-            }
-            if let Ok(cast) = col.cast(&DataType::Int64)
-                && let Ok(chunked) = cast.i64()
-            {
-                return Ok(chunked.clone());
-            }
-        }
-    }
-    Err(DataError::MissingColumn(names.join("/")))
-}
-
-fn get_f64_col(df: &DataFrame, names: &[&str]) -> Result<Float64Chunked, DataError> {
-    for name in names {
-        if let Ok(col) = df.column(name) {
-            if let Ok(chunked) = col.f64() {
-                return Ok(chunked.clone());
-            }
-            if let Ok(cast) = col.cast(&DataType::Float64)
-                && let Ok(chunked) = cast.f64()
-            {
-                return Ok(chunked.clone());
-            }
-        }
-    }
-    Err(DataError::MissingColumn(names.join("/")))
-}
-
-#[instrument(skip(files))]
-fn read_parquet_files(files: &[PathBuf]) -> Result<Vec<Kline>, DataError> {
-    tracing::debug!(count = files.len(), "reading parquet files");
-
-    let lfs: Vec<LazyFrame> = files
-        .iter()
-        .map(|path| {
-            LazyFrame::scan_parquet(
-                path.to_string_lossy().as_ref().into(),
-                ScanArgsParquet::default(),
-            )
-            .map_err(DataError::Polars)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-
-    let df = concat(
-        &lfs,
-        UnionArgs {
-            diagonal: true,
-            parallel: true,
-            ..Default::default()
-        },
-    )
-    .map_err(DataError::Polars)?
-    .sort(
-        ["open_time"],
-        SortMultipleOptions::new().with_order_descending(false),
-    )
-    .collect()
-    .map_err(DataError::Polars)?;
-
-    if df.height() == 0 {
-        return Ok(vec![]);
-    }
-
-    tracing::debug!(rows = df.height(), "parquet data loaded");
-
-    if df.height() > 500_000 {
-        tracing::warn!(
-            rows = df.height(),
-            "large kline dataset loaded — consider using before/after filters to reduce memory"
-        );
-    }
-
-    let ts = get_i64_col(&df, &["open_time", "time", "timestamp"])?;
-    let open = get_f64_col(&df, &["open"])?;
-    let high = get_f64_col(&df, &["high"])?;
-    let low = get_f64_col(&df, &["low"])?;
-    let close = get_f64_col(&df, &["close"])?;
-    let volume = get_f64_col(&df, &["volume", "vol"])?;
-
-    let mut klines = Vec::with_capacity(df.height());
-    for i in 0..df.height() {
-        let (Some(o), Some(h), Some(l), Some(c), Some(v)) = (
-            open.get(i),
-            high.get(i),
-            low.get(i),
-            close.get(i),
-            volume.get(i),
-        ) else {
-            continue;
-        };
-        if o.is_nan() || h.is_nan() || l.is_nan() || c.is_nan() || v.is_nan() {
-            continue;
-        }
-        let t = ts.get(i).unwrap_or(0);
-        klines.push(Kline {
-            time: t,
-            open: o,
-            high: h,
-            low: l,
-            close: c,
-            volume: v,
-        });
-    }
-
-    klines.dedup_by_key(|k| k.time);
-    tracing::debug!(count = klines.len(), "parquet rows after dedup");
-    Ok(klines)
-}
-
-fn timeframe_order(tf: &str) -> u32 {
-    match tf {
-        "1s" => 1,
-        "5s" => 2,
-        "1m" => 10,
-        "3m" => 11,
-        "5m" => 12,
-        "15m" => 13,
-        "30m" => 14,
-        "1h" => 20,
-        "2h" => 21,
-        "4h" => 22,
-        "6h" => 23,
-        "8h" => 24,
-        "12h" => 25,
-        "1d" => 30,
-        "3d" => 31,
-        "1w" => 32,
-        "1M" => 33,
-        _ => 99,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
     use tempfile::TempDir;
 
-    fn write_test_parquet(
+    fn binance_tf_dir(dir: &Path, pair: &str, timeframe: &str) -> PathBuf {
+        dir.join("binance")
+            .join("data")
+            .join("um")
+            .join("daily")
+            .join("klines")
+            .join(pair)
+            .join(timeframe)
+    }
+
+    fn write_test_zip(
         dir: &Path,
-        market: MarketType,
         pair: &str,
         timeframe: &str,
+        name: &str,
         rows: &[(i64, f64, f64, f64, f64, f64)],
     ) {
-        let tf_dir = match market {
-            MarketType::Futures => dir
-                .join("futures")
-                .join("um")
-                .join("daily")
-                .join("klines")
-                .join(pair)
-                .join(timeframe),
-            MarketType::Spot => dir
-                .join("spot")
-                .join("daily")
-                .join("klines")
-                .join(pair)
-                .join(timeframe),
-        };
+        let tf_dir = binance_tf_dir(dir, pair, timeframe);
         std::fs::create_dir_all(&tf_dir).unwrap();
-
-        let times: Vec<i64> = rows.iter().map(|r| r.0).collect();
-        let opens: Vec<f64> = rows.iter().map(|r| r.1).collect();
-        let highs: Vec<f64> = rows.iter().map(|r| r.2).collect();
-        let lows: Vec<f64> = rows.iter().map(|r| r.3).collect();
-        let closes: Vec<f64> = rows.iter().map(|r| r.4).collect();
-        let volumes: Vec<f64> = rows.iter().map(|r| r.5).collect();
-
-        let mut df = df!(
-            "open_time" => &times,
-            "open" => &opens,
-            "high" => &highs,
-            "low" => &lows,
-            "close" => &closes,
-            "volume" => &volumes,
-        )
-        .unwrap();
-
-        let path = tf_dir.join(format!("{pair}-{timeframe}-2024-01-01.parquet"));
-        let mut file = std::fs::File::create(path).unwrap();
-        ParquetWriter::new(&mut file).finish(&mut df).unwrap();
+        let mut csv = String::new();
+        for r in rows {
+            csv.push_str(&format!(
+                "{},{},{},{},{},{},0,0,0,0,0,0\n",
+                r.0, r.1, r.2, r.3, r.4, r.5
+            ));
+        }
+        let zip_path = tf_dir.join(name);
+        let file = std::fs::File::create(&zip_path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let csv_name = name.replace(".zip", ".csv");
+        zip.start_file::<&str, ()>(&csv_name, zip::write::FileOptions::default())
+            .unwrap();
+        use std::io::Write as _;
+        zip.write_all(csv.as_bytes()).unwrap();
+        zip.finish().unwrap();
     }
 
     fn test_rows() -> Vec<(i64, f64, f64, f64, f64, f64)> {
@@ -435,14 +330,6 @@ mod tests {
     }
 
     #[test]
-    fn test_timeframe_order() {
-        assert!(timeframe_order("1m") < timeframe_order("5m"));
-        assert!(timeframe_order("1h") < timeframe_order("4h"));
-        assert!(timeframe_order("4h") < timeframe_order("1d"));
-        assert_eq!(timeframe_order("unknown"), 99);
-    }
-
-    #[test]
     fn test_list_pairs_empty_dir() {
         let dir = TempDir::new().unwrap();
         let loader = DataLoader::new(dir.path().to_path_buf());
@@ -453,18 +340,18 @@ mod tests {
     #[test]
     fn test_list_pairs_with_data() {
         let dir = TempDir::new().unwrap();
-        write_test_parquet(
+        write_test_zip(
             dir.path(),
-            MarketType::Futures,
             "BTCUSDT",
             "1h",
+            "BTCUSDT-1h-2024-01-01.zip",
             &test_rows(),
         );
-        write_test_parquet(
+        write_test_zip(
             dir.path(),
-            MarketType::Futures,
             "ETHUSDT",
             "1h",
+            "ETHUSDT-1h-2024-01-01.zip",
             &test_rows(),
         );
 
@@ -474,30 +361,23 @@ mod tests {
     }
 
     #[test]
-    fn test_list_timeframes_only_with_parquet() {
+    fn test_list_timeframes_only_with_zip() {
         let dir = TempDir::new().unwrap();
-        write_test_parquet(
+        write_test_zip(
             dir.path(),
-            MarketType::Futures,
             "BTCUSDT",
             "1h",
+            "BTCUSDT-1h-2024-01-01.zip",
             &test_rows(),
         );
-        write_test_parquet(
+        write_test_zip(
             dir.path(),
-            MarketType::Futures,
             "BTCUSDT",
             "1d",
+            "BTCUSDT-1d-2024-01-01.zip",
             &test_rows(),
         );
-        let empty_dir = dir
-            .path()
-            .join("futures")
-            .join("um")
-            .join("daily")
-            .join("klines")
-            .join("BTCUSDT")
-            .join("1w");
+        let empty_dir = binance_tf_dir(dir.path(), "BTCUSDT", "1w");
         std::fs::create_dir_all(&empty_dir).unwrap();
 
         let loader = DataLoader::new(dir.path().to_path_buf());
@@ -508,13 +388,25 @@ mod tests {
     }
 
     #[test]
+    fn test_spot_not_supported_yet() {
+        let dir = TempDir::new().unwrap();
+        let loader = DataLoader::new(dir.path().to_path_buf());
+        assert!(loader.list_pairs(MarketType::Spot).unwrap().is_empty());
+        assert!(
+            loader
+                .load_klines_filtered(MarketType::Spot, "BTCUSDT", "1h", None, None, None)
+                .is_err()
+        );
+    }
+
+    #[test]
     fn test_load_klines_filtered_all() {
         let dir = TempDir::new().unwrap();
-        write_test_parquet(
+        write_test_zip(
             dir.path(),
-            MarketType::Futures,
             "BTCUSDT",
             "1h",
+            "BTCUSDT-1h-2024-01-01.zip",
             &test_rows(),
         );
 
@@ -528,11 +420,11 @@ mod tests {
     #[test]
     fn test_load_klines_filtered_before() {
         let dir = TempDir::new().unwrap();
-        write_test_parquet(
+        write_test_zip(
             dir.path(),
-            MarketType::Futures,
             "BTCUSDT",
             "1h",
+            "BTCUSDT-1h-2024-01-01.zip",
             &test_rows(),
         );
 
@@ -553,11 +445,11 @@ mod tests {
     #[test]
     fn test_load_klines_filtered_after() {
         let dir = TempDir::new().unwrap();
-        write_test_parquet(
+        write_test_zip(
             dir.path(),
-            MarketType::Futures,
             "BTCUSDT",
             "1h",
+            "BTCUSDT-1h-2024-01-01.zip",
             &test_rows(),
         );
 
@@ -578,11 +470,11 @@ mod tests {
     #[test]
     fn test_load_klines_filtered_limit() {
         let dir = TempDir::new().unwrap();
-        write_test_parquet(
+        write_test_zip(
             dir.path(),
-            MarketType::Futures,
             "BTCUSDT",
             "1h",
+            "BTCUSDT-1h-2024-01-01.zip",
             &test_rows(),
         );
 
@@ -602,7 +494,13 @@ mod tests {
             (2_000_000, f64::NAN, 107.0, 97.0, 104.0, 20.0),
             (3_000_000, 104.0, 109.0, 99.0, 106.0, 30.0),
         ];
-        write_test_parquet(dir.path(), MarketType::Futures, "BTCUSDT", "1h", &rows);
+        write_test_zip(
+            dir.path(),
+            "BTCUSDT",
+            "1h",
+            "BTCUSDT-1h-2024-01-01.zip",
+            &rows,
+        );
 
         let loader = DataLoader::new(dir.path().to_path_buf());
         let klines = loader
@@ -614,18 +512,18 @@ mod tests {
     #[test]
     fn test_load_klines_dedup() {
         let dir = TempDir::new().unwrap();
-        write_test_parquet(
+        write_test_zip(
             dir.path(),
-            MarketType::Futures,
             "BTCUSDT",
             "1h",
+            "BTCUSDT-1h-2024-01-01.zip",
             &test_rows(),
         );
-        write_test_parquet(
+        write_test_zip(
             dir.path(),
-            MarketType::Futures,
             "BTCUSDT",
             "1h",
+            "BTCUSDT-1h-2024-01-02.zip",
             &test_rows(),
         );
 
@@ -639,11 +537,11 @@ mod tests {
     #[test]
     fn test_load_klines_cached() {
         let dir = TempDir::new().unwrap();
-        write_test_parquet(
+        write_test_zip(
             dir.path(),
-            MarketType::Futures,
             "BTCUSDT",
             "1h",
+            "BTCUSDT-1h-2024-01-01.zip",
             &test_rows(),
         );
 
@@ -654,15 +552,7 @@ mod tests {
             .unwrap();
         assert_eq!(klines1.len(), 3);
 
-        std::fs::remove_dir_all(
-            dir.path()
-                .join("futures")
-                .join("um")
-                .join("daily")
-                .join("klines")
-                .join("BTCUSDT"),
-        )
-        .unwrap();
+        std::fs::remove_dir_all(binance_tf_dir(dir.path(), "BTCUSDT", "1h")).unwrap();
         let klines2 = loader
             .load_klines_filtered(MarketType::Futures, "BTCUSDT", "1h", None, None, None)
             .unwrap();
@@ -681,11 +571,11 @@ mod tests {
     #[test]
     fn test_invalidate_cache() {
         let dir = TempDir::new().unwrap();
-        write_test_parquet(
+        write_test_zip(
             dir.path(),
-            MarketType::Futures,
             "BTCUSDT",
             "1h",
+            "BTCUSDT-1h-2024-01-01.zip",
             &test_rows(),
         );
 
@@ -695,15 +585,7 @@ mod tests {
             .unwrap();
         loader.invalidate_cache();
 
-        std::fs::remove_dir_all(
-            dir.path()
-                .join("futures")
-                .join("um")
-                .join("daily")
-                .join("klines")
-                .join("BTCUSDT"),
-        )
-        .unwrap();
+        std::fs::remove_dir_all(binance_tf_dir(dir.path(), "BTCUSDT", "1h")).unwrap();
         let result =
             loader.load_klines_filtered(MarketType::Futures, "BTCUSDT", "1h", None, None, None);
         assert!(result.is_err());
@@ -712,11 +594,11 @@ mod tests {
     #[test]
     fn test_concurrent_cache_access() {
         let dir = TempDir::new().unwrap();
-        write_test_parquet(
+        write_test_zip(
             dir.path(),
-            MarketType::Futures,
             "BTCUSDT",
             "1h",
+            "BTCUSDT-1h-2024-01-01.zip",
             &test_rows(),
         );
 
@@ -740,16 +622,5 @@ mod tests {
                 });
             }
         });
-    }
-
-    #[test]
-    fn test_get_f64_col_casts_float32() {
-        let df = df!(
-            "open" => &[1.0f32, 2.0f32, 3.0f32],
-            "high" => &[1.0f32, 2.0f32, 3.0f32],
-        )
-        .unwrap();
-        let open = get_f64_col(&df, &["open"]).unwrap();
-        assert_eq!(open.get(0), Some(1.0));
     }
 }

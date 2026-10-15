@@ -8,17 +8,24 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::data_loader::{DataError, DataLoader, MarketType, ParseMarketTypeError};
+use super::data_loader::{DataError, DataLoader, MarketType, ParseMarketTypeError};
+use super::strategy::{StrategyError, StrategyResult};
+use crate::utils::{valid_pair, valid_timeframe};
 
 #[derive(Clone)]
 pub struct AppState {
-    data_loader: Arc<DataLoader>,
+    pub(crate) data_loader: Arc<DataLoader>,
+    pub(crate) strategy_cache: moka::sync::Cache<String, Arc<StrategyResult>>,
 }
 
 impl AppState {
     pub fn new(data_dir: PathBuf) -> Self {
         Self {
             data_loader: Arc::new(DataLoader::new(data_dir)),
+            strategy_cache: moka::sync::Cache::builder()
+                .max_capacity(100)
+                .time_to_live(std::time::Duration::from_secs(300))
+                .build(),
         }
     }
 }
@@ -56,7 +63,6 @@ struct MarketTypesResponse {
 
 #[derive(Debug, Deserialize)]
 pub struct PairsQuery {
-    #[serde(default)]
     pub market_type: Option<String>,
 }
 
@@ -76,25 +82,29 @@ pub struct KlinesQuery {
     pub after: Option<i64>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct StrategyQuery {
+    pub market_type: Option<String>,
+    pub pair: String,
+    pub timeframe: String,
+    pub strategy_toml: String,
+    pub initial_balance: Option<f64>,
+    pub fee_bps: Option<f64>,
+    pub slippage_bps: Option<f64>,
+    pub before: Option<i64>,
+    pub after: Option<i64>,
+}
+
 fn parse_market_type(market_type: &Option<String>) -> Result<MarketType, ParseMarketTypeError> {
     market_type
         .as_ref()
         .map_or(Ok(MarketType::default()), |s| s.parse())
 }
 
-const PAIR_ALLOWED: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_";
-const TIMEFRAME_ALLOWED: &str = "0123456789abcdefghijklmnopqrstuvwxyz_";
-
-fn is_allowed(s: &str, allowed: &str) -> bool {
-    !s.is_empty() && s.bytes().all(|b| allowed.contains(b as char))
-}
-
-fn valid_pair(s: &str) -> bool {
-    is_allowed(s, PAIR_ALLOWED)
-}
-
-fn valid_timeframe(s: &str) -> bool {
-    is_allowed(s, TIMEFRAME_ALLOWED)
+fn require_market_type(
+    market_type: &Option<String>,
+) -> Result<MarketType, (StatusCode, Json<ApiResponse<serde_json::Value>>)> {
+    parse_market_type(market_type).map_err(|e| bad_request(e.to_string()))
 }
 
 async fn health_handler() -> impl IntoResponse {
@@ -140,9 +150,9 @@ async fn pairs_handler(
     State(state): State<AppState>,
     Query(query): Query<PairsQuery>,
 ) -> impl IntoResponse {
-    let market_type = match parse_market_type(&query.market_type) {
+    let market_type = match require_market_type(&query.market_type) {
         Ok(mt) => mt,
-        Err(e) => return bad_request(e.to_string()),
+        Err(resp) => return resp,
     };
 
     match state.data_loader.list_pairs(market_type) {
@@ -161,9 +171,9 @@ async fn timeframes_handler(
     State(state): State<AppState>,
     Query(query): Query<TimeframesQuery>,
 ) -> impl IntoResponse {
-    let market_type = match parse_market_type(&query.market_type) {
+    let market_type = match require_market_type(&query.market_type) {
         Ok(mt) => mt,
-        Err(e) => return bad_request(e.to_string()),
+        Err(resp) => return resp,
     };
 
     if !valid_pair(&query.pair) {
@@ -187,9 +197,9 @@ async fn klines_handler(
     State(state): State<AppState>,
     Query(query): Query<KlinesQuery>,
 ) -> impl IntoResponse {
-    let market_type = match parse_market_type(&query.market_type) {
+    let market_type = match require_market_type(&query.market_type) {
         Ok(mt) => mt,
-        Err(e) => return bad_request(e.to_string()),
+        Err(resp) => return resp,
     };
 
     if !valid_pair(&query.pair) {
@@ -221,6 +231,79 @@ async fn klines_handler(
     }
 }
 
+fn strategy_error(e: StrategyError) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
+    match e {
+        StrategyError::User(msg) => bad_request(msg),
+        StrategyError::NotFound(msg) => (StatusCode::NOT_FOUND, Json(ApiResponse::err(msg))),
+        StrategyError::Internal(_) => {
+            tracing::error!(error = ?e, "strategy failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse::err("internal error")),
+            )
+        }
+    }
+}
+
+async fn strategies_handler() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        Json(ApiResponse::ok(serde_json::json!({
+            "strategies": super::strategy::list_strategies()
+                .iter()
+                .map(|s| s.name)
+                .collect::<Vec<_>>()
+        }))),
+    )
+}
+
+async fn strategy_handler(
+    State(state): State<AppState>,
+    Query(query): Query<StrategyQuery>,
+) -> impl IntoResponse {
+    let market_type = match require_market_type(&query.market_type) {
+        Ok(mt) => mt,
+        Err(resp) => return resp,
+    };
+
+    if !valid_pair(&query.pair) {
+        return bad_request("invalid pair");
+    }
+    if !valid_timeframe(&query.timeframe) {
+        return bad_request("invalid timeframe");
+    }
+
+    match super::strategy::run_backtest(
+        &state,
+        market_type,
+        &query.pair,
+        &query.timeframe,
+        &query.strategy_toml,
+        query.initial_balance.unwrap_or(10_000.0),
+        query.fee_bps.unwrap_or(0.0),
+        query.slippage_bps.unwrap_or(0.0),
+        query.before,
+        query.after,
+    ) {
+        Ok(result) => (
+            StatusCode::OK,
+            Json(ApiResponse::ok(serde_json::json!({
+                "market_type": market_type.to_string(),
+                "pair": query.pair,
+                "timeframe": query.timeframe,
+                "strategy": result.strategy,
+                "count": result.count,
+                "markers": result.markers,
+                "trades": result.trades,
+                "equity": result.equity,
+                "overlays": result.overlays,
+                "summary": result.summary
+            }))),
+        ),
+        Err(e) => strategy_error(e),
+    }
+}
+
 pub fn create_router(app_state: AppState) -> Router {
     Router::new()
         .route("/api/health", axum::routing::get(health_handler))
@@ -231,6 +314,8 @@ pub fn create_router(app_state: AppState) -> Router {
         .route("/api/pairs", axum::routing::get(pairs_handler))
         .route("/api/timeframes", axum::routing::get(timeframes_handler))
         .route("/api/klines", axum::routing::get(klines_handler))
+        .route("/api/strategies", axum::routing::get(strategies_handler))
+        .route("/api/strategy", axum::routing::get(strategy_handler))
         .with_state(app_state)
 }
 
@@ -253,29 +338,6 @@ mod tests {
             MarketType::Spot
         );
         assert!(parse_market_type(&Some("invalid".to_string())).is_err());
-    }
-
-    #[test]
-    fn test_valid_pair_timeframe_pure() {
-        assert!(valid_pair("BTCUSDT"));
-        assert!(valid_pair("BTC_USDT"));
-        assert!(!valid_pair(""));
-        assert!(!valid_pair(".."));
-        assert!(!valid_pair("../../etc"));
-        assert!(!valid_pair("a/b"));
-        assert!(!valid_pair("a\\b"));
-        assert!(!valid_pair("a b"));
-        assert!(!valid_pair("btcusdt"));
-        assert!(!valid_pair(".hidden"));
-
-        assert!(valid_timeframe("1h"));
-        assert!(valid_timeframe("15m"));
-        assert!(valid_timeframe("1_2h"));
-        assert!(!valid_timeframe(""));
-        assert!(!valid_timeframe(".."));
-        assert!(!valid_timeframe("1/h"));
-        assert!(!valid_timeframe("1h "));
-        assert!(!valid_timeframe("1H"));
     }
 
     fn test_app() -> Router {
@@ -319,6 +381,51 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .uri("/api/timeframes?market_type=futures&pair=..%2F..")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_strategies_lists_allowlist() {
+        let app = test_app();
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/strategies")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_strategy_rejects_bad_toml() {
+        let app = test_app();
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/strategy?market_type=futures&pair=BTCUSDT&timeframe=1h&strategy_toml=type%20%3D%20%22nope%22")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_strategy_rejects_traversal_pair() {
+        let app = test_app();
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/strategy?market_type=futures&pair=..%2F..&timeframe=1h&strategy_toml=type%20%3D%20%22bbrk%22")
                     .body(Body::empty())
                     .unwrap(),
             )

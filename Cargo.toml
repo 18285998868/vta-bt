@@ -16,8 +16,17 @@ axum = "0.8"
 tower-http = { version = "0.7", features = ["cors", "fs"] }
 toml = "1.1"
 dotenvy = "0.15"
-moka = { version = "0.12", features = ["sync", "future"] }
-polars = { version = "0.55", features = ["parquet", "lazy"] }
+moka = { version = "0.12", features = ["sync"] }
+kline-reader = { path = "../libs/kline-reader" }
+vta = { path = "../vector-ta" }
+# vector-ta 直接安装（registry），但必须与 vta 内本地版本保持一致：
+# - vta 用 path 指向本地 vector-ta 0.3.1（见 creats/vector-ta/Cargo.toml），
+#   本地另有未发布的加法改动（新增 atma/edma 模块，不影响现有指标逻辑，已核实）。
+# - 本 crate overlay 与 vta 信号必须同一实现算出：改动任一边的版本前，先 diff
+#   本地改动是否触及已用的 25 个 MA / BollingerBands；allowlist 新增 atma/edma
+#   等本地独有指标时，必须换回 path 依赖（registry 0.3.1 没有它们）。
+# vector-ta = { path = "/home/lkf/src/VectorTA" } # 备用：与 vta 完全同源时改用此行
+vector-ta = "=0.3.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", features = ["serde"] }
@@ -30,6 +39,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 [dev-dependencies]
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
+zip = { version = "8", features = ["deflate"] }
 
 [profile.release]
 lto = "fat"

@@ -1,18 +1,17 @@
 use std::path::Path;
 
-use polars::prelude::*;
 use tempfile::TempDir;
 
-fn write_parquet(
+fn write_zip(
     dir: &Path,
-    market: &str,
     pair: &str,
     timeframe: &str,
     rows: &[(i64, f64, f64, f64, f64, f64)],
     suffix: &str,
 ) {
     let tf_dir = dir
-        .join(market)
+        .join("binance")
+        .join("data")
         .join("um")
         .join("daily")
         .join("klines")
@@ -20,37 +19,33 @@ fn write_parquet(
         .join(timeframe);
     std::fs::create_dir_all(&tf_dir).unwrap();
 
-    let times: Vec<i64> = rows.iter().map(|r| r.0).collect();
-    let opens: Vec<f64> = rows.iter().map(|r| r.1).collect();
-    let highs: Vec<f64> = rows.iter().map(|r| r.2).collect();
-    let lows: Vec<f64> = rows.iter().map(|r| r.3).collect();
-    let closes: Vec<f64> = rows.iter().map(|r| r.4).collect();
-    let volumes: Vec<f64> = rows.iter().map(|r| r.5).collect();
-
-    let mut df = df!(
-        "open_time" => &times,
-        "open" => &opens,
-        "high" => &highs,
-        "low" => &lows,
-        "close" => &closes,
-        "volume" => &volumes,
+    let mut csv = String::new();
+    for r in rows {
+        csv.push_str(&format!(
+            "{},{},{},{},{},{},0,0,0,0,0,0\n",
+            r.0, r.1, r.2, r.3, r.4, r.5
+        ));
+    }
+    let name = format!("{pair}-{timeframe}-{suffix}.zip");
+    let zip_path = tf_dir.join(&name);
+    let file = std::fs::File::create(&zip_path).unwrap();
+    let mut zip = zip::ZipWriter::new(file);
+    zip.start_file::<&str, ()>(
+        &name.replace(".zip", ".csv"),
+        zip::write::FileOptions::default(),
     )
     .unwrap();
-
-    let path = tf_dir.join(format!("{pair}-{timeframe}-{suffix}.parquet"));
-    let mut file = std::fs::File::create(path).unwrap();
-    ParquetWriter::new(&mut file).finish(&mut df).unwrap();
+    use std::io::Write as _;
+    zip.write_all(csv.as_bytes()).unwrap();
+    zip.finish().unwrap();
 }
 
 #[test]
 fn test_full_pipeline_futures() {
     let dir = TempDir::new().unwrap();
-    let data_dir = dir.path().join("futures");
-    std::fs::create_dir_all(&data_dir).unwrap();
 
-    write_parquet(
+    write_zip(
         dir.path(),
-        "futures",
         "BTCUSDT",
         "1h",
         &[
@@ -59,9 +54,8 @@ fn test_full_pipeline_futures() {
         ],
         "2024-01-01",
     );
-    write_parquet(
+    write_zip(
         dir.path(),
-        "futures",
         "BTCUSDT",
         "1h",
         &[
@@ -70,25 +64,24 @@ fn test_full_pipeline_futures() {
         ],
         "2024-01-02",
     );
-    write_parquet(
+    write_zip(
         dir.path(),
-        "futures",
         "ETHUSDT",
         "1h",
         &[(1_000_000, 10.0, 11.0, 9.0, 10.5, 100.0)],
         "2024-01-01",
     );
 
-    let loader = tradingview_backend::data_loader::DataLoader::new(dir.path().to_path_buf());
+    let loader = tradingview_backend::app::data_loader::DataLoader::new(dir.path().to_path_buf());
 
     let pairs = loader
-        .list_pairs(tradingview_backend::data_loader::MarketType::Futures)
+        .list_pairs(tradingview_backend::app::data_loader::MarketType::Futures)
         .unwrap();
     assert_eq!(pairs, vec!["BTCUSDT", "ETHUSDT"]);
 
     let tfs = loader
         .list_timeframes(
-            tradingview_backend::data_loader::MarketType::Futures,
+            tradingview_backend::app::data_loader::MarketType::Futures,
             "BTCUSDT",
         )
         .unwrap();
@@ -96,7 +89,7 @@ fn test_full_pipeline_futures() {
 
     let klines = loader
         .load_klines_filtered(
-            tradingview_backend::data_loader::MarketType::Futures,
+            tradingview_backend::app::data_loader::MarketType::Futures,
             "BTCUSDT",
             "1h",
             None,
@@ -108,7 +101,7 @@ fn test_full_pipeline_futures() {
 
     let klines_eth = loader
         .load_klines_filtered(
-            tradingview_backend::data_loader::MarketType::Futures,
+            tradingview_backend::app::data_loader::MarketType::Futures,
             "ETHUSDT",
             "1h",
             None,
@@ -123,13 +116,13 @@ fn test_full_pipeline_futures() {
 fn test_klines_dedup_across_files() {
     let dir = TempDir::new().unwrap();
     let rows = &[(1_000_000, 100.0, 105.0, 95.0, 102.0, 10.0)];
-    write_parquet(dir.path(), "futures", "BTCUSDT", "1h", rows, "a");
-    write_parquet(dir.path(), "futures", "BTCUSDT", "1h", rows, "b");
+    write_zip(dir.path(), "BTCUSDT", "1h", rows, "2024-01-01");
+    write_zip(dir.path(), "BTCUSDT", "1h", rows, "2024-01-02");
 
-    let loader = tradingview_backend::data_loader::DataLoader::new(dir.path().to_path_buf());
+    let loader = tradingview_backend::app::data_loader::DataLoader::new(dir.path().to_path_buf());
     let klines = loader
         .load_klines_filtered(
-            tradingview_backend::data_loader::MarketType::Futures,
+            tradingview_backend::app::data_loader::MarketType::Futures,
             "BTCUSDT",
             "1h",
             None,
@@ -143,9 +136,8 @@ fn test_klines_dedup_across_files() {
 #[test]
 fn test_before_after_limit_combined() {
     let dir = TempDir::new().unwrap();
-    write_parquet(
+    write_zip(
         dir.path(),
-        "futures",
         "BTCUSDT",
         "1h",
         &[
@@ -156,10 +148,10 @@ fn test_before_after_limit_combined() {
         "2024-01-01",
     );
 
-    let loader = tradingview_backend::data_loader::DataLoader::new(dir.path().to_path_buf());
+    let loader = tradingview_backend::app::data_loader::DataLoader::new(dir.path().to_path_buf());
     let klines = loader
         .load_klines_filtered(
-            tradingview_backend::data_loader::MarketType::Futures,
+            tradingview_backend::app::data_loader::MarketType::Futures,
             "BTCUSDT",
             "1h",
             Some(3_500_000),
