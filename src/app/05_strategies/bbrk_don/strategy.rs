@@ -10,7 +10,7 @@ use super::config::BbrkDonConfig;
 /// 持仓后只看过去 N 根极值（多头 close < 近N根最低low(不含当根)即 Close，
 /// 空头镜像）。中线触碰不再离场。NaN→Hold（P7，预热期不误平）。
 pub struct BbrkDonStrategy {
-    pairs: Vec<(f64, usize)>,
+    pairs: Vec<(f64, usize, usize)>,
 }
 
 impl BbrkDonStrategy {
@@ -76,12 +76,13 @@ fn compute(
     low: &[f64],
     close: &[f64],
     sigma: f64,
+    bblen: usize,
     exitn: usize,
 ) -> crate::error::Result<Vec<Signal>> {
     let bb = match bollinger_bands(&BollingerBandsInput::from_slice(
         close,
         BollingerBandsParams {
-            period: Some(20),
+            period: Some(bblen),
             devup: Some(sigma),
             devdn: Some(sigma),
             matype: Some("sma".to_string()),
@@ -112,8 +113,8 @@ impl Strategy for BbrkDonStrategy {
     }
 
     fn param_str(&self, idx: usize) -> String {
-        let (s, n) = self.pairs[idx];
-        format!("sigma={s},exitn={n}")
+        let (s, b, n) = self.pairs[idx];
+        format!("sigma={s},bblen={b},exitn={n}")
     }
 
     fn generate_signals(
@@ -123,8 +124,8 @@ impl Strategy for BbrkDonStrategy {
         _volume: &[f64],
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
-        let (s, n) = self.pairs[param_idx];
-        compute(close, close, close, s, n)
+        let (s, b, n) = self.pairs[param_idx];
+        compute(close, close, close, s, b, n)
     }
 
     fn generate_signals_full(
@@ -137,8 +138,8 @@ impl Strategy for BbrkDonStrategy {
         _time: &[i64],
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
-        let (s, n) = self.pairs[param_idx];
-        compute(high, low, close, s, n)
+        let (s, b, n) = self.pairs[param_idx];
+        compute(high, low, close, s, b, n)
     }
 }
 
@@ -190,9 +191,9 @@ mod tests {
     #[test]
     fn test_name_and_params() {
         let s = BbrkDonStrategy {
-            pairs: vec![(2.5, 10)],
+            pairs: vec![(2.5, 20, 10)],
         };
         assert_eq!(s.name(), "BBRK_DON");
-        assert_eq!(s.param_str(0), "sigma=2.5,exitn=10");
+        assert_eq!(s.param_str(0), "sigma=2.5,bblen=20,exitn=10");
     }
 }

@@ -12,6 +12,7 @@ use super::bbrk_bb::BbrkBbStrategy;
 use super::bbrk_cross::BbrkCrossStrategy;
 use super::bbrk_kdj::BbrkKdjStrategy;
 use super::bbrk_don::BbrkDonStrategy;
+use super::bbrk_ema::BbrkEmaStrategy;
 use super::bbrk_hma::BbrkHmaStrategy;
 use super::bbrk_hma_ema::BbrkHmaEmaStrategy;
 use super::bbrk_hma_v1::BbrkHmaV1Strategy;
@@ -108,6 +109,7 @@ macro_rules! build_ma {
             | StrategyConfig::BbrkAdx(_)
             | StrategyConfig::BbrkTrail(_)
             | StrategyConfig::BbrkDon(_)
+            | StrategyConfig::BbrkEma(_)
             | StrategyConfig::BbrkPctb(_)
             | StrategyConfig::BbrkAtr(_)
             | StrategyConfig::BbrkStr(_)
@@ -179,6 +181,7 @@ pub fn build_strategies(configs: &[StrategyConfig]) -> Vec<Box<dyn Strategy>> {
                     | StrategyConfig::BbrkAdx(_)
                     | StrategyConfig::BbrkTrail(_)
                     | StrategyConfig::BbrkDon(_)
+            | StrategyConfig::BbrkEma(_)
                     | StrategyConfig::BbrkPctb(_)
                     | StrategyConfig::BbrkAtr(_)
                     | StrategyConfig::BbrkStr(_)
@@ -315,6 +318,9 @@ pub fn build_strategies(configs: &[StrategyConfig]) -> Vec<Box<dyn Strategy>> {
             }
             StrategyConfig::BbrkDon(c) => {
                 Some(Box::new(BbrkDonStrategy::new(c.clone())) as Box<dyn Strategy>)
+            }
+            StrategyConfig::BbrkEma(c) => {
+                Some(Box::new(BbrkEmaStrategy::new(c.clone())) as Box<dyn Strategy>)
             }
             StrategyConfig::BbrkPctb(c) => {
                 Some(Box::new(BbrkPctbStrategy::new(c.clone())) as Box<dyn Strategy>)

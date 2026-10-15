@@ -14,6 +14,7 @@ use crate::strategies::bbrk_atr_ema::BbrkAtrEmaConfig;
 use crate::strategies::bbrk_bb::BbrkBbConfig;
 use crate::strategies::bbrk_cross::BbrkCrossConfig;
 use crate::strategies::bbrk_don::BbrkDonConfig;
+use crate::strategies::bbrk_ema::BbrkEmaConfig;
 use crate::strategies::bbrk_hma::BbrkHmaConfig;
 use crate::strategies::bbrk_hma_ema::BbrkHmaEmaConfig;
 use crate::strategies::bbrk_hma_v1::BbrkHmaV1Config;
@@ -234,6 +235,8 @@ impl Config {
                 }
                 StrategyConfig::BbrkTrail(c) => {
                     c.sigma.validate_range("bbrk_trail.sigma", 0.1, 10.0)?;
+                    c.bblen.validate_range("bbrk_trail.bblen", 2.0, 2000.0)?;
+                    c.atrlen.validate_range("bbrk_trail.atrlen", 2.0, 500.0)?;
                     c.trailk.validate_range("bbrk_trail.trailk", 0.1, 20.0)?;
                     if c.pairs().is_empty() {
                         return Err(AppError::Msg("bbrk_trail 参数组合为空".into()));
@@ -241,9 +244,18 @@ impl Config {
                 }
                 StrategyConfig::BbrkDon(c) => {
                     c.sigma.validate_range("bbrk_don.sigma", 0.1, 10.0)?;
+                    c.bblen.validate_range("bbrk_don.bblen", 2.0, 2000.0)?;
                     c.exitn.validate_range("bbrk_don.exitn", 2.0, 100.0)?;
                     if c.pairs().is_empty() {
                         return Err(AppError::Msg("bbrk_don 参数组合为空".into()));
+                    }
+                }
+                StrategyConfig::BbrkEma(c) => {
+                    c.sigma.validate_range("bbrk_ema.sigma", 0.1, 10.0)?;
+                    c.bblen.validate_range("bbrk_ema.bblen", 2.0, 2000.0)?;
+                    c.emareg.validate_range("bbrk_ema.emareg", 2.0, 2000.0)?;
+                    if c.pairs().is_empty() {
+                        return Err(AppError::Msg("bbrk_ema 参数组合为空".into()));
                     }
                 }
                 StrategyConfig::BbrkPctb(c) => {
@@ -272,6 +284,7 @@ impl Config {
                 }
                 StrategyConfig::BbrkSma(c) => {
                     c.sigma.validate_range("bbrk_sma.sigma", 0.1, 10.0)?;
+                    c.bblen.validate_range("bbrk_sma.bblen", 2.0, 2000.0)?;
                     c.smareg.validate_range("bbrk_sma.smareg", 2.0, 2000.0)?;
                     if c.pairs().is_empty() {
                         return Err(AppError::Msg("bbrk_sma 参数组合为空".into()));
@@ -604,6 +617,7 @@ impl StrategyConfig {
             | StrategyConfig::BbrkAdx(_)
             | StrategyConfig::BbrkTrail(_)
             | StrategyConfig::BbrkDon(_)
+            | StrategyConfig::BbrkEma(_)
             | StrategyConfig::BbrkPctb(_)
             | StrategyConfig::BbrkStr(_)
             | StrategyConfig::BbrkSma(_)
@@ -757,6 +771,7 @@ pub enum StrategyConfig {
     BbrkAdx(BbrkAdxConfig),
     BbrkTrail(BbrkTrailConfig),
     BbrkDon(BbrkDonConfig),
+    BbrkEma(BbrkEmaConfig),
     BbrkPctb(BbrkPctbConfig),
     BbrkAtr(BbrkAtrConfig),
     BbrkStr(BbrkStrConfig),

@@ -10,6 +10,7 @@ pub mod bbrk_atr_ema;
 pub mod bbrk_bb;
 pub mod bbrk_cross;
 pub mod bbrk_don;
+pub mod bbrk_ema;
 pub mod bbrk_hma;
 pub mod bbrk_hma_ema;
 pub mod bbrk_hma_v1;

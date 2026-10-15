@@ -15,7 +15,7 @@ const TRAIL_N: usize = 22;
 /// 空头镜像）。中线不再触发离场——让盈利奔跑、代价是亏损也跑更远，
 /// 这正是本变体要量化的 trade-off。NaN→Hold（P7）。
 pub struct BbrkTrailStrategy {
-    pairs: Vec<(f64, f64)>,
+    pairs: Vec<(f64, usize, usize, f64)>,
 }
 
 impl BbrkTrailStrategy {
@@ -80,12 +80,14 @@ fn compute(
     low: &[f64],
     close: &[f64],
     sigma: f64,
+    bblen: usize,
+    atrlen: usize,
     trailk: f64,
 ) -> crate::error::Result<Vec<Signal>> {
     let bb = match bollinger_bands(&BollingerBandsInput::from_slice(
         close,
         BollingerBandsParams {
-            period: Some(20),
+            period: Some(bblen),
             devup: Some(sigma),
             devdn: Some(sigma),
             matype: Some("sma".to_string()),
@@ -99,7 +101,9 @@ fn compute(
         high,
         low,
         close,
-        AtrParams { length: Some(14) },
+        AtrParams {
+            length: Some(atrlen),
+        },
     )) {
         Ok(v) => v.values,
         Err(_) => return Ok(vec![Signal::Hold; close.len()]),
@@ -141,8 +145,8 @@ impl Strategy for BbrkTrailStrategy {
     }
 
     fn param_str(&self, idx: usize) -> String {
-        let (s, k) = self.pairs[idx];
-        format!("sigma={s},trailk={k}")
+        let (s, b, a, k) = self.pairs[idx];
+        format!("sigma={s},bblen={b},atrlen={a},trailk={k}")
     }
 
     fn generate_signals(
@@ -152,8 +156,8 @@ impl Strategy for BbrkTrailStrategy {
         _volume: &[f64],
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
-        let (s, k) = self.pairs[param_idx];
-        compute(close, close, close, s, k)
+        let (s, b, a, k) = self.pairs[param_idx];
+        compute(close, close, close, s, b, a, k)
     }
 
     fn generate_signals_full(
@@ -166,8 +170,8 @@ impl Strategy for BbrkTrailStrategy {
         _time: &[i64],
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
-        let (s, k) = self.pairs[param_idx];
-        compute(high, low, close, s, k)
+        let (s, b, a, k) = self.pairs[param_idx];
+        compute(high, low, close, s, b, a, k)
     }
 }
 
@@ -221,9 +225,9 @@ mod tests {
     #[test]
     fn test_name_and_params() {
         let s = BbrkTrailStrategy {
-            pairs: vec![(2.5, 3.0)],
+            pairs: vec![(2.5, 20, 14, 3.0)],
         };
         assert_eq!(s.name(), "BBRK_TRAIL");
-        assert_eq!(s.param_str(0), "sigma=2.5,trailk=3");
+        assert_eq!(s.param_str(0), "sigma=2.5,bblen=20,atrlen=14,trailk=3");
     }
 }

@@ -2,24 +2,51 @@ use serde::Deserialize;
 
 use crate::config::F64Param;
 
-/// BBRK+ATR追踪离场(@2)：进场与 BBRK 完全相同（BB20σ突破），
-/// 离场改用 Chandelier 式追踪（多头 close < 近N根最高high − k·ATR14 即走，
-/// 空头镜像），不再碰中线就走。N=22/ATR14 固定，σ × k 笛卡尔积。
+/// BBRK+ATR追踪离场(@2)：进场与 BBRK 完全相同（BB突破，纯突破无方向门），
+/// 离场改用 Chandelier 式追踪（多头 close < 近N根最高high − k·ATR 即走，
+/// 空头镜像），不再碰中线就走。追踪窗N=22固定。
+/// BB周期bblen（缺省20＝旧串语义）；ATR周期atrlen（缺省14＝旧串语义）。
+/// σ × len × atrlen × k 笛卡尔积。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BbrkTrailConfig {
     pub sigma: F64Param,
+    /// BB周期（缺省20＝旧串语义）。
+    #[serde(default = "default_bblen")]
+    pub bblen: F64Param,
+    /// ATR周期（缺省14＝旧串语义）。
+    #[serde(default = "default_atrlen")]
+    pub atrlen: F64Param,
     pub trailk: F64Param,
 }
 
+fn default_bblen() -> F64Param {
+    F64Param::Single(20.0)
+}
+
+fn default_atrlen() -> F64Param {
+    F64Param::Single(14.0)
+}
+
 impl BbrkTrailConfig {
-    pub fn pairs(&self) -> Vec<(f64, f64)> {
+    pub fn pairs(&self) -> Vec<(f64, usize, usize, f64)> {
         let ss = self.sigma.values();
+        let bs = self.bblen.values();
+        let al = self.atrlen.values();
         let ks = self.trailk.values();
         let mut out = Vec::new();
         for &s in &ss {
-            for &k in &ks {
-                out.push((s, k));
+            for &b in &bs {
+                for &a in &al {
+                    for &k in &ks {
+                        out.push((
+                            s,
+                            b.round() as usize,
+                            a.round() as usize,
+                            k,
+                        ));
+                    }
+                }
             }
         }
         out
@@ -32,6 +59,12 @@ mod tests {
     use crate::config::RangeParam;
 
     #[test]
+    fn missing_bblen_atrlen_default_to_20_14() {
+        let c: BbrkTrailConfig = toml::from_str("sigma = 2.5\ntrailk = 3.0").unwrap();
+        assert_eq!(c.pairs(), vec![(2.5, 20, 14, 3.0)]);
+    }
+
+    #[test]
     fn pairs_cartesian() {
         let c = BbrkTrailConfig {
             sigma: F64Param::Range(RangeParam {
@@ -39,6 +72,8 @@ mod tests {
                 end: 2.5,
                 step: 0.5,
             }),
+            bblen: F64Param::Single(20.0),
+            atrlen: F64Param::Single(14.0),
             trailk: F64Param::Range(RangeParam {
                 start: 2.0,
                 end: 3.0,
@@ -47,7 +82,12 @@ mod tests {
         };
         assert_eq!(
             c.pairs(),
-            vec![(2.0, 2.0), (2.0, 3.0), (2.5, 2.0), (2.5, 3.0)]
+            vec![
+                (2.0, 20, 14, 2.0),
+                (2.0, 20, 14, 3.0),
+                (2.5, 20, 14, 2.0),
+                (2.5, 20, 14, 3.0)
+            ]
         );
     }
 }
