@@ -88,13 +88,13 @@ impl OneOrMany {
     }
 }
 
-/// vta 自己的数据配置: 与 `lib_reader::DataConfig` 字段一致, 但 symbol/timeframe 支持列表。
-/// 加载时通过 [`DataSection::for_pair`] 降为 lib-reader 需要的单值形态。
+/// vta 自己的数据配置: 与 `kline_reader::DataConfig` 字段一致, 但 symbol/timeframe 支持列表。
+/// 加载时通过 [`DataSection::for_pair`] 降为 kline-reader 需要的单值形态。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DataSection {
     #[serde(rename = "type")]
-    pub source_type: lib_reader::DataSource,
+    pub source_type: kline_reader::DataSource,
     pub dir: PathBuf,
     pub symbol: OneOrMany,
     pub timeframe: OneOrMany,
@@ -113,9 +113,9 @@ impl DataSection {
         self.timeframe.items()
     }
 
-    /// 取出一组 (symbol, timeframe) 对应的单值配置, 供 `lib_reader::load_columns` 使用。
-    pub fn for_pair(&self, symbol: &str, timeframe: &str) -> lib_reader::DataConfig {
-        lib_reader::DataConfig {
+    /// 取出一组 (symbol, timeframe) 对应的单值配置, 供 `kline_reader::load_columns` 使用。
+    pub fn for_pair(&self, symbol: &str, timeframe: &str) -> kline_reader::DataConfig {
+        kline_reader::DataConfig {
             source_type: self.source_type,
             dir: self.dir.clone(),
             symbol: symbol.to_string(),
@@ -1064,7 +1064,7 @@ mod tests {
     }
 
     #[test]
-    fn for_pair_produces_single_value_config_for_lib_reader() {
+    fn for_pair_produces_single_value_config_for_kline_reader() {
         let cfg: Config = toml::from_str(&make_scan_toml(
             "[\"BTCUSDT\", \"ETHUSDT\"]",
             "[\"15m\", \"1h\"]",

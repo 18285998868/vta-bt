@@ -9,7 +9,7 @@
 - 语言:rust
 - edition = "2024"
 - 指标计算: `vector-ta` 0.3(crates.io)
-- 数据读取: 自研 `lib-reader`(workspace path 依赖,统一读取 binance/dukascopy K 线)
+- 数据读取: 自研 `kline-reader`(workspace path 依赖,统一读取 binance/dukascopy K 线)
 - 并行: rayon(单策略的参数索引按 `(0..n).into_par_iter` 并行,信号生成与回测同为一遍)
 - 输出: arrow 59 + parquet 59
 - 配置: clap 4(derive) + toml 1.1 + serde(derive)
@@ -68,7 +68,7 @@ for symbol in symbols                        # 品种层(串行)
 v
   for timeframe in timeframes               # 时间帧层(串行)
 v
-    load_columns(symbol, timeframe)          # lib-reader: DataSpec → KlineColumns; 失败打印[跳过]并 continue
+    load_columns(symbol, timeframe)          # kline-reader: DataSpec → KlineColumns; 失败打印[跳过]并 continue
 v
     for strategy in strategies               # 策略层(串行)
 v
@@ -103,7 +103,7 @@ app/mod.rs          # 单组合处理 run_combo(strategy, symbol, tf, cols, ctx)
                     #   b (0..n).into_par_iter 并发生成信号+模拟; detail 收集 trades/equity_curve
                     #   c 写 temps/ 组合文件 [+ detail/]; 返回 (path, computed)
 app/01_config.rs    # 配置解析, toml + serde: Config{data/backtest/output/strategy}, 全量 deny_unknown_fields(PeriodParam untagged 除外); StrategyConfig(tag=type, 22 种); PeriodParam(单值|范围); Config::validate(资金>0 / symbol / timeframes / strategy 非空)
-app/02_load_data.rs # K 线加载桥接: DataConfig + symbol/tf → lib-reader DataSpec → KlineColumns(binance zip / dukascopy bi5)
+app/02_load_data.rs # K 线加载桥接: DataConfig + symbol/tf → kline-reader DataSpec → KlineColumns(binance zip / dukascopy bi5)
 app/03_run_backtest.rs # 回测引擎: 持仓/成交/绩效 — summary 指标(30 项)/Trade/SimResult; simulate / simulate_detailed 供 run_combo 单参数调用
 app/04_write_output/    # 输出
 app/04_write_output/mod.rs # 再导出 parquet 模块

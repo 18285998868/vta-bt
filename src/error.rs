@@ -8,7 +8,7 @@ pub enum AppError {
     #[error("config parse error: {0}")]
     Config(#[from] toml::de::Error),
     #[error("data error: {0}")]
-    Data(#[from] lib_reader::ReaderError),
+    Data(#[from] kline_reader::ReaderError),
     #[error("parquet error: {0}")]
     Parquet(#[from] parquet::errors::ParquetError),
     #[error("arrow error: {0}")]

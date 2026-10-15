@@ -9,7 +9,7 @@ license = "MIT"
 
 [dependencies]
 vector-ta = { path = "/home/lkf/src/VectorTA" }
-lib-reader = { path = "../libs/lib-reader" }
+kline-reader = { path = "../libs/kline-reader" }
 rayon = "1"
 chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }

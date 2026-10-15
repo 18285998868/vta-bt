@@ -109,7 +109,7 @@ fn run_combo(
     strategy: &dyn crate::strategies::Strategy,
     symbol: &str,
     tf: &str,
-    cols: &lib_reader::KlineColumns,
+    cols: &kline_reader::KlineColumns,
     bpy: f64,
     ctx: &ComboCtx,
 ) -> crate::error::Result<(PathBuf, bool)> {
@@ -291,7 +291,7 @@ fn run_combo(
 /// 1.  加载配置并校验: config::load_config(path)?; config.validate()?; build_strategies → strategies
 /// 2.  for symbol in data.symbols()                        // 品种层(单值时长度为 1)
 /// 3.    for tf in data.timeframes()                       // 周期层(单值时长度为 1)
-/// 4.      cols ← lib_reader::load_columns(data.for_pair(symbol, tf))   // 逐对加载
+/// 4.      cols ← kline_reader::load_columns(data.for_pair(symbol, tf))   // 逐对加载
 /// 5.      for strategy in strategies                      // 策略层
 /// 6.        run_combo(...) → 单个组合处理, 内部:
 /// 7.          a. 跳过判断: 非 overwrite 且组合缓存文件(含参数指纹)可读 → 跳过(仍并入合并)
@@ -367,7 +367,7 @@ pub fn run(config_path: &str) -> crate::error::Result<()> {
             println!("\n[{pair_idx}/{pairs_total}] {symbol} / {tf}");
 
             let pair_config = config.data.for_pair(symbol, tf);
-            let cols = match lib_reader::load_columns(&pair_config) {
+            let cols = match kline_reader::load_columns(&pair_config) {
                 Ok(c) => c,
                 Err(e) => {
                     eprintln!("  [跳过] 数据加载失败: {e}");
