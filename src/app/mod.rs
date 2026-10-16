@@ -385,7 +385,14 @@ pub fn run(config_path: &str) -> crate::error::Result<()> {
             pair_idx += 1;
             println!("\n[{pair_idx}/{pairs_total}] {symbol} / {tf}");
 
-            let pair_config = config.data.for_pair(symbol, tf);
+            let pair_config = match config.data.for_pair(symbol, tf) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("  [跳过] 配置无效: {e}");
+                    load_failed += 1;
+                    continue;
+                }
+            };
             let cols = match kline_reader::load_columns(&pair_config) {
                 Ok(c) => c,
                 Err(e) => {

@@ -115,15 +115,20 @@ impl DataSection {
     }
 
     /// 取出一组 (symbol, timeframe) 对应的单值配置, 供 `kline_reader::load_columns` 使用。
-    pub fn for_pair(&self, symbol: &str, timeframe: &str) -> kline_reader::DataConfig {
-        kline_reader::DataConfig {
-            source_type: self.source_type,
-            dir: self.dir.clone(),
-            symbol: symbol.to_string(),
-            timeframe: timeframe.to_string(),
-            start_date: self.start_date.clone(),
-            end_date: self.end_date.clone(),
-        }
+    /// 已验证构造：非法 symbol/timeframe 即 `Err`，调用方按跳过处理（不 `unwrap`）。
+    pub fn for_pair(
+        &self,
+        symbol: &str,
+        timeframe: &str,
+    ) -> Result<kline_reader::DataConfig, kline_reader::ReaderError> {
+        kline_reader::DataConfig::new(
+            self.source_type,
+            &self.dir,
+            symbol,
+            timeframe,
+            self.start_date.as_deref(),
+            self.end_date.as_deref(),
+        )
     }
 }
 
@@ -1117,9 +1122,9 @@ mod tests {
             "[\"15m\", \"1h\"]",
         ))
         .unwrap();
-        let pair = cfg.data.for_pair("ETHUSDT", "1h");
-        assert_eq!(pair.symbol, "ETHUSDT");
-        assert_eq!(pair.timeframe, "1h");
+        let pair = cfg.data.for_pair("ETHUSDT", "1h").unwrap();
+        assert_eq!(pair.symbol.as_str(), "ETHUSDT");
+        assert_eq!(pair.timeframe.as_str(), "1h");
         assert_eq!(pair.dir, cfg.data.dir);
         assert_eq!(pair.source_type, cfg.data.source_type);
     }
@@ -1128,9 +1133,15 @@ mod tests {
     fn for_pair_preserves_date_window() {
         let toml = "[data]\ntype = \"binance\"\ndir = \"/tmp\"\nsymbol = [\"BTCUSDT\"]\ntimeframe = [\"15m\"]\nstart_date = \"2024-01-01\"\nend_date = \"2024-06-30\"\n\n[backtest]\ninitial_balance = 10000.0\n\n[[strategy]]\ntype = \"ssf_st\"\nperiod = 3\n";
         let cfg: Config = toml::from_str(toml).unwrap();
-        let pair = cfg.data.for_pair("BTCUSDT", "15m");
-        assert_eq!(pair.start_date.as_deref(), Some("2024-01-01"));
-        assert_eq!(pair.end_date.as_deref(), Some("2024-06-30"));
+        let pair = cfg.data.for_pair("BTCUSDT", "15m").unwrap();
+        assert_eq!(
+            pair.start_date.map(|d| d.to_string()).as_deref(),
+            Some("2024-01-01")
+        );
+        assert_eq!(
+            pair.end_date.map(|d| d.to_string()).as_deref(),
+            Some("2024-06-30")
+        );
     }
 
     #[test]

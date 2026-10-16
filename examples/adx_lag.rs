@@ -3,8 +3,6 @@
 // 对每个基线进场 i(方向d, 离场 e): 在 [i..e] 内找首个同向过滤进场 j.
 // lag=j-i; 错过=窗内无同向过滤进场; slip=进场价差(bps, 以基线进场收盘为基准).
 // 假设: 窗内首个同向过滤信号即对应进场 (双序列同离场规则, 重叠为二阶, 仅计数).
-use std::path::PathBuf;
-
 use kline_reader::{DataConfig, DataSource, load_columns};
 use vta::config::F64Param;
 use vta::strategies::Signal;
@@ -41,14 +39,15 @@ fn median_f(mut v: Vec<f64>) -> f64 {
 }
 
 fn run_pair(symbol: &str, timeframe: &str, len: usize, sigma: f64, adxlen: usize, thr: f64) {
-    let cfg = DataConfig {
-        source_type: DataSource::Binance,
-        dir: PathBuf::from("/data/nutilustrader/data"),
-        symbol: symbol.to_string(),
-        timeframe: timeframe.to_string(),
-        start_date: Some("2020-09-15".to_string()),
-        end_date: Some("2025-09-30".to_string()),
-    };
+    let cfg = DataConfig::new(
+        DataSource::Binance,
+        "/data/nutilustrader/data",
+        symbol,
+        timeframe,
+        Some("2020-09-15"),
+        Some("2025-09-30"),
+    )
+    .expect("valid DataConfig");
     let cols = load_columns(&cfg).expect("load_columns");
     let n = cols.close.len();
 
