@@ -196,14 +196,14 @@ impl DataLoader {
             )));
         }
 
-        let cfg = kline_reader::DataConfig {
-            source_type: kline_reader::DataSource::Binance,
-            dir: self.data_dir.clone(),
-            symbol: pair.to_owned(),
-            timeframe: timeframe.to_owned(),
-            start_date: None,
-            end_date: None,
-        };
+        let cfg = kline_reader::DataConfig::new(
+            kline_reader::DataSource::Binance,
+            &self.data_dir,
+            pair,
+            timeframe,
+            None,
+            None,
+        )?;
         let cols = kline_reader::load_columns(&cfg)?;
         if cols.is_empty() {
             return Err(DataError::NotFound(format!(
