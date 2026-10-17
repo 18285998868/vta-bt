@@ -1135,19 +1135,49 @@ pub fn write_single_parquet(
 /// 合并本次运行产生的组合文件 (含跳过的缓存文件), 输出为最终的 result.parquet。
 /// 仅读取显式传入的路径, 避免聚合 `temps/` 中遗留的旧参数文件。
 /// 返回合并的总行数。
-pub fn merge_parquet_files(paths: &[PathBuf], output_path: &str, balance: f64) -> Result<u64> {
+/// 合并若干组合临时文件为单一报告。
+///
+/// **读失败不再静默**: 原实现只 `eprintln!` 一行然后跳过, 返回值仍是成功,
+/// 调用方无从得知丢了几个组合 —— 报告里少了参数却显示"完成"。
+/// 现在返回 [`MergeStats`], 失败数进入最终摘要; 全部失败才报错。
+pub fn merge_parquet_files(
+    paths: &[PathBuf],
+    output_path: &str,
+    balance: f64,
+) -> Result<MergeStats> {
     let mut all: Vec<RunResult> = Vec::new();
+    let mut failed = 0u32;
     for path in paths {
         match read_parquet(path.to_str().expect("non-UTF-8 path")) {
             Ok(mut results) => all.append(&mut results),
-            Err(e) => eprintln!("  [警告] 读取失败 {}: {e}", path.display()),
+            Err(e) => {
+                eprintln!("  [警告] 读取失败 {}: {e}", path.display());
+                failed += 1;
+            }
         }
     }
-    let total = all.len() as u64;
-    if !all.is_empty() {
-        write_parquet(output_path, &all, balance)?;
+    if all.is_empty() {
+        return Err(crate::error::AppError::Msg(format!(
+            "合并失败: {} 个组合文件全部无法读取, 未产出 {}",
+            failed, output_path
+        )));
     }
-    Ok(total)
+    let total = all.len() as u64;
+    write_parquet(output_path, &all, balance)?;
+    Ok(MergeStats {
+        merged_rows: total,
+        failed_files: failed,
+        total_files: paths.len() as u32,
+    })
+}
+
+/// [`merge_parquet_files`] 的产出。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MergeStats {
+    pub merged_rows: u64,
+    /// 读失败被跳过的组合文件数。
+    pub failed_files: u32,
+    pub total_files: u32,
 }
 
 #[cfg(test)]

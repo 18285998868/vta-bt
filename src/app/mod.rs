@@ -36,47 +36,87 @@ pub struct DetailResult {
     pub fixed_curve: Vec<f64>,
 }
 
+/// FNV-1a 的初始偏移与质数。抽出成常量, 避免 6 处偏移/质数各写一遍而改一处漏一处。
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+/// 把一段字节混入 FNV-1a。
+fn fnv_bytes(mut h: u64, bytes: &[u8]) -> u64 {
+    for &b in bytes {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(FNV_PRIME);
+    }
+    h
+}
+
+/// 列间分隔符: 没有它, `[1,2] + [3]` 与 `[1] + [2,3]` 的列字节流会相同。
+const FNV_COL_SEP: u8 = 0xff;
+
+/// **数据内容**的指纹 (FNV-1a over 六列的原始位模式)。
+///
+/// 存在的理由: 缓存文件名原本只混入 `window`(start_date/end_date 的**字符串**)、
+/// 资金与执行口径, **不含数据本身**。可触发的错误场景: 同一 `start~end` 窗口下
+/// 先跑一次(此时该目录只有 1 月数据), 再补进 2 月数据后重跑 —— `window` 字符串
+/// 一字未变, 于是**全部组合命中旧缓存**, 报告里的 bars 数/指标仍基于只有 1 月的
+/// 数据, 而使用者以为跑的是完整窗口。这类错误不会报错, 只会让研究结论悄悄过期。
+///
+/// 为什么用**内容哈希**而非文件 mtime / 目录递归:
+/// - 目录 mtime 只反映"条目增删", 覆盖不到"同路径文件被原地改写"
+/// - 递归遍历依赖文件系统语义, 换数据源/挂载方式就失效
+/// - 列已全量载入内存, 直接哈希成本 ~20ms/1M bars, 无需再访问文件系统
+fn data_fingerprint(cols: &kline_reader::KlineColumns) -> u64 {
+    let mut h = FNV_OFFSET;
+    // 列名混入: 将来增删列时指纹必然改变, 否则两套不同列结构可能撞指纹。
+    for name in ["time", "open", "high", "low", "close", "volume"] {
+        h = fnv_bytes(h, name.as_bytes());
+        h = fnv_bytes(h, &[FNV_COL_SEP]);
+    }
+    h = fnv_bytes_i64(h, &cols.time);
+    for col in [&cols.open, &cols.high, &cols.low, &cols.close, &cols.volume] {
+        h = fnv_bytes_f64(h, col);
+    }
+    h
+}
+
+fn fnv_bytes_i64(mut h: u64, xs: &[i64]) -> u64 {
+    for &x in xs {
+        h = fnv_bytes(h, &x.to_ne_bytes());
+    }
+    fnv_bytes(h, &[FNV_COL_SEP])
+}
+
+fn fnv_bytes_f64(mut h: u64, xs: &[f64]) -> u64 {
+    for &x in xs {
+        h = fnv_bytes(h, &x.to_bits().to_le_bytes());
+    }
+    fnv_bytes(h, &[FNV_COL_SEP])
+}
+
 /// 参数集合的稳定指纹 (FNV-1a)。写入组合文件名,避免改动参数后误命中旧缓存。
-/// 除策略参数外还混入初始资金与数据窗口,防止改 balance / start_date 后仍命中旧临时文件
-/// (否则缓存结果的指标与当前资金口径不一致)。
+///
+/// 混入的每一项都对应一类"改了但结果会变"的输入:
+/// - `data_fp`: 行情内容本身(见 [`data_fingerprint`])
+/// - `balance`: 资金口径
+/// - `window`: start_date/end_date 字符串
+/// - `exec`: delay / fee / slippage / fill 价(前视乐观与口径差异会整体改写结果)
 fn params_fingerprint(
     strategy: &dyn crate::strategies::Strategy,
     n: usize,
     balance: f64,
     window: &str,
+    data_fp: u64,
     exec: &crate::engine::ExecConfig,
 ) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in balance.to_bits().to_le_bytes() {
-        h ^= u64::from(b);
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    for b in window.bytes() {
-        h ^= u64::from(b);
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    // 执行口径变更必须失效旧缓存, 否则 delay/费率/fill 不同的结果会误命中。
-    for b in (exec.delay() as u64).to_le_bytes() {
-        h ^= u64::from(b);
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    for b in exec.fee_rate.to_bits().to_le_bytes() {
-        h ^= u64::from(b);
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    for b in exec.slip_rate.to_bits().to_le_bytes() {
-        h ^= u64::from(b);
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    h ^= u64::from(exec.fill_close);
-    h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    let mut h = fnv_bytes(FNV_OFFSET, &data_fp.to_le_bytes());
+    h = fnv_bytes(h, &balance.to_bits().to_le_bytes());
+    h = fnv_bytes(h, window.as_bytes());
+    h = fnv_bytes(h, &(exec.delay() as u64).to_le_bytes());
+    h = fnv_bytes(h, &exec.fee_rate.to_bits().to_le_bytes());
+    h = fnv_bytes(h, &exec.slip_rate.to_bits().to_le_bytes());
+    h = fnv_bytes(h, &[u8::from(exec.fill_close)]);
     for i in 0..n {
-        for b in strategy.param_str(i).bytes() {
-            h ^= u64::from(b);
-            h = h.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-        h ^= 0xff;
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        h = fnv_bytes(h, strategy.param_str(i).as_bytes());
+        h = fnv_bytes(h, &[FNV_COL_SEP]);
     }
     h
 }
@@ -120,18 +160,34 @@ fn run_combo(
         symbol,
         tf,
         strategy.name(),
-        params_fingerprint(strategy, n, ctx.balance, &ctx.window, &ctx.exec),
+        params_fingerprint(
+            strategy,
+            n,
+            ctx.balance,
+            &ctx.window,
+            data_fingerprint(cols),
+            &ctx.exec,
+        ),
     );
 
+    // L4: 指纹相同**不保证**文件完整 —— 文件可能被截断/写坏/被旧版本写入。
+    // 少行的话下游合并会得到"缺一半参数"的结果而毫无提示, 故行数也必须对得上。
     if !ctx.overwrite && combo_path.exists() {
         match output::read_parquet(combo_path.to_str().expect("non-UTF-8 path")) {
-            Ok(results) => {
+            Ok(results) if results.len() == n => {
                 println!(
                     "  [{}]: 已存在, 跳过 ({} 条结果)",
                     strategy.name(),
                     results.len()
                 );
                 return Ok((combo_path, false));
+            }
+            Ok(results) => {
+                eprintln!(
+                    "  [{}] 缓存行数 {} != 参数数 {n}(文件被截断或指纹碰撞), 判为失效并重算",
+                    strategy.name(),
+                    results.len()
+                );
             }
             Err(e) => {
                 eprintln!("  [{}] 读取失败: {e}, 重新运行", strategy.name());
@@ -432,11 +488,20 @@ pub fn run(config_path: &str) -> crate::error::Result<()> {
     }
 
     let out_path = format!("{out_dir}/result.parquet");
-    let merged = output::merge_parquet_files(&combo_files, &out_path, balance)?;
+    let stats = output::merge_parquet_files(&combo_files, &out_path, balance)?;
     println!(
-        "\n  完成: 运行 {ran} 组, 跳过 {skipped} 组, 合并 {} 条结果",
-        merged
+        "\n  完成: 运行 {ran} 组, 跳过 {skipped} 组, 合并 {} 条结果 (来自 {}/{} 个文件)",
+        stats.merged_rows,
+        stats.total_files - stats.failed_files,
+        stats.total_files
     );
+    if stats.failed_files > 0 {
+        // 报告缺了参数, 必须显式告知, 不能让"完成"字样掩盖。
+        println!(
+            "  [警告] {} 个组合文件读取失败已被跳过, 报告不完整(请删 temps/ 后重跑)",
+            stats.failed_files
+        );
+    }
     if load_failed > 0 {
         println!("  跳过 {load_failed} 组数据缺失的 (品种 × 周期)");
     }
@@ -446,4 +511,216 @@ pub fn run(config_path: &str) -> crate::error::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cols(n: usize) -> kline_reader::KlineColumns {
+        kline_reader::KlineColumns {
+            time: (0..n as i64).map(|i| 1_700_000_000 + i * 3600).collect(),
+            open: (0..n).map(|i| 100.0 + i as f64).collect(),
+            high: (0..n).map(|i| 101.0 + i as f64).collect(),
+            low: (0..n).map(|i| 99.0 + i as f64).collect(),
+            close: (0..n).map(|i| 100.5 + i as f64).collect(),
+            volume: (0..n).map(|i| 10.0 + i as f64).collect(),
+        }
+    }
+
+    /// L3: 缓存指纹必须覆盖**数据内容**。
+    ///
+    /// 可触发场景: 同一 start~end 窗口先跑一次(只有 1 月数据), 再补进 2 月数据
+    /// 重跑 —— 旧实现只混入 window 字符串, 两次指纹相同, 于是全部命中旧缓存,
+    /// 报告仍基于只有 1 月的行情且无任何提示。
+    #[test]
+    fn fingerprint_covers_data_identity() {
+        let a = cols(50);
+        let b = cols(50);
+        assert_eq!(
+            data_fingerprint(&a),
+            data_fingerprint(&b),
+            "相同数据必须同指纹(否则缓存永不命中)"
+        );
+
+        // 追加 bar(数据被补齐)
+        let mut longer = a.clone();
+        longer.time.push(1_700_000_000 + 50 * 3600);
+        longer.open.push(150.0);
+        longer.high.push(151.0);
+        longer.low.push(149.0);
+        longer.close.push(150.5);
+        longer.volume.push(60.0);
+        assert_ne!(
+            data_fingerprint(&a),
+            data_fingerprint(&longer),
+            "追加 bar 必须改变指纹(否则补数据后仍命中旧缓存)"
+        );
+
+        // 同一长度但**价格被改写**(同路径文件原地替换)
+        let mut rewritten = a.clone();
+        rewritten.close[10] += 0.01;
+        assert_ne!(
+            data_fingerprint(&a),
+            data_fingerprint(&rewritten),
+            "同长度但价格变化必须改变指纹(否则行情被替换仍命中旧缓存)"
+        );
+
+        // 窗口字符串相同但数据不同 → params_fingerprint 必须不同
+        let s = build_strategies(&[config::StrategyConfig::Sma(config::MaGridCfg {
+            period: config::PeriodParam::Single(20),
+        })])
+        .pop()
+        .expect("sma");
+        let exec = crate::engine::ExecConfig::default();
+        let fp_old = params_fingerprint(&*s, 1, 10_000.0, "~", data_fingerprint(&a), &exec);
+        let fp_new = params_fingerprint(&*s, 1, 10_000.0, "~", data_fingerprint(&rewritten), &exec);
+        assert_ne!(fp_old, fp_new, "同窗口不同数据必须给出不同缓存文件名");
+    }
+
+    /// 列间必须有分隔符: 否则 `[1,2]+[3]` 与 `[1]+[2,3]` 的字节流相同。
+    #[test]
+    fn data_fingerprint_separates_columns() {
+        let a = kline_reader::KlineColumns {
+            time: vec![1, 2, 3],
+            open: vec![4.0, 5.0, 6.0],
+            high: vec![7.0, 8.0, 9.0],
+            low: vec![10.0, 11.0, 12.0],
+            close: vec![13.0, 14.0, 15.0],
+            volume: vec![16.0, 17.0, 18.0],
+        };
+        // 把 close 的值挪到 open, 长度不变
+        let mut b = a.clone();
+        b.open = a.close.clone();
+        b.close = a.open.clone();
+        assert_ne!(
+            data_fingerprint(&a),
+            data_fingerprint(&b),
+            "列内容互换必须改变指纹"
+        );
+    }
+
+    /// 执行口径任一变化都必须失效缓存: 前视乐观口径与费率差异会整体改写结果。
+    #[test]
+    fn fingerprint_covers_exec_params() {
+        let s = build_strategies(&[config::StrategyConfig::Sma(config::MaGridCfg {
+            period: config::PeriodParam::Single(20),
+        })])
+        .pop()
+        .expect("sma");
+        let c = cols(10);
+        let fp = data_fingerprint(&c);
+        let base = params_fingerprint(
+            &*s,
+            1,
+            10_000.0,
+            "a~b",
+            fp,
+            &crate::engine::ExecConfig::default(),
+        );
+        for exec in [
+            crate::engine::ExecConfig::try_from_bps_fill(2, 0.0, 0.0, false).unwrap(),
+            crate::engine::ExecConfig::try_from_bps_fill(1, 2.0, 0.0, false).unwrap(),
+            crate::engine::ExecConfig::try_from_bps_fill(1, 0.0, 1.0, false).unwrap(),
+            crate::engine::ExecConfig::try_from_bps_fill(1, 0.0, 0.0, true).unwrap(),
+        ] {
+            assert_ne!(
+                base,
+                params_fingerprint(&*s, 1, 10_000.0, "a~b", fp, &exec),
+                "执行口径 {:?} 变化必须失效缓存",
+                exec
+            );
+        }
+        assert_ne!(
+            base,
+            params_fingerprint(
+                &*s,
+                1,
+                20_000.0,
+                "a~b",
+                fp,
+                &crate::engine::ExecConfig::default()
+            ),
+            "资金变化必须失效缓存"
+        );
+        assert_ne!(
+            base,
+            params_fingerprint(
+                &*s,
+                1,
+                10_000.0,
+                "a~c",
+                fp,
+                &crate::engine::ExecConfig::default()
+            ),
+            "窗口变化必须失效缓存"
+        );
+    }
+
+    /// L4 + L11: 行数不符 / 文件读失败都不得静默出"完成"。
+    #[test]
+    fn merge_reports_failures_instead_of_silently_dropping() {
+        let dir = std::env::temp_dir().join(format!("vta-merge-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let rr = RunResult {
+            symbol: "BTCUSDT".into(),
+            timeframe: "1d".into(),
+            strategy: "sma".into(),
+            params: "period=20".into(),
+            metrics: engine::SummaryMetrics::default(),
+            delay_bars: 1,
+            fee_bps: 0.0,
+            slippage_bps: 0.0,
+            fill_close: false,
+            buy_hold_pnl: 1.0,
+            buy_hold_return: 0.1,
+        };
+        let good = dir.join("good.parquet");
+        let bad = dir.join("bad.parquet");
+        let missing = dir.join("missing.parquet");
+        output::write_parquet(good.to_str().unwrap(), std::slice::from_ref(&rr), 10_000.0).unwrap();
+        std::fs::write(&bad, b"not a parquet file").unwrap();
+
+        let out = dir.join("merged.parquet");
+
+        // 全部不可读 → 必须报错, 而不是"合并 0 条"式的成功
+        assert!(
+            output::merge_parquet_files(
+                &[bad.clone(), missing.clone()],
+                out.to_str().unwrap(),
+                10_000.0
+            )
+            .is_err(),
+            "全部失败时必须报错"
+        );
+
+        // 部分失败 → 报告仍落盘, 但失败必须被**计数**并进入摘要
+        let st = output::merge_parquet_files(
+            &[good.clone(), bad, missing],
+            out.to_str().unwrap(),
+            10_000.0,
+        )
+        .expect("部分失败仍应产出报告");
+        assert_eq!(st.total_files, 3);
+        assert_eq!(
+            st.failed_files, 2,
+            "读失败必须被计数(否则报告缺参数却显示完成)"
+        );
+        assert_eq!(st.merged_rows, 1);
+        assert!(out.exists(), "报告仍应落盘");
+
+        // L4: 缓存行数必须等于参数数。截断文件(少 1 行)不能被当成有效缓存。
+        let truncated = dir.join("trunc.parquet");
+        output::write_parquet(truncated.to_str().unwrap(), &[], 10_000.0).unwrap();
+        assert_eq!(
+            output::read_parquet(truncated.to_str().unwrap())
+                .unwrap()
+                .len(),
+            0,
+            "构造 0 行缓存作为反例"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
