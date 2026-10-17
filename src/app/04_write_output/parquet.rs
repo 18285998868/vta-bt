@@ -333,13 +333,13 @@ fn build_parquet(results: &[RunResult], balance: f64) -> RecordBatch {
     let mut params_full = StringBuilder::new();
     let mut bal = Float64Builder::new();
     let mut trade_size = StringBuilder::new();
-    let mut pnl = Float64Builder::new();
-    let mut eq = Float64Builder::new();
-    let mut mdd = Float64Builder::new();
+    let mut total_return = Float64Builder::new();
+    let mut final_equity = Float64Builder::new();
+    let mut max_dd = Float64Builder::new();
     let mut trades = UInt32Builder::new();
     let mut sharpe = Float64Builder::new();
     let mut sortino = Float64Builder::new();
-    let mut wr = Float64Builder::new();
+    let mut win_rate = Float64Builder::new();
     let mut pf = Float64Builder::new();
     let mut calmar = Float64Builder::new();
     let mut return_mdd = Float64Builder::new();
@@ -348,11 +348,11 @@ fn build_parquet(results: &[RunResult], balance: f64) -> RecordBatch {
     let mut expectancy = Float64Builder::new();
     let mut consecutive_wins = UInt32Builder::new();
     let mut consecutive_losses = UInt32Builder::new();
-    let mut volatility = Float64Builder::new();
+    let mut volatility_pct = Float64Builder::new();
     let mut recovery_factor = Float64Builder::new();
     let mut avg_hold_bars = Float64Builder::new();
-    let mut avg_mae = Float64Builder::new();
-    let mut avg_mfe = Float64Builder::new();
+    let mut avg_mae_price = Float64Builder::new();
+    let mut avg_mfe_price = Float64Builder::new();
     let mut edge_ratio = Float64Builder::new();
     let mut wl_ratio = Float64Builder::new();
     let mut skewness = Float64Builder::new();
@@ -368,7 +368,7 @@ fn build_parquet(results: &[RunResult], balance: f64) -> RecordBatch {
     let mut slippage_bps = Float64Builder::new();
     let mut fixed_total_return = Float64Builder::new();
     let mut fixed_sharpe_ratio = Float64Builder::new();
-    let mut fixed_max_drawdown_pct = Float64Builder::new();
+    let mut fixed_max_drawdown = Float64Builder::new();
     let mut fixed_expectancy_bps = Float64Builder::new();
     let mut fixed_profit_factor = Float64Builder::new();
     let mut fill_close = UInt8Builder::new();
@@ -388,13 +388,13 @@ fn build_parquet(results: &[RunResult], balance: f64) -> RecordBatch {
         params_full.append_value(&r.params);
         bal.append_value(balance);
         trade_size.append_value("100%");
-        pnl.append_value(m.total_return);
-        eq.append_value(m.final_equity);
-        mdd.append_value(m.max_drawdown_pct / 100.0);
+        total_return.append_value(m.total_return);
+        final_equity.append_value(m.final_equity);
+        max_dd.append_value(m.max_drawdown_pct / 100.0);
         trades.append_value(m.num_trades);
         sharpe.append_value(m.sharpe_ratio);
         sortino.append_value(m.sortino_ratio);
-        wr.append_value(m.win_rate / 100.0);
+        win_rate.append_value(m.win_rate / 100.0);
         pf.append_value(m.profit_factor);
         calmar.append_value(m.calmar_ratio);
         let rmdd = if m.max_drawdown_pct > 0.0 {
@@ -408,11 +408,11 @@ fn build_parquet(results: &[RunResult], balance: f64) -> RecordBatch {
         expectancy.append_value(m.expectancy);
         consecutive_wins.append_value(m.consecutive_wins);
         consecutive_losses.append_value(m.consecutive_losses);
-        volatility.append_value(m.volatility);
+        volatility_pct.append_value(m.volatility);
         recovery_factor.append_value(m.recovery_factor);
         avg_hold_bars.append_value(m.avg_hold_bars);
-        avg_mae.append_value(m.avg_mae);
-        avg_mfe.append_value(m.avg_mfe);
+        avg_mae_price.append_value(m.avg_mae);
+        avg_mfe_price.append_value(m.avg_mfe);
         edge_ratio.append_value(m.edge_ratio);
         wl_ratio.append_value(m.wl_ratio);
         skewness.append_value(m.skewness);
@@ -428,7 +428,8 @@ fn build_parquet(results: &[RunResult], balance: f64) -> RecordBatch {
         slippage_bps.append_value(r.slippage_bps);
         fixed_total_return.append_value(m.fixed_total_return);
         fixed_sharpe_ratio.append_value(m.fixed_sharpe_ratio);
-        fixed_max_drawdown_pct.append_value(m.fixed_max_drawdown_pct);
+        // 除 100 -> 与复利腿 max_drawdown 同为小数(Ratio), 单位错配已修。
+        fixed_max_drawdown.append_value(m.fixed_max_drawdown_pct / 100.0);
         fixed_expectancy_bps.append_value(m.fixed_expectancy_bps);
         fixed_profit_factor.append_value(m.fixed_profit_factor);
         fill_close.append_value(u8::from(r.fill_close));
@@ -446,13 +447,13 @@ fn build_parquet(results: &[RunResult], balance: f64) -> RecordBatch {
         Arc::new(strategy_params_json.finish()),
         Arc::new(bal.finish()),
         Arc::new(trade_size.finish()),
-        Arc::new(pnl.finish()),
-        Arc::new(eq.finish()),
-        Arc::new(mdd.finish()),
+        Arc::new(total_return.finish()),
+        Arc::new(final_equity.finish()),
+        Arc::new(max_dd.finish()),
         Arc::new(trades.finish()),
         Arc::new(sharpe.finish()),
         Arc::new(sortino.finish()),
-        Arc::new(wr.finish()),
+        Arc::new(win_rate.finish()),
         Arc::new(pf.finish()),
         Arc::new(calmar.finish()),
         Arc::new(return_mdd.finish()),
@@ -461,11 +462,11 @@ fn build_parquet(results: &[RunResult], balance: f64) -> RecordBatch {
         Arc::new(expectancy.finish()),
         Arc::new(consecutive_wins.finish()),
         Arc::new(consecutive_losses.finish()),
-        Arc::new(volatility.finish()),
+        Arc::new(volatility_pct.finish()),
         Arc::new(recovery_factor.finish()),
         Arc::new(avg_hold_bars.finish()),
-        Arc::new(avg_mae.finish()),
-        Arc::new(avg_mfe.finish()),
+        Arc::new(avg_mae_price.finish()),
+        Arc::new(avg_mfe_price.finish()),
         Arc::new(edge_ratio.finish()),
         Arc::new(wl_ratio.finish()),
         Arc::new(skewness.finish()),
@@ -482,7 +483,7 @@ fn build_parquet(results: &[RunResult], balance: f64) -> RecordBatch {
         Arc::new(slippage_bps.finish()),
         Arc::new(fixed_total_return.finish()),
         Arc::new(fixed_sharpe_ratio.finish()),
-        Arc::new(fixed_max_drawdown_pct.finish()),
+        Arc::new(fixed_max_drawdown.finish()),
         Arc::new(fixed_expectancy_bps.finish()),
         Arc::new(fixed_profit_factor.finish()),
         Arc::new(fill_close.finish()),
@@ -500,14 +501,14 @@ fn build_parquet(results: &[RunResult], balance: f64) -> RecordBatch {
         Field::new("strategy_params_json", DataType::Utf8, false),
         Field::new("balance", DataType::Float64, false),
         Field::new("trade_size", DataType::Utf8, false),
-        Field::new("pnl", DataType::Float64, false),
-        Field::new("eq", DataType::Float64, false),
-        Field::new("mdd", DataType::Float64, false),
+        Field::new("total_return", DataType::Float64, false),
+        Field::new("final_equity", DataType::Float64, false),
+        Field::new("max_drawdown", DataType::Float64, false),
         Field::new("trades", DataType::UInt32, false),
         Field::new("sharpe", DataType::Float64, false),
         Field::new("sortino", DataType::Float64, false),
-        Field::new("wr", DataType::Float64, false),
-        Field::new("pf", DataType::Float64, false),
+        Field::new("win_rate", DataType::Float64, false),
+        Field::new("profit_factor", DataType::Float64, false),
         Field::new("calmar", DataType::Float64, false),
         Field::new("return_mdd", DataType::Float64, false),
         Field::new("avg_win", DataType::Float64, false),
@@ -515,11 +516,11 @@ fn build_parquet(results: &[RunResult], balance: f64) -> RecordBatch {
         Field::new("expectancy", DataType::Float64, false),
         Field::new("consecutive_wins", DataType::UInt32, false),
         Field::new("consecutive_losses", DataType::UInt32, false),
-        Field::new("volatility", DataType::Float64, false),
+        Field::new("volatility_pct", DataType::Float64, false),
         Field::new("recovery_factor", DataType::Float64, false),
         Field::new("avg_hold_bars", DataType::Float64, false),
-        Field::new("avg_mae", DataType::Float64, false),
-        Field::new("avg_mfe", DataType::Float64, false),
+        Field::new("avg_mae_price", DataType::Float64, false),
+        Field::new("avg_mfe_price", DataType::Float64, false),
         Field::new("edge_ratio", DataType::Float64, false),
         Field::new("wl_ratio", DataType::Float64, false),
         Field::new("skewness", DataType::Float64, false),
@@ -536,7 +537,7 @@ fn build_parquet(results: &[RunResult], balance: f64) -> RecordBatch {
         Field::new("slippage_bps", DataType::Float64, false),
         Field::new("fixed_total_return", DataType::Float64, false),
         Field::new("fixed_sharpe_ratio", DataType::Float64, false),
-        Field::new("fixed_max_drawdown_pct", DataType::Float64, false),
+        Field::new("fixed_max_drawdown", DataType::Float64, false),
         Field::new("fixed_expectancy_bps", DataType::Float64, false),
         Field::new("fixed_profit_factor", DataType::Float64, false),
         Field::new("fill_close", DataType::UInt8, false),
@@ -658,7 +659,7 @@ pub fn write_detail_parquet(
             Field::new("entry_price", DataType::Float64, false),
             Field::new("exit_price", DataType::Float64, false),
             Field::new("qty", DataType::Float64, false),
-            Field::new("pnl", DataType::Float64, false),
+            Field::new("total_return", DataType::Float64, false),
             Field::new("pnl_pct", DataType::Float64, false),
             Field::new("fixed_pnl", DataType::Float64, false),
             Field::new("bars_held", DataType::Int64, false),
@@ -984,6 +985,106 @@ fn u8_col(batch: &RecordBatch, idx: usize) -> Vec<u8> {
     (0..batch.num_rows()).map(|i| arr.value(i)).collect()
 }
 
+/// 报告列的**单位**。
+///
+/// 这张 enum 存在的理由是具体的缺陷, 不是风格偏好:
+/// - `mdd` 落盘时**除以了 100**(小数), 而同一张表里的 `fixed_max_drawdown_pct`
+///   **没有除**(百分数)。两条腿并排放, 读者无从判断谁是百分数 —— 这是会直接
+///   导致结论出错的单位错配。
+/// - `volatility` 是百分数, `max_drawdown`/`win_rate` 是小数, 而三个列名里
+///   都没有任何单位标记。
+///
+/// 单位在落盘层是**声明式**的: 见 [`COLUMNS`]。新增列若不声明单位, `cargo test`
+/// 会失败, 而不是默默用错单位。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unit {
+    /// 无量纲比率, **小数**: 0.15 = 15%。
+    Ratio,
+    /// 百分数: 15.0 = 15%。
+    Percent,
+    /// 货币(以初始资金计价)。
+    Money,
+    /// 价格差(报价货币), 非货币金额。
+    Price,
+    /// bar 数。
+    Bars,
+    /// 次 / 年。
+    PerYear,
+    /// 整数计数。
+    Count,
+    /// 基点(bp): 2.0 = 2bp = 0.02%。
+    BasisPoints,
+    /// 无量纲且非比率(Sharpe / 偏度 / p 值等)。
+    Dimensionless,
+}
+
+/// 报告列的单位契约。**schema 的单一来源**: 列名 + 单位一一对应。
+///
+/// 与之配套的换算约定(落盘时):
+/// 换算约定(落盘时):
+///
+/// - `Ratio` 类: `SummaryMetrics` 的 `_pct` 字段**除以 100** 后写入
+/// - `Percent` 类: 直接取 `SummaryMetrics` 的 `_pct` 字段
+/// - 其余: 按 `SummaryMetrics` 原值写入
+///
+/// `test_every_report_column_declares_its_unit` 保证本表与 schema 完全一致,
+/// 少声明一列就会测试失败, 而不是默默用错单位。
+pub const COLUMNS: &[(&str, Unit)] = &[
+    ("strategy", Unit::Dimensionless),
+    ("symbol", Unit::Dimensionless),
+    ("timeframe", Unit::Dimensionless),
+    ("strategy_params", Unit::Dimensionless),
+    ("strategy_params_json", Unit::Dimensionless),
+    ("balance", Unit::Money),
+    ("trade_size", Unit::Dimensionless),
+    ("total_return", Unit::Ratio),
+    ("final_equity", Unit::Money),
+    ("max_drawdown", Unit::Ratio),
+    ("trades", Unit::Count),
+    ("sharpe", Unit::Dimensionless),
+    ("sortino", Unit::Dimensionless),
+    ("win_rate", Unit::Ratio),
+    ("profit_factor", Unit::Dimensionless),
+    ("calmar", Unit::Dimensionless),
+    ("return_mdd", Unit::Dimensionless),
+    ("avg_win", Unit::Money),
+    ("avg_loss", Unit::Money),
+    ("expectancy", Unit::Money),
+    ("consecutive_wins", Unit::Count),
+    ("consecutive_losses", Unit::Count),
+    ("volatility_pct", Unit::Percent),
+    ("recovery_factor", Unit::Dimensionless),
+    ("avg_hold_bars", Unit::Bars),
+    ("avg_mae_price", Unit::Price),
+    ("avg_mfe_price", Unit::Price),
+    ("edge_ratio", Unit::Dimensionless),
+    ("wl_ratio", Unit::Dimensionless),
+    ("skewness", Unit::Dimensionless),
+    ("kurtosis", Unit::Dimensionless),
+    ("sqn", Unit::Dimensionless),
+    ("pf_stability", Unit::Dimensionless),
+    ("z_score", Unit::Dimensionless),
+    ("p_value", Unit::Dimensionless),
+    ("fixed_pnl", Unit::Money),
+    ("params", Unit::Dimensionless),
+    ("turnover_per_year", Unit::PerYear),
+    ("delay_bars", Unit::Count),
+    ("fee_bps", Unit::BasisPoints),
+    ("slippage_bps", Unit::BasisPoints),
+    ("fixed_total_return", Unit::Ratio),
+    ("fixed_sharpe_ratio", Unit::Dimensionless),
+    // 单位修正: 原名 fixed_max_drawdown_pct, 值是**百分数**, 而复利腿的
+    // max_drawdown 是**小数**。同名不同量纲是最容易读错的一种不一致。
+    ("fixed_max_drawdown", Unit::Ratio),
+    ("fixed_expectancy_bps", Unit::Money),
+    ("fixed_profit_factor", Unit::Dimensionless),
+    ("fill_close", Unit::Dimensionless),
+    ("buy_hold_pnl", Unit::Money),
+    ("buy_hold_return", Unit::Ratio),
+    ("bars_used", Unit::Count),
+    ("status", Unit::Dimensionless),
+];
+
 /// 按**列名**索引 parquet 列。取代原先 40 个魔法列号。
 ///
 /// 为什么必须按名: `read_parquet` 既读**本次写的**文件也读**历史版本写的**缓存。
@@ -1050,25 +1151,25 @@ pub fn read_parquet(path: &str) -> Result<Vec<RunResult>> {
     let strategy_idx = ci.req("strategy")?;
     let symbol_idx = ci.req("symbol")?;
     let timeframe_idx = ci.req("timeframe")?;
-    let pnl_idx = ci.req("pnl")?;
-    let eq_idx = ci.req("eq")?;
-    let mdd_idx = ci.req("mdd")?;
+    let total_return_idx = ci.req("total_return")?;
+    let final_equity_idx = ci.req("final_equity")?;
+    let max_dd_idx = ci.req("max_drawdown")?;
     let trades_idx = ci.req("trades")?;
     let sharpe_idx = ci.req("sharpe")?;
     let sortino_idx = ci.req("sortino")?;
-    let wr_idx = ci.req("wr")?;
-    let pf_idx = ci.req("pf")?;
+    let win_rate_idx = ci.req("win_rate")?;
+    let pf_idx = ci.req("profit_factor")?;
     let calmar_idx = ci.req("calmar")?;
     let avg_win_idx = ci.req("avg_win")?;
     let avg_loss_idx = ci.req("avg_loss")?;
     let expectancy_idx = ci.req("expectancy")?;
     let cw_idx = ci.req("consecutive_wins")?;
     let cl_idx = ci.req("consecutive_losses")?;
-    let volatility_idx = ci.req("volatility")?;
+    let volatility_idx = ci.req("volatility_pct")?;
     let recovery_idx = ci.req("recovery_factor")?;
     let avg_hold_idx = ci.req("avg_hold_bars")?;
-    let avg_mae_idx = ci.req("avg_mae")?;
-    let avg_mfe_idx = ci.req("avg_mfe")?;
+    let avg_mae_idx = ci.req("avg_mae_price")?;
+    let avg_mfe_idx = ci.req("avg_mfe_price")?;
     let edge_idx = ci.req("edge_ratio")?;
     let wl_idx = ci.req("wl_ratio")?;
     let skew_idx = ci.req("skewness")?;
@@ -1088,13 +1189,13 @@ pub fn read_parquet(path: &str) -> Result<Vec<RunResult>> {
         let symbol = str_col(&batch, symbol_idx);
         let timeframe = str_col(&batch, timeframe_idx);
         let params_full = str_col(&batch, params_idx);
-        let pnl = f64_col(&batch, pnl_idx);
-        let eq = f64_col(&batch, eq_idx);
-        let mdd = f64_col(&batch, mdd_idx);
+        let pnl = f64_col(&batch, total_return_idx);
+        let eq = f64_col(&batch, final_equity_idx);
+        let mdd = f64_col(&batch, max_dd_idx);
         let trades = u32_col(&batch, trades_idx);
         let sharpe = f64_col(&batch, sharpe_idx);
         let sortino = f64_col(&batch, sortino_idx);
-        let wr = f64_col(&batch, wr_idx);
+        let wr = f64_col(&batch, win_rate_idx);
         let pf = f64_col(&batch, pf_idx);
         let calmar = f64_col(&batch, calmar_idx);
         let avg_win = f64_col(&batch, avg_win_idx);
@@ -1124,7 +1225,7 @@ pub fn read_parquet(path: &str) -> Result<Vec<RunResult>> {
         let slippage_bps = opt_f64(&batch, &ci, "slippage_bps", n);
         let fixed_total_return = opt_f64(&batch, &ci, "fixed_total_return", n);
         let fixed_sharpe_ratio = opt_f64(&batch, &ci, "fixed_sharpe_ratio", n);
-        let fixed_max_drawdown_pct = opt_f64(&batch, &ci, "fixed_max_drawdown_pct", n);
+        let fixed_max_dd = opt_f64(&batch, &ci, "fixed_max_drawdown", n);
         let fixed_expectancy_bps = opt_f64(&batch, &ci, "fixed_expectancy_bps", n);
         let fixed_profit_factor = opt_f64(&batch, &ci, "fixed_profit_factor", n);
         let fill_close = opt_u8(&batch, &ci, "fill_close", n);
@@ -1205,7 +1306,8 @@ pub fn read_parquet(path: &str) -> Result<Vec<RunResult>> {
                     slippage_bps: slippage_bps[i],
                     fixed_total_return: fixed_total_return[i],
                     fixed_sharpe_ratio: fixed_sharpe_ratio[i],
-                    fixed_max_drawdown_pct: fixed_max_drawdown_pct[i],
+                    // 落盘单位是 Ratio(小数), SummaryMetrics 内部是百分数
+                    fixed_max_drawdown_pct: fixed_max_dd[i] * 100.0,
                     fixed_expectancy_bps: fixed_expectancy_bps[i],
                     fixed_profit_factor: fixed_profit_factor[i],
                 },
@@ -1774,6 +1876,183 @@ mod tests {
         let ok = read_parquet(full.to_str().unwrap()).unwrap();
         assert_eq!(ok[0].metrics.sharpe_ratio, 1.5);
         assert_eq!(ok[0].metrics.sortino_ratio, 2.5);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// L7: 每一列都必须在 [`COLUMNS`] 表里声明单位, 且 schema 与表**完全一致**。
+    ///
+    /// 新增报告列若忘了声明单位, 本测试失败 —— 单位错配(`mdd` 是小数而
+    /// `fixed_max_drawdown_pct` 是百分数)是本项目真实发生过的缺陷。
+    #[test]
+    fn test_every_report_column_declares_its_unit() {
+        let dir = std::env::temp_dir().join(format!("vta-units-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("r.parquet");
+        write_parquet(
+            p.to_str().unwrap(),
+            &[RunResult {
+                symbol: "B".into(),
+                timeframe: "1d".into(),
+                strategy: "sma".into(),
+                params: "period=20".into(),
+                strategy_params: 20,
+                strategy_params_json: "{}".into(),
+                metrics: SummaryMetrics::default(),
+                delay_bars: 1,
+                fee_bps: 0.0,
+                slippage_bps: 0.0,
+                fill_close: false,
+                buy_hold_pnl: 0.0,
+                buy_hold_return: 0.0,
+                bars_used: 300,
+                status: crate::app::RunStatus::Ok,
+            }],
+            10_000.0,
+        )
+        .unwrap();
+
+        use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+        let f = std::fs::File::open(&p).unwrap();
+        let schema = ParquetRecordBatchReaderBuilder::try_new(f)
+            .unwrap()
+            .schema()
+            .clone();
+        let actual: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
+        let declared: Vec<&str> = COLUMNS.iter().map(|(n, _)| *n).collect();
+
+        let undeclared: Vec<&&str> = actual.iter().filter(|a| !declared.contains(a)).collect();
+        assert!(undeclared.is_empty(), "这些列没有声明单位: {undeclared:?}");
+        let stale: Vec<&&str> = declared.iter().filter(|d| !actual.contains(d)).collect();
+        assert!(stale.is_empty(), "单位表里声明了不存在的列: {stale:?}");
+        assert_eq!(actual.len(), declared.len(), "列数不一致");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// L7 的核心断言: 复利腿与 fixed 腿的**最大回撤单位一致**(都是小数)。
+    ///
+    /// 缺陷现场: `mdd` 落盘 ÷100(小数), `fixed_max_drawdown_pct` 未 ÷100(百分数)。
+    /// 两条腿并排对比时, fixed 腿的数值会凭空大 100 倍。
+    #[test]
+    fn test_drawdown_columns_share_the_same_unit() {
+        let m = SummaryMetrics {
+            max_drawdown_pct: 25.0,       // 百分数
+            fixed_max_drawdown_pct: 10.0, // 百分数
+            ..SummaryMetrics::default()
+        };
+        let r = RunResult {
+            symbol: "B".into(),
+            timeframe: "1d".into(),
+            strategy: "sma".into(),
+            params: "period=20".into(),
+            strategy_params: 20,
+            strategy_params_json: "{}".into(),
+            metrics: m,
+            delay_bars: 1,
+            fee_bps: 0.0,
+            slippage_bps: 0.0,
+            fill_close: false,
+            buy_hold_pnl: 0.0,
+            buy_hold_return: 0.0,
+            bars_used: 300,
+            status: crate::app::RunStatus::Ok,
+        };
+        let dir = std::env::temp_dir().join(format!("vta-dd-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("r.parquet");
+        write_parquet(p.to_str().unwrap(), std::slice::from_ref(&r), 10_000.0).unwrap();
+
+        use arrow::record_batch::RecordBatch;
+        use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+        let f = std::fs::File::open(&p).unwrap();
+        let mut it = ParquetRecordBatchReaderBuilder::try_new(f)
+            .unwrap()
+            .build()
+            .unwrap();
+        let batch: RecordBatch = it.next().unwrap().unwrap();
+        let get = |name: &str| -> f64 {
+            let i = batch.schema().index_of(name).unwrap();
+            f64_col(&batch, i)[0]
+        };
+        let comp = get("max_drawdown");
+        let fixed = get("fixed_max_drawdown");
+        assert!(
+            (comp - 0.25).abs() < 1e-12,
+            "复利腿回撤应为 0.25, 实为 {comp}"
+        );
+        assert!(
+            (fixed - 0.10).abs() < 1e-12,
+            "fixed 腿回撤应为 0.10(与复利腿同单位), 实为 {fixed}"
+        );
+        // 往返: 读回时单位必须还原
+        let back = read_parquet(p.to_str().unwrap()).unwrap();
+        assert!((back[0].metrics.max_drawdown_pct - 25.0).abs() < 1e-9);
+        assert!((back[0].metrics.fixed_max_drawdown_pct - 10.0).abs() < 1e-9);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 其余 Percent 列也必须保持百分数, 不被"顺手改成小数"。
+    #[test]
+    fn test_percent_and_ratio_columns_are_not_swapped() {
+        let m = SummaryMetrics {
+            volatility: 42.0,
+            max_drawdown_pct: 25.0,
+            win_rate: 60.0,
+            total_return_pct: -30.0,
+            total_return: -0.30,
+            ..SummaryMetrics::default()
+        };
+        let r = RunResult {
+            symbol: "B".into(),
+            timeframe: "1d".into(),
+            strategy: "sma".into(),
+            params: "period=20".into(),
+            strategy_params: 20,
+            strategy_params_json: "{}".into(),
+            metrics: m,
+            delay_bars: 1,
+            fee_bps: 2.0,
+            slippage_bps: 1.0,
+            fill_close: false,
+            buy_hold_pnl: 0.0,
+            buy_hold_return: 0.4,
+            bars_used: 300,
+            status: crate::app::RunStatus::Ok,
+        };
+        let dir = std::env::temp_dir().join(format!("vta-pct-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("r.parquet");
+        write_parquet(p.to_str().unwrap(), std::slice::from_ref(&r), 10_000.0).unwrap();
+
+        use arrow::record_batch::RecordBatch;
+        use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+        let f = std::fs::File::open(&p).unwrap();
+        let mut it = ParquetRecordBatchReaderBuilder::try_new(f)
+            .unwrap()
+            .build()
+            .unwrap();
+        let batch: RecordBatch = it.next().unwrap().unwrap();
+        let get = |name: &str| -> f64 {
+            let i = batch.schema().index_of(name).unwrap();
+            f64_col(&batch, i)[0]
+        };
+        assert!(
+            (get("volatility_pct") - 42.0).abs() < 1e-12,
+            "volatility 是 Percent"
+        );
+        assert!(
+            (get("max_drawdown") - 0.25).abs() < 1e-12,
+            "max_drawdown 是 Ratio"
+        );
+        assert!((get("win_rate") - 0.60).abs() < 1e-12, "win_rate 是 Ratio");
+        assert!(
+            (get("total_return") - (-0.30)).abs() < 1e-12,
+            "total_return 是 Ratio"
+        );
+        assert!((get("buy_hold_return") - 0.4).abs() < 1e-12);
+        assert!((get("fee_bps") - 2.0).abs() < 1e-12, "fee_bps 是 bp");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
