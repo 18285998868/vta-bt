@@ -312,22 +312,22 @@ fn run_combo(
     if !ctx.overwrite && combo_path.exists() {
         match output::read_parquet(combo_path.to_str().expect("non-UTF-8 path")) {
             Ok(results) if results.len() == n => {
-                println!(
-                    "  [{}]: 已存在, 跳过 ({} 条结果)",
+                tracing::debug!(
+                    "[{}]: 已存在, 跳过 ({} 条结果)",
                     strategy.name(),
                     results.len()
                 );
                 return Ok((combo_path, false));
             }
             Ok(results) => {
-                eprintln!(
+                tracing::warn!(
                     "  [{}] 缓存行数 {} != 参数数 {n}(文件被截断或指纹碰撞), 判为失效并重算",
                     strategy.name(),
                     results.len()
                 );
             }
             Err(e) => {
-                eprintln!("  [{}] 读取失败: {e}, 重新运行", strategy.name());
+                tracing::warn!("[{}] 读取失败: {e}, 重新运行", strategy.name());
             }
         }
     }
@@ -359,7 +359,7 @@ fn run_combo(
         let chunk = ((DETAIL_MEM_BUDGET / per_param.max(1))
             .max(1)
             .min(n.max(1) as u64)) as usize;
-        println!(
+        tracing::info!(
             "  [{}] detail 预检: 总量约 {}, 分 {} 批, 峰值约 {}",
             strategy.name(),
             gib(total_est),
@@ -442,7 +442,7 @@ fn run_combo(
             .max(1)
             .min(n.max(1) as u64)) as usize;
         if n > chunk {
-            println!(
+            tracing::info!(
                 "  [{}] batch 分块: {} 参数, 分 {} 批",
                 strategy.name(),
                 n,
@@ -567,26 +567,26 @@ pub fn run(config_path: &str) -> crate::error::Result<()> {
         )?,
     };
 
-    println!("\n{}", "=".repeat(70));
-    println!(
+    tracing::info!("\n{}", "=".repeat(70));
+    tracing::info!(
         "  扫描规模: {} 品种 × {} 周期 × {} 策略 = {} 组",
         symbols.len(),
         timeframes.len(),
         strategies.len(),
         pairs_total * strategies.len()
     );
-    println!("{}", "=".repeat(70));
+    tracing::info!("{}", "=".repeat(70));
 
     let mut pair_idx = 0usize;
     for symbol in &symbols {
         for tf in &timeframes {
             pair_idx += 1;
-            println!("\n[{pair_idx}/{pairs_total}] {symbol} / {tf}");
+            tracing::info!("\n[{pair_idx}/{pairs_total}] {symbol} / {tf}");
 
             let pair_config = match config.data.for_pair(symbol, tf) {
                 Ok(c) => c,
                 Err(e) => {
-                    eprintln!("  [跳过] 配置无效: {e}");
+                    tracing::warn!("[跳过] 配置无效: {e}");
                     load_failed += 1;
                     continue;
                 }
@@ -594,17 +594,17 @@ pub fn run(config_path: &str) -> crate::error::Result<()> {
             let cols = match kline_reader::load_columns(&pair_config) {
                 Ok(c) => c,
                 Err(e) => {
-                    eprintln!("  [跳过] 数据加载失败: {e}");
+                    tracing::warn!("[跳过] 数据加载失败: {e}");
                     load_failed += 1;
                     continue;
                 }
             };
             if cols.is_empty() {
-                eprintln!("  [跳过] 无数据");
+                tracing::warn!("[跳过] 无数据");
                 load_failed += 1;
                 continue;
             }
-            println!("  数据: {} bars", cols.len());
+            tracing::info!("数据: {} bars", cols.len());
 
             let bpy = bars_per_year(tf);
             for strategy in &strategies {
@@ -629,7 +629,7 @@ pub fn run(config_path: &str) -> crate::error::Result<()> {
 
     let out_path = format!("{out_dir}/result.parquet");
     let stats = output::merge_parquet_files(&combo_files, &out_path, balance)?;
-    println!(
+    tracing::info!(
         "\n  完成: 运行 {ran} 组, 跳过 {skipped} 组, 合并 {} 条结果 (来自 {}/{} 个文件)",
         stats.merged_rows,
         stats.total_files - stats.failed_files,
@@ -637,17 +637,17 @@ pub fn run(config_path: &str) -> crate::error::Result<()> {
     );
     if stats.failed_files > 0 {
         // 报告缺了参数, 必须显式告知, 不能让"完成"字样掩盖。
-        println!(
+        tracing::info!(
             "  [警告] {} 个组合文件读取失败已被跳过, 报告不完整(请删 temps/ 后重跑)",
             stats.failed_files
         );
     }
     if load_failed > 0 {
-        println!("  跳过 {load_failed} 组数据缺失的 (品种 × 周期)");
+        tracing::info!("跳过 {load_failed} 组数据缺失的 (品种 × 周期)");
     }
-    println!("  合并 Parquet 已保存: {out_path}");
+    tracing::info!("合并 Parquet 已保存: {out_path}");
     if detail {
-        println!("  详细数据 Parquet 已保存至: {detail_dir}/");
+        tracing::info!("详细数据 Parquet 已保存至: {detail_dir}/");
     }
 
     Ok(())

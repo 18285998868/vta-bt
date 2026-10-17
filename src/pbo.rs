@@ -22,11 +22,20 @@ pub struct PboResult {
     pub n_logits: usize,
     /// φ: IS 最优 OOS 跑输中位数的概率估计。>0.05 按 Neyman-Pearson 惯例拒绝该模型。
     pub pbo: f64,
-    /// 全样本 Sharpe 最大的策略下标。
-    pub is_best_idx: usize,
-    /// 全样本最优 Sharpe(年化)。
-    pub is_best_sharpe: f64,
-    /// 各组合 IS 最优的 OOS Sharpe 均值减 IS Sharpe 均值(性能衰减, 年化, 一般为负)。
+    /// **全样本回看**挑出的最优策略下标。
+    ///
+    /// 口径警告: 这是拿全样本数据挑出来的, 天然乐观, **不是业绩证据**。
+    /// 它与 [`Self::degradation`] 依据的"最优"**不是同一个**:
+    /// 后者用的是每个 CSCV 划分的 IS 最优(`r_is` 的 argmax), 随划分变化。
+    /// 原实现把两者都叫 "is_best", 读表的人会以为同一件事。
+    pub full_sample_best_idx: usize,
+    /// 全样本回看的最优 Sharpe(年化, **乐观值**)。
+    pub full_sample_best_sharpe: f64,
+    /// 每个 CSCV 划分中"IS 最优"的策略, 其 OOS Sharpe 减 IS Sharpe 的均值
+    /// (年化, 一般为负 = 过拟合的典型形态)。
+    ///
+    /// 注意: 这是**逐步 IS 选择**下的衰减, 与 [`Self::full_sample_best_sharpe`]
+    /// 那个"一次全样本选择"的口径不同, 两者不可互相印证。
     pub degradation: f64,
 }
 
@@ -183,8 +192,8 @@ pub fn cscv(curves: &[Vec<f64>], s: usize, bpy: f64) -> PboResult {
         s_blocks: s,
         n_logits: total,
         pbo: neg as f64 / total.max(1) as f64,
-        is_best_idx,
-        is_best_sharpe: full[is_best_idx],
+        full_sample_best_idx: is_best_idx,
+        full_sample_best_sharpe: full[is_best_idx],
         degradation: deg_sum / total.max(1) as f64,
     }
 }
@@ -218,8 +227,8 @@ pub fn run_pbo_report(dir: &str) -> crate::error::Result<()> {
             .push((c.params, c.values));
     }
     println!(
-        "\n{:<28} {:>6} {:>8} {:>3} {:>7} {:>7} {:<6} {:>9} {:>10}",
-        "group", "N", "T", "S", "logits", "φ", "判据", "IS最优SR", "衰减"
+        "\n{:<28} {:>6} {:>8} {:>3} {:>7} {:>7} {:<6} {:>13} {:>10}",
+        "group", "N", "T", "S", "logits", "φ", "判据", "全样本最优SR*", "衰减"
     );
     println!("{}", "-".repeat(96));
     for ((sym, tf, strat), mut members) in groups {
@@ -242,7 +251,7 @@ pub fn run_pbo_report(dir: &str) -> crate::error::Result<()> {
         let r = cscv(&mat, s, bpy);
         let verdict = if r.pbo < 0.05 { "通过" } else { "拒绝" };
         println!(
-            "{:<28} {:>6} {:>8} {:>3} {:>7} {:>7.4} {:<6} {:>9.3} {:>+10.3}",
+            "{:<28} {:>6} {:>8} {:>3} {:>7} {:>7.4} {:<6} {:>13.3} {:>+10.3}",
             format!("{sym}/{tf}/{strat}"),
             r.n_strategies,
             r.t_bars,
@@ -250,7 +259,7 @@ pub fn run_pbo_report(dir: &str) -> crate::error::Result<()> {
             r.n_logits,
             r.pbo,
             verdict,
-            r.is_best_sharpe,
+            r.full_sample_best_sharpe,
             r.degradation
         );
         if r.n_logits < 70 {
@@ -258,6 +267,7 @@ pub fn run_pbo_report(dir: &str) -> crate::error::Result<()> {
         }
     }
     println!("\n判据: φ>0.05 按 Neyman-Pearson 惯例拒绝该模型(C3)。");
+    println!("* 全样本最优SR 是**拿全样本挑出来的乐观值**, 不是业绩证据; 真实证据是 φ。");
     Ok(())
 }
 #[cfg(test)]
@@ -324,8 +334,64 @@ mod tests {
         }
         curves[0] = c;
         let r = cscv(&curves, 4, 252.0);
-        assert_eq!(r.is_best_idx, 0);
+        assert_eq!(
+            r.full_sample_best_idx, 0,
+            "全样本最优应是那条植入漂移的曲线"
+        );
+        assert!(r.full_sample_best_sharpe > 0.0);
         assert!(r.pbo < 0.2, "edge φ={}", r.pbo);
+    }
+
+    /// L14: `full_sample_best_*` 确实是**全样本**口径 —— 用同一公式独立重算一遍
+    /// 交叉验证。字段重命名正是为了让读者不再把它与 `degradation` 依赖的
+    /// "每划分 IS 最优"混为一谈; 本测试锁定前者的确切含义不被后续改动悄悄改掉。
+    #[test]
+    fn full_sample_best_is_really_full_sample_sharpe() {
+        let t = 256;
+        let s_blocks = 8;
+        let bpy = 252.0;
+        let n = 12;
+        let mut curves = Vec::new();
+        for j in 0..n {
+            let mut c = vec![10_000.0];
+            let mut eq = 10_000.0;
+            for i in 1..t {
+                let drift = match j {
+                    0 if i < t / 2 => 0.0015,
+                    0 => -0.0005,
+                    1 if i < t / 2 => -0.0005,
+                    1 => 0.0015,
+                    _ => 0.0,
+                };
+                let noise = ((j * 7919 + i * 104_729) % 1000) as f64 / 100_000_000.0 - 5e-6;
+                eq *= 1.0 + drift + noise;
+                c.push(eq);
+            }
+            curves.push(c);
+        }
+        let r = cscv(&curves, s_blocks, bpy);
+
+        // 独立重算全样本 Sharpe(argmax 用稳定规则: 取最大值的首个下标)
+        let full: Vec<f64> = curves
+            .iter()
+            .map(|c| {
+                let rets: Vec<f64> = crate::engine::bar_log_returns(c).collect();
+                sharpe_of(&rets, bpy)
+            })
+            .collect();
+        let argmax = full
+            .iter()
+            .enumerate()
+            .fold((0usize, f64::NEG_INFINITY), |(bi, bv), (i, &v)| {
+                if v > bv { (i, v) } else { (bi, bv) }
+            })
+            .0;
+        assert_eq!(
+            r.full_sample_best_idx, argmax,
+            "字段必须仍是全样本 Sharpe 最大者"
+        );
+        assert!((r.full_sample_best_sharpe - full[argmax]).abs() < 1e-12);
+        assert!(r.pbo.is_finite() && (0.0..=1.0).contains(&r.pbo));
     }
 
     #[test]

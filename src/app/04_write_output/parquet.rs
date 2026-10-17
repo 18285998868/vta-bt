@@ -621,7 +621,7 @@ pub fn write_detail_parquet(
             for t in &d.trades {
                 trade_entry_time.append_value(t.entry_time);
                 trade_exit_time.append_value(t.exit_time);
-                trade_side.append_value(if t.side == 1 { "LONG" } else { "SHORT" });
+                trade_side.append_value(t.side.as_str());
                 trade_entry.append_value(t.entry_price);
                 trade_exit.append_value(t.exit_price);
                 trade_qty.append_value(t.qty);

@@ -146,11 +146,90 @@ impl ExecConfig {
     }
 }
 
+/// 持仓/订单方向。
+///
+/// 原实现用 `i8` 的 `+1/-1/0`, 但 `i8` 能表示 `2`、`-2`、`127` 等**引擎无法处理**
+/// 的值: `fill_price(side==1)` 之外的任何值都走"卖出"分支, `cur_pos != 1 && != -1`
+/// 的分支则被当作平仓 —— 两处都会静默算错而不报错。enum 让非法方向**不可表示**。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Side {
+    /// 无持仓。
+    #[default]
+    Flat,
+    /// 多头。
+    Long,
+    /// 空头。
+    Short,
+}
+
+impl Side {
+    /// 符号: Long = +1, Short = -1, Flat = 0。
+    #[must_use]
+    pub fn sign(self) -> i8 {
+        match self {
+            Self::Flat => 0,
+            Self::Long => 1,
+            Self::Short => -1,
+        }
+    }
+
+    #[must_use]
+    pub fn from_sign(s: i8) -> Self {
+        match s {
+            1 => Self::Long,
+            -1 => Self::Short,
+            _ => Self::Flat,
+        }
+    }
+
+    /// 反向(用于平仓: 取当前持仓的相反方向下单)。
+    #[must_use]
+    pub fn opposite(self) -> Self {
+        match self {
+            Self::Flat => Self::Flat,
+            Self::Long => Self::Short,
+            Self::Short => Self::Long,
+        }
+    }
+
+    #[must_use]
+    pub fn is_open(self) -> bool {
+        self != Self::Flat
+    }
+
+    /// 报告/落盘用的文本。
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Long => "LONG",
+            Self::Short => "SHORT",
+            Self::Flat => "FLAT",
+        }
+    }
+
+    /// 由信号推出的持仓方向。
+    #[must_use]
+    pub fn from_signal(s: Signal) -> Self {
+        match s {
+            Signal::Buy => Self::Long,
+            Signal::Sell => Self::Short,
+            Signal::Close | Signal::Hold => Self::Flat,
+        }
+    }
+}
+
+impl std::fmt::Display for Side {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Trade {
     pub entry_time: i64,
     pub exit_time: i64,
-    pub side: i8,
+    /// 持仓方向: `Long` / `Short`。恒不为 `Flat`。
+    pub side: Side,
     pub entry_price: f64,
     pub exit_price: f64,
     pub qty: f64,
@@ -172,15 +251,15 @@ pub struct SimResult {
     pub fixed_curve: Vec<f64>,
 }
 
-fn signals_to_positions(signals: &[Signal]) -> Vec<i8> {
+fn signals_to_positions(signals: &[Signal]) -> Vec<Side> {
     let n = signals.len();
-    let mut pos = vec![0i8; n];
-    let mut cur = 0i8;
+    let mut pos = vec![Side::Flat; n];
+    let mut cur = Side::Flat;
     for (i, s) in signals.iter().enumerate() {
         match s {
-            Signal::Buy => cur = 1,
-            Signal::Sell => cur = -1,
-            Signal::Close => cur = 0,
+            Signal::Buy => cur = Side::Long,
+            Signal::Sell => cur = Side::Short,
+            Signal::Close => cur = Side::Flat,
             Signal::Hold => {}
         }
         pos[i] = cur;
@@ -189,7 +268,7 @@ fn signals_to_positions(signals: &[Signal]) -> Vec<i8> {
 }
 
 struct CloseArgs {
-    cur_pos: i8,
+    cur_pos: Side,
     pos_qty: f64,
     pos_entry: f64,
     pos_entry_time: i64,
@@ -204,8 +283,8 @@ struct CloseArgs {
 }
 
 /// 方向 side 的成交价: 买入抬价、卖出压价(逆向滑点)。
-fn fill_price(side: i8, base: f64, slip_rate: f64) -> f64 {
-    if side == 1 {
+fn fill_price(side: Side, base: f64, slip_rate: f64) -> f64 {
+    if side == Side::Long {
         base * (1.0 + slip_rate)
     } else {
         base * (1.0 - slip_rate)
@@ -236,7 +315,7 @@ pub fn buy_hold_pnl(close: &[f64], nominal: f64) -> (f64, f64) {
 ///   平仓钳到末根收盘(与旧口径的末根离场一致)。
 fn resolve_fill(
     i: usize,
-    side: i8,
+    side: Side,
     is_open: bool,
     close: &[f64],
     open: &[f64],
@@ -277,7 +356,7 @@ fn close_position(args: CloseArgs) -> (f64, Trade) {
 
     // 平仓单方向与持仓反向: 多头平仓为卖, 空头平仓为买; 佣金按单边名义扣除。
     let exit_fee = exit_price * pos_qty * fee_rate;
-    let (cash_delta, pnl) = if cur_pos == 1 {
+    let (cash_delta, pnl) = if cur_pos == Side::Long {
         (
             pos_qty * exit_price - exit_fee,
             (exit_price - pos_entry) * pos_qty - exit_fee,
@@ -291,12 +370,12 @@ fn close_position(args: CloseArgs) -> (f64, Trade) {
     let fixed_qty = initial_cash / pos_entry;
     let entry_fee_fixed = pos_entry * fixed_qty * fee_rate;
     let exit_fee_fixed = exit_price * fixed_qty * fee_rate;
-    let fixed_pnl = if cur_pos == 1 {
+    let fixed_pnl = if cur_pos == Side::Long {
         (exit_price - pos_entry) * fixed_qty - entry_fee_fixed - exit_fee_fixed
     } else {
         (pos_entry - exit_price) * fixed_qty - entry_fee_fixed - exit_fee_fixed
     };
-    let pnl_pct = if cur_pos == 1 {
+    let pnl_pct = if cur_pos == Side::Long {
         (exit_price - pos_entry) / pos_entry
     } else {
         (pos_entry - exit_price) / pos_entry
@@ -336,7 +415,7 @@ struct ScanOut {
 fn scan_trades(
     close: &[f64],
     open: &[f64],
-    positions: &[i8],
+    positions: &[Side],
     time: &[i64],
     initial_cash: f64,
     exec: &ExecConfig,
@@ -349,7 +428,7 @@ fn scan_trades(
     let mut pos_entry = 0.0;
     let mut pos_entry_time: i64 = 0;
     let mut pos_entry_bar: usize = 0;
-    let mut cur_pos: i8 = 0;
+    let mut cur_pos = Side::Flat;
     let mut trades = Vec::with_capacity(1024);
     let mut eq_acc = CurveAccum::new(initial_cash);
     let mut fx_acc = CurveAccum::new(initial_cash);
@@ -369,8 +448,8 @@ fn scan_trades(
 
     for i in 0..n {
         // 浮动盈亏只统计已成交持仓(fill bar 之后), fill 前的漂移不计入 MFE/MAE。
-        if cur_pos != 0 && i >= pos_entry_bar {
-            let favor = if cur_pos == 1 {
+        if cur_pos.is_open() && i >= pos_entry_bar {
+            let favor = if cur_pos == Side::Long {
                 close[i] - pos_entry
             } else {
                 pos_entry - close[i]
@@ -384,8 +463,8 @@ fn scan_trades(
             }
         }
 
-        if cur_pos != 0 && cur_pos != positions[i] {
-            let exit_side: i8 = -cur_pos;
+        if cur_pos.is_open() && cur_pos != positions[i] {
+            let exit_side = cur_pos.opposite();
             // 平仓 resolve 永不返回 None(尾部钳到末根), 直接解包。
             let (fb, exit_price) = resolve_fill(i, exit_side, false, close, open, n, exec)
                 .expect("close fill is clamped to last bar");
@@ -407,12 +486,12 @@ fn scan_trades(
             trades.push(trade);
             fixed_realized += trades.last().expect("just pushed").fixed_pnl;
             fixed_qty = 0.0;
-            cur_pos = 0;
+            cur_pos = Side::Flat;
             trade_mfe = 0.0;
             trade_mae = 0.0;
         }
 
-        if cur_pos == 0 && positions[i] != 0 {
+        if !cur_pos.is_open() && positions[i].is_open() {
             let side = positions[i];
             if let Some((fb, entry_price)) = resolve_fill(i, side, true, close, open, n, exec) {
                 let qty = cash / entry_price;
@@ -423,7 +502,7 @@ fn scan_trades(
                 pos_qty = qty;
                 fixed_qty = initial_cash / entry_price;
                 fixed_entry = entry_price;
-                if side == 1 {
+                if side == Side::Long {
                     cash -= qty * entry_price + fee;
                 } else {
                     cash += qty * entry_price - fee;
@@ -434,19 +513,15 @@ fn scan_trades(
             }
         }
 
-        let eq = if cur_pos == 1 {
-            cash + pos_qty * close[i]
-        } else if cur_pos == -1 {
-            cash - pos_qty * close[i]
-        } else {
-            cash
+        let eq = match cur_pos {
+            Side::Long => cash + pos_qty * close[i],
+            Side::Short => cash - pos_qty * close[i],
+            Side::Flat => cash,
         };
-        let feq = if cur_pos == 1 {
-            initial_cash + fixed_realized + fixed_qty * (close[i] - fixed_entry)
-        } else if cur_pos == -1 {
-            initial_cash + fixed_realized + fixed_qty * (fixed_entry - close[i])
-        } else {
-            initial_cash + fixed_realized
+        let feq = match cur_pos {
+            Side::Long => initial_cash + fixed_realized + fixed_qty * (close[i] - fixed_entry),
+            Side::Short => initial_cash + fixed_realized + fixed_qty * (fixed_entry - close[i]),
+            Side::Flat => initial_cash + fixed_realized,
         };
         if i + 1 < n {
             eq_acc.push(eq);
@@ -463,8 +538,8 @@ fn scan_trades(
         }
     }
 
-    if cur_pos != 0 {
-        let last_price = fill_price(-cur_pos, close[n - 1], exec.slip_rate);
+    if cur_pos.is_open() {
+        let last_price = fill_price(cur_pos.opposite(), close[n - 1], exec.slip_rate);
         let (cash_delta, trade) = close_position(CloseArgs {
             cur_pos,
             pos_qty,
