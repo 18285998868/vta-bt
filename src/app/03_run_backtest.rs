@@ -319,6 +319,20 @@ fn close_position(args: CloseArgs) -> (f64, Trade) {
     (cash_delta, trade)
 }
 
+/// `scan_trades` 的产出。
+///
+/// `equity` / `fixed` 仅在 `collect_curves` 为 true 时填充 —— [`simulate`]
+/// 只需统计量, 传 false 即**不物化曲线**; [`simulate_detailed`] 需要落盘故传 true。
+#[derive(Debug)]
+struct ScanOut {
+    trades: Vec<Trade>,
+    eq: CurveAccum,
+    fx: CurveAccum,
+    equity: Option<Vec<f64>>,
+    fixed: Option<Vec<f64>>,
+}
+
+/// `collect_curves`: 是否物化两条权益曲线。false = O(1) 内存(见 [`CurveAccum`])。
 fn scan_trades(
     close: &[f64],
     open: &[f64],
@@ -326,7 +340,8 @@ fn scan_trades(
     time: &[i64],
     initial_cash: f64,
     exec: &ExecConfig,
-) -> (Vec<Trade>, f64, Vec<f64>, Vec<f64>, Vec<f64>) {
+    collect_curves: bool,
+) -> ScanOut {
     let n = close.len().min(positions.len()).min(open.len());
     let ts = |i: usize| if i < time.len() { time[i] } else { i as i64 };
     let mut cash = initial_cash;
@@ -336,11 +351,15 @@ fn scan_trades(
     let mut pos_entry_bar: usize = 0;
     let mut cur_pos: i8 = 0;
     let mut trades = Vec::with_capacity(1024);
-    let mut trade_pnls = Vec::with_capacity(1024);
-    let mut trade_pnl_pcts = Vec::with_capacity(1024);
-    let mut equity_curve = Vec::with_capacity(n);
+    let mut eq_acc = CurveAccum::new(initial_cash);
+    let mut fx_acc = CurveAccum::new(initial_cash);
+    let mut equity_curve: Option<Vec<f64>> = collect_curves.then(|| Vec::with_capacity(n));
     // fixed 腿: 每笔按 initial/entry 固定张数, 逐 bar 盯市, 跨笔不复利。
-    let mut fixed_curve = Vec::with_capacity(n);
+    let mut fixed_curve: Option<Vec<f64>> = collect_curves.then(|| Vec::with_capacity(n));
+    // 末根权益暂存: 强制平仓会把它从"盯市值"改写为"已实现 cash", 而在线累加器
+    // 无法撤回已消费的点, 故末根**推迟**到平仓之后再入累加器/曲线。
+    let mut tail_eq = initial_cash;
+    let mut tail_feq = initial_cash;
     let mut fixed_realized = 0.0;
     let mut fixed_qty = 0.0;
     let mut fixed_entry = 0.0;
@@ -385,8 +404,6 @@ fn scan_trades(
                 fee_rate: exec.fee_rate,
             });
             cash += cash_delta;
-            trade_pnls.push(trade.pnl);
-            trade_pnl_pcts.push(trade.pnl_pct);
             trades.push(trade);
             fixed_realized += trades.last().expect("just pushed").fixed_pnl;
             fixed_qty = 0.0;
@@ -424,7 +441,6 @@ fn scan_trades(
         } else {
             cash
         };
-        equity_curve.push(eq);
         let feq = if cur_pos == 1 {
             initial_cash + fixed_realized + fixed_qty * (close[i] - fixed_entry)
         } else if cur_pos == -1 {
@@ -432,7 +448,19 @@ fn scan_trades(
         } else {
             initial_cash + fixed_realized
         };
-        fixed_curve.push(feq);
+        if i + 1 < n {
+            eq_acc.push(eq);
+            fx_acc.push(feq);
+            if let Some(v) = equity_curve.as_mut() {
+                v.push(eq);
+            }
+            if let Some(v) = fixed_curve.as_mut() {
+                v.push(feq);
+            }
+        } else {
+            tail_eq = eq;
+            tail_feq = feq;
+        }
     }
 
     if cur_pos != 0 {
@@ -452,15 +480,31 @@ fn scan_trades(
             fee_rate: exec.fee_rate,
         });
         cash += cash_delta;
-        trade_pnls.push(trade.pnl);
-        trade_pnl_pcts.push(trade.pnl_pct);
         trades.push(trade);
         fixed_realized += trades.last().expect("just pushed").fixed_pnl;
-        equity_curve[n - 1] = cash;
-        fixed_curve[n - 1] = initial_cash + fixed_realized;
+        // 强制平仓: 末根权益由盯市值改写为已实现 cash(扣掉平仓费与滑点)。
+        tail_eq = cash;
+        tail_feq = initial_cash + fixed_realized;
     }
 
-    (trades, cash, equity_curve, trade_pnl_pcts, fixed_curve)
+    if n > 0 {
+        eq_acc.push(tail_eq);
+        fx_acc.push(tail_feq);
+        if let Some(v) = equity_curve.as_mut() {
+            v.push(tail_eq);
+        }
+        if let Some(v) = fixed_curve.as_mut() {
+            v.push(tail_feq);
+        }
+    }
+
+    ScanOut {
+        trades,
+        eq: eq_acc,
+        fx: fx_acc,
+        equity: equity_curve,
+        fixed: fixed_curve,
+    }
 }
 
 /// 单根 bar 的对数收益, 含**定义域保护**(两侧都要查)。
@@ -488,26 +532,191 @@ pub fn bar_log_returns(curve: &[f64]) -> impl ExactSizeIterator<Item = f64> + '_
     curve.windows(2).map(|w| log_ret(w[0], w[1]))
 }
 
-/// 权益曲线的核心统计(对数收益口径): 返回 (sharpe, max_dd, volatility, total_return)。
-/// 复利腿与 fixed 腿共用同一公式, 保证两套 Sharpe 口径一致可比。
-fn curve_stats(curve: &[f64], initial_cash: f64, bars_per_year: f64) -> (f64, f64, f64, f64) {
+/// 权益曲线的**在线**统计累加器: O(1) 内存, 逐 bar [`CurveAccum::push`]。
+///
+/// 动机: `simulate()` 只需要统计量, 不需要曲线本身。物化整条曲线
+/// (`Vec<f64>`, 每 bar 8 B; 复利腿 + fixed 腿 → T×16 B) 后再单遍扫描,
+/// 在 T = 1M 时每参数多占 16 MB。参数网格是**串行**外循环(见 README
+/// 「关键设计约束」第 1 条, 策略层并行会 OOM), 故峰值内存直接决定 OOM 边界。
+///
+/// 正确性: 在线累计与「物化曲线后单遍遍历」**逐位一致**, 由
+/// `test_curve_accum_is_bit_identical_to_materialized_reference` 对 5 类曲线
+/// (单调上涨 / 锯齿 / 首根即持仓 / 穿零 / 含 NaN) 锁定。故这是纯内存优化,
+/// **不改变任何指标数值**。
+#[derive(Debug, Clone)]
+pub struct CurveAccum {
+    initial_cash: f64,
+    /// 已喂入的点数(含初始点)。
+    n: usize,
+    ret_mean: f64,
+    ret_m2: f64,
+    ret_m2_downside: f64,
+    n_downside: f64,
+    peak: f64,
+    max_dd: f64,
+    last: f64,
+}
+
+/// 曲线统计结果。复利腿与 fixed 腿共用同一口径, 保证两套 Sharpe 可比。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CurveStats {
+    pub sharpe: f64,
+    pub sortino: f64,
+    pub max_dd: f64,
+    /// 年化波动率, 百分数。
+    pub volatility: f64,
+    /// 总收益率(小数, 非百分数)。
+    pub total_return: f64,
+}
+
+impl CurveAccum {
+    #[must_use]
+    pub fn new(initial_cash: f64) -> Self {
+        Self {
+            initial_cash,
+            n: 0,
+            ret_mean: 0.0,
+            ret_m2: 0.0,
+            ret_m2_downside: 0.0,
+            n_downside: 0.0,
+            peak: initial_cash,
+            max_dd: 0.0,
+            last: initial_cash,
+        }
+    }
+
+    /// 喂入一根 bar 的权益值。
+    ///
+    /// 首点只登记基线, **不参与** peak/max_dd 统计 —— 与「`peak` 初值为
+    /// `initial_cash` 且循环从 index 1 起」的物化口径一致。
+    pub fn push(&mut self, eq: f64) {
+        if self.n == 0 {
+            self.n = 1;
+            self.last = eq;
+            return;
+        }
+        let ret = log_ret(self.last, eq);
+        let k = self.n as f64;
+        let delta = ret - self.ret_mean;
+        self.ret_mean += delta / k;
+        self.ret_m2 += delta * (ret - self.ret_mean);
+        if ret < 0.0 {
+            self.ret_m2_downside += ret * ret;
+            self.n_downside += 1.0;
+        }
+        if eq > self.peak {
+            self.peak = eq;
+        }
+        let dd = (self.peak - eq) / self.peak;
+        if dd > self.max_dd {
+            self.max_dd = dd;
+        }
+        self.last = eq;
+        self.n += 1;
+    }
+
+    /// 已喂入的点数。
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.n
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.n == 0
+    }
+
+    /// 末点权益。
+    #[must_use]
+    pub fn last(&self) -> f64 {
+        self.last
+    }
+
+    /// 逐 bar 对数收益口径的全部曲线统计。
+    #[must_use]
+    pub fn stats(&self, bars_per_year: f64) -> CurveStats {
+        let num_bars = (self.n.saturating_sub(1)) as f64;
+        let total_return = if self.initial_cash > 0.0 {
+            (self.last - self.initial_cash) / self.initial_cash
+        } else {
+            0.0
+        };
+        if self.n < 2 {
+            return CurveStats {
+                sharpe: 0.0,
+                sortino: 0.0,
+                max_dd: 0.0,
+                volatility: 0.0,
+                total_return,
+            };
+        }
+        // `is_finite` 守卫不可省: 见 [`log_ret`] 的说明 —— NaN 会让 `> 0.0` 为假,
+        // 但 `-inf` / 极大值会让它为真, 从而把非有限值推进方差。
+        let (sharpe, volatility) = if self.ret_m2.is_finite() && self.ret_m2 > 0.0 && num_bars > 1.0
+        {
+            let variance = self.ret_m2 / (num_bars - 1.0);
+            (
+                self.ret_mean / variance.sqrt() * bars_per_year.sqrt(),
+                variance.sqrt() * bars_per_year.sqrt() * 100.0,
+            )
+        } else {
+            (0.0, 0.0)
+        };
+        // 下行偏差按**下行 bar 数**归一(ddof=1), 与 sharpe 同一自由度约定。
+        let sortino = if self.ret_m2_downside.is_finite()
+            && self.ret_m2_downside > 0.0
+            && self.n_downside > 1.0
+        {
+            let downside_var = self.ret_m2_downside / (self.n_downside - 1.0);
+            self.ret_mean / downside_var.sqrt() * bars_per_year.sqrt()
+        } else {
+            0.0
+        };
+        CurveStats {
+            sharpe,
+            sortino,
+            max_dd: self.max_dd,
+            volatility,
+            total_return,
+        }
+    }
+}
+
+/// 仅测试用: 「物化曲线后单遍遍历」的参照实现。
+///
+/// [`CurveAccum`] 的正确性基准。它刻意用与累加器**不同**的写法
+/// (先物化 `Vec`、再用索引遍历), 使"两者同时写错同一处"不可能发生。
+#[cfg(test)]
+fn reference_curve_stats(curve: &[f64], initial_cash: f64, bars_per_year: f64) -> CurveStats {
     let n = curve.len();
     if n < 2 {
-        return (0.0, 0.0, 0.0, 0.0);
+        return CurveStats {
+            sharpe: 0.0,
+            sortino: 0.0,
+            max_dd: 0.0,
+            volatility: 0.0,
+            total_return: 0.0,
+        };
     }
     let mut ret_mean = 0.0;
     let mut ret_m2 = 0.0;
+    let mut ret_m2_downside = 0.0;
+    let mut n_downside = 0.0;
     let mut peak = initial_cash;
     let mut max_dd = 0.0;
-    for (k, ret) in bar_log_returns(curve).enumerate() {
-        let curr = curve[k + 1];
+    for i in 1..n {
+        let ret = bar_log_returns(&curve[i - 1..i + 1]).next().unwrap_or(0.0);
         let delta = ret - ret_mean;
-        ret_mean += delta / (k + 1) as f64;
+        ret_mean += delta / i as f64;
         ret_m2 += delta * (ret - ret_mean);
-        if curr > peak {
-            peak = curr;
+        if ret < 0.0 {
+            ret_m2_downside += ret * ret;
+            n_downside += 1.0;
         }
-        let dd = (peak - curr) / peak;
+        if curve[i] > peak {
+            peak = curve[i];
+        }
+        let dd = (peak - curve[i]) / peak;
         if dd > max_dd {
             max_dd = dd;
         }
@@ -522,58 +731,34 @@ fn curve_stats(curve: &[f64], initial_cash: f64, bars_per_year: f64) -> (f64, f6
     } else {
         (0.0, 0.0)
     };
+    let sortino = if ret_m2_downside.is_finite() && ret_m2_downside > 0.0 && n_downside > 1.0 {
+        let downside_var = ret_m2_downside / (n_downside - 1.0);
+        ret_mean / downside_var.sqrt() * bars_per_year.sqrt()
+    } else {
+        0.0
+    };
     let final_eq = *curve.last().unwrap_or(&initial_cash);
-    (
+    CurveStats {
         sharpe,
+        sortino,
         max_dd,
         volatility,
-        (final_eq - initial_cash) / initial_cash,
-    )
+        total_return: (final_eq - initial_cash) / initial_cash,
+    }
 }
 
-fn compute_metrics(
-    equity_curve: &[f64],
-    fixed_curve: &[f64],
-    trades: &[Trade],
-    trade_pnls: &[f64],
-    trade_pnl_pcts: &[f64],
-    initial_cash: f64,
-    bars_per_year: f64,
-) -> SummaryMetrics {
-    let n = equity_curve.len();
+fn compute_metrics(out: &ScanOut, initial_cash: f64, bars_per_year: f64) -> SummaryMetrics {
+    let n = out.eq.len();
     if n < 2 {
         return SummaryMetrics::default();
     }
 
-    let final_eq = *equity_curve.last().unwrap_or(&initial_cash);
-    let total_return = (final_eq - initial_cash) / initial_cash;
-
-    let mut ret_mean = 0.0;
-    let mut ret_m2 = 0.0;
-    let mut ret_m2_downside = 0.0;
-    let mut n_downside = 0.0;
-    let mut peak = initial_cash;
-    let mut max_dd = 0.0;
-
-    for (k, ret) in bar_log_returns(equity_curve).enumerate() {
-        let curr = equity_curve[k + 1];
-        let delta = ret - ret_mean;
-        ret_mean += delta / (k + 1) as f64;
-        let delta2 = ret - ret_mean;
-        ret_m2 += delta * delta2;
-        if ret < 0.0 {
-            ret_m2_downside += ret * ret;
-            n_downside += 1.0;
-        }
-
-        if curr > peak {
-            peak = curr;
-        }
-        let dd = (peak - curr) / peak;
-        if dd > max_dd {
-            max_dd = dd;
-        }
-    }
+    // 曲线统计全部来自在线累加器(与物化口径逐位一致, 见 CurveAccum 的文档)。
+    let st = out.eq.stats(bars_per_year);
+    let final_eq = out.eq.last();
+    let total_return = st.total_return;
+    let max_dd = st.max_dd;
+    let trades = &out.trades;
 
     let num_bars = (n - 1) as f64;
     let years = if bars_per_year > 0.0 {
@@ -581,28 +766,9 @@ fn compute_metrics(
     } else {
         0.0
     };
-    let sharpe = if ret_m2.is_finite() && ret_m2 > 0.0 && num_bars > 1.0 {
-        let variance = ret_m2 / (num_bars - 1.0);
-        ret_mean / variance.sqrt() * bars_per_year.sqrt()
-    } else {
-        0.0
-    };
-
-    // 下行偏差按**下行 bar 数**(n_downside)归一, 与 sharpe 同为 ddof=1。
-    // 原实现除以 num_bars(全部 bar 数), 使 sortino 的分母自由度与 sharpe 不一致
-    // (后者除以 num_bars-1), 两者并列报告时不可比。
-    let sortino = if ret_m2_downside.is_finite() && ret_m2_downside > 0.0 && n_downside > 1.0 {
-        let downside_var = ret_m2_downside / (n_downside - 1.0);
-        ret_mean / downside_var.sqrt() * bars_per_year.sqrt()
-    } else {
-        0.0
-    };
-
-    let volatility = if ret_m2.is_finite() && ret_m2 > 0.0 && num_bars > 1.0 {
-        (ret_m2 / (num_bars - 1.0)).sqrt() * bars_per_year.sqrt() * 100.0
-    } else {
-        0.0
-    };
+    let sharpe = st.sharpe;
+    let sortino = st.sortino;
+    let volatility = st.volatility;
 
     let cagr = if bars_per_year > 0.0 && n > 1 {
         let years = num_bars / bars_per_year;
@@ -623,7 +789,7 @@ fn compute_metrics(
         0.0
     };
 
-    let num_trades = trade_pnls.len() as u32;
+    let num_trades = trades.len() as u32;
     let mut num_wins = 0u32;
     let mut num_losses = 0u32;
     let mut total_win = 0.0;
@@ -645,12 +811,13 @@ fn compute_metrics(
 
     let nt = num_trades as f64;
     let pnl_mean = if nt > 0.0 {
-        trade_pnls.iter().sum::<f64>() / nt
+        trades.iter().map(|t| t.pnl).sum::<f64>() / nt
     } else {
         0.0
     };
 
-    for (i, &p) in trade_pnls.iter().enumerate() {
+    for t in trades {
+        let p = t.pnl;
         let cur_win = p > 0.0;
         match prev_win {
             None => runs = 1,
@@ -677,12 +844,10 @@ fn compute_metrics(
             }
         }
 
-        if i < trades.len() {
-            sum_mae += trades[i].max_drawdown;
-            sum_mfe += trades[i].max_runup;
-            sum_hold += trades[i].bars_held as f64;
-            total_fixed_pnl += trades[i].fixed_pnl;
-        }
+        sum_mae += t.max_drawdown;
+        sum_mfe += t.max_runup;
+        sum_hold += t.bars_held as f64;
+        total_fixed_pnl += t.fixed_pnl;
 
         let d = p - pnl_mean;
         let d2 = d * d;
@@ -707,7 +872,7 @@ fn compute_metrics(
         total_win.max(0.0)
     };
     let expectancy = if num_trades > 0 {
-        trade_pnl_pcts.iter().sum::<f64>() / num_trades as f64
+        trades.iter().map(|t| t.pnl_pct).sum::<f64>() / num_trades as f64
     } else {
         0.0
     };
@@ -765,7 +930,8 @@ fn compute_metrics(
             let pf1 = {
                 let mut w = 0.0;
                 let mut l = 0.0;
-                for &p in &trade_pnls[..half] {
+                for t in &trades[..half] {
+                    let p = t.pnl;
                     if p > 0.0 {
                         w += p;
                     } else {
@@ -777,7 +943,8 @@ fn compute_metrics(
             let pf2 = {
                 let mut w = 0.0;
                 let mut l = 0.0;
-                for &p in &trade_pnls[half..] {
+                for t in &trades[half..] {
+                    let p = t.pnl;
                     if p > 0.0 {
                         w += p;
                     } else {
@@ -824,7 +991,7 @@ fn compute_metrics(
     // 研究报告统一引用 fixed_*; 无后缀的复利口径仅供容量参考。
     let mut fixed_win = 0.0;
     let mut fixed_loss = 0.0;
-    for t in trades {
+    for t in &out.trades {
         if t.fixed_pnl > 0.0 {
             fixed_win += t.fixed_pnl;
         } else {
@@ -837,13 +1004,11 @@ fn compute_metrics(
         fixed_win.max(0.0)
     };
     let fixed_expectancy_bps = if nt > 0.0 {
-        trades.iter().map(|t| t.fixed_pnl).sum::<f64>() / nt / initial_cash * 10_000.0
+        out.trades.iter().map(|t| t.fixed_pnl).sum::<f64>() / nt / initial_cash * 10_000.0
     } else {
         0.0
     };
-    let (fixed_sharpe, fixed_mdd, _fixed_vol, fixed_return) =
-        curve_stats(fixed_curve, initial_cash, bars_per_year);
-
+    let fx_st = out.fx.stats(bars_per_year);
     SummaryMetrics {
         total_return_pct: total_return * 100.0,
         total_return,
@@ -887,9 +1052,9 @@ fn compute_metrics(
         delay_bars: 0,
         fee_bps: 0.0,
         slippage_bps: 0.0,
-        fixed_total_return: fixed_return,
-        fixed_sharpe_ratio: fixed_sharpe,
-        fixed_max_drawdown_pct: fixed_mdd * 100.0,
+        fixed_total_return: fx_st.total_return,
+        fixed_sharpe_ratio: fx_st.sharpe,
+        fixed_max_drawdown_pct: fx_st.max_dd * 100.0,
         fixed_expectancy_bps,
         fixed_profit_factor: fixed_pf,
     }
@@ -926,17 +1091,10 @@ pub fn simulate(
         return SummaryMetrics::default();
     }
     let positions = signals_to_positions(signals);
-    let (trades, _final_cash, equity_curve, trade_pnl_pcts, fixed_curve) =
-        scan_trades(close, open, &positions, &[], initial_cash, exec);
-    let mut summary = compute_metrics(
-        &equity_curve,
-        &fixed_curve,
-        &trades,
-        &trades.iter().map(|t| t.pnl).collect::<Vec<_>>(),
-        &trade_pnl_pcts,
-        initial_cash,
-        bars_per_year,
-    );
+    // collect_curves = false: 不物化曲线, 统计量在线累计(内存 O(1) 而非 O(T))。
+    let out = scan_trades(close, open, &positions, &[], initial_cash, exec, false);
+    debug_assert!(out.equity.is_none(), "simulate 不得物化权益曲线");
+    let mut summary = compute_metrics(&out, initial_cash, bars_per_year);
     summary.delay_bars = exec.delay() as u32;
     summary.fee_bps = exec.fee_rate * 10_000.0;
     summary.slippage_bps = exec.slip_rate * 10_000.0;
@@ -962,22 +1120,16 @@ pub fn simulate_detailed(
         };
     }
     let positions = signals_to_positions(signals);
-    let (trades, _final_cash, equity_curve, trade_pnl_pcts, fixed_curve) =
-        scan_trades(close, open, &positions, time, initial_cash, exec);
-    let mut summary = compute_metrics(
-        &equity_curve,
-        &fixed_curve,
-        &trades,
-        &trades.iter().map(|t| t.pnl).collect::<Vec<_>>(),
-        &trade_pnl_pcts,
-        initial_cash,
-        bars_per_year,
-    );
+    // detailed 路径要落盘, 故物化曲线。
+    let out = scan_trades(close, open, &positions, time, initial_cash, exec, true);
+    let mut summary = compute_metrics(&out, initial_cash, bars_per_year);
     summary.delay_bars = exec.delay() as u32;
     summary.fee_bps = exec.fee_rate * 10_000.0;
     summary.slippage_bps = exec.slip_rate * 10_000.0;
 
-    let equity_curve: Vec<(f64, f64)> = equity_curve
+    let equity_curve: Vec<(f64, f64)> = out
+        .equity
+        .expect("scan_trades(collect_curves = true) 必然物化曲线")
         .into_iter()
         .enumerate()
         .map(|(i, eq)| {
@@ -992,9 +1144,11 @@ pub fn simulate_detailed(
 
     SimResult {
         summary,
-        trades,
+        trades: out.trades,
         equity_curve,
-        fixed_curve,
+        fixed_curve: out
+            .fixed
+            .expect("scan_trades(collect_curves = true) 必然物化曲线"),
     }
 }
 
@@ -1297,5 +1451,251 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert_eq!(results[0], r1);
         assert_eq!(results[1], r2);
+    }
+
+    /// [`CurveAccum`] 与「物化曲线后单遍遍历」的**逐位一致**证明。
+    ///
+    /// 覆盖 5 类曲线形态, 每类同时锁定 len / last / 全部 5 个统计量:
+    /// - 单调上涨: 无回撤、下行样本为 0(sortino 分母退化)
+    /// - 锯齿: 有回撤、有下行样本(sortino 与 sharpe 分母不同 → 检验 ddof 约定)
+    /// - 首根即非初始值: 检验「首点不参与 peak/max_dd」的口径
+    /// - 穿零(空头浮空): 检验 [`log_ret`] 的定义域保护, 且 sortino 有限非 NaN
+    /// - 含 NaN: 检验守卫退化为 0 而非污染 NaN
+    #[test]
+    fn test_curve_accum_is_bit_identical_to_materialized_reference() {
+        let cases: Vec<(&str, Vec<f64>)> = vec![
+            ("单调上涨", (0..64).map(|i| 1000.0 + i as f64).collect()),
+            (
+                "锯齿",
+                (0..64)
+                    .map(|i| {
+                        if i % 2 == 0 {
+                            1000.0 + i as f64
+                        } else {
+                            900.0 - i as f64
+                        }
+                    })
+                    .collect(),
+            ),
+            ("首根即持仓(首点 != initial)", {
+                let mut v = vec![1234.5];
+                v.extend((1..64).map(|i| 1000.0 + i as f64));
+                v
+            }),
+            (
+                "穿零(空头浮空)",
+                (0..64).map(|i| 1000.0 - i as f64 * 40.0).collect(),
+            ),
+            ("含 NaN", {
+                let mut v: Vec<f64> = (0..64)
+                    .map(|i| 1000.0 + (i as f64 * 3.7).sin() * 50.0)
+                    .collect();
+                v[10] = f64::NAN;
+                v
+            }),
+        ];
+
+        for (name, curve) in cases {
+            let initial = curve[0];
+            let mut acc = CurveAccum::new(initial);
+            for &eq in &curve {
+                acc.push(eq);
+            }
+            let got = acc.stats(365.0);
+            let want = reference_curve_stats(&curve, initial, 365.0);
+
+            assert_eq!(acc.len(), curve.len(), "{name}: len");
+            assert_eq!(
+                acc.last().to_bits(),
+                curve[curve.len() - 1].to_bits(),
+                "{name}: last"
+            );
+            assert_eq!(
+                got.sharpe.to_bits(),
+                want.sharpe.to_bits(),
+                "{name}: sharpe"
+            );
+            assert_eq!(
+                got.sortino.to_bits(),
+                want.sortino.to_bits(),
+                "{name}: sortino"
+            );
+            assert_eq!(
+                got.max_dd.to_bits(),
+                want.max_dd.to_bits(),
+                "{name}: max_dd"
+            );
+            assert_eq!(
+                got.volatility.to_bits(),
+                want.volatility.to_bits(),
+                "{name}: volatility"
+            );
+            assert_eq!(
+                got.total_return.to_bits(),
+                want.total_return.to_bits(),
+                "{name}: total_return"
+            );
+            for (k, v) in [
+                ("sharpe", got.sharpe),
+                ("sortino", got.sortino),
+                ("max_dd", got.max_dd),
+                ("volatility", got.volatility),
+                ("total_return", got.total_return),
+            ] {
+                assert!(v.is_finite(), "{name}: {k} = {v} 非有限");
+            }
+        }
+    }
+
+    /// [`simulate`] 必须**不物化**权益曲线(内存 O(1) 而非 O(T)); 这是 O2 的全部意义。
+    #[test]
+    fn test_simulate_does_not_materialize_equity_curve() {
+        let close = make_prices(100_000);
+        let mut sig = vec![Signal::Hold; 100_000];
+        sig[0] = Signal::Buy;
+        let exec = ExecConfig::default();
+        let m = simulate(&close, &close, &sig, 10_000.0, 365.0, &exec);
+        let d = simulate_detailed(&[], &close, &close, &sig, 10_000.0, 365.0, &exec);
+        assert_eq!(d.equity_curve.len(), 100_000, "detailed 必须物化曲线");
+        assert_eq!(d.fixed_curve.len(), 100_000);
+        for f in [
+            m.sharpe_ratio,
+            m.sortino_ratio,
+            m.max_drawdown_pct,
+            m.volatility,
+            m.fixed_sharpe_ratio,
+            m.fixed_max_drawdown_pct,
+        ] {
+            assert!(f.is_finite(), "指标非有限: {f}");
+        }
+        assert_eq!(m.sharpe_ratio.to_bits(), d.summary.sharpe_ratio.to_bits());
+        assert_eq!(m.sortino_ratio.to_bits(), d.summary.sortino_ratio.to_bits());
+        assert_eq!(
+            m.max_drawdown_pct.to_bits(),
+            d.summary.max_drawdown_pct.to_bits()
+        );
+        assert_eq!(m.volatility.to_bits(), d.summary.volatility.to_bits());
+        assert_eq!(
+            m.fixed_sharpe_ratio.to_bits(),
+            d.summary.fixed_sharpe_ratio.to_bits()
+        );
+    }
+
+    /// 空头浮空(权益穿零)不得污染统计量: 不得出现 NaN, volatility 不得静默归零。
+    #[test]
+    fn test_short_blowup_yields_finite_nonzero_ratios() {
+        let n = 200;
+        let close: Vec<f64> = (0..n).map(|i| 100.0 + i as f64 * 1.5).collect();
+        let mut sig = vec![Signal::Hold; n];
+        sig[0] = Signal::Sell; // 全程空头, 权益必然穿零
+        let m = simulate(&close, &close, &sig, 1000.0, 8760.0, &ExecConfig::default());
+        assert!(m.final_equity < 0.0, "该用例应确实穿零: {}", m.final_equity);
+        for (k, v) in [
+            ("sharpe", m.sharpe_ratio),
+            ("sortino", m.sortino_ratio),
+            ("volatility", m.volatility),
+            ("max_dd", m.max_drawdown_pct),
+        ] {
+            assert!(v.is_finite(), "{k} = {v} 非有限(权益穿零被污染)");
+        }
+        assert!(
+            m.volatility > 0.0,
+            "volatility 被静默归零(比 NaN 更危险: 会被读成零波动低风险): {}",
+            m.volatility
+        );
+    }
+
+    /// sortino 的分母必须是**下行 bar 数**(ddof=1), 与 sharpe 同自由度。
+    /// 若分母误用全部 bar 数, "下跌集中在少数 bar"的曲线会得到明显更小的 sortino。
+    #[test]
+    fn test_sortino_uses_downside_count_as_denominator() {
+        let mut curve = vec![1000.0f64];
+        for i in 0..10 {
+            curve.push(1000.0 * 1.01f64.powi(i + 1));
+        }
+        curve.push(900.0);
+        curve.push(800.0);
+        let mut acc = CurveAccum::new(curve[0]);
+        for &c in &curve {
+            acc.push(c);
+        }
+        let st = acc.stats(1.0);
+
+        let rets: Vec<f64> = bar_log_returns(&curve).collect();
+        let down_sq: f64 = rets.iter().filter(|&&r| r < 0.0).map(|r| r * r).sum();
+        let n_down = rets.iter().filter(|&&r| r < 0.0).count() as f64;
+        let mut mean = 0.0;
+        for (i, r) in rets.iter().enumerate() {
+            mean += (r - mean) / (i + 1) as f64;
+        }
+        let expect = mean / (down_sq / (n_down - 1.0)).sqrt();
+        assert!(
+            (st.sortino - expect).abs() < 1e-12,
+            "sortino {}(应={expect}) 分母用了错误的 bar 数",
+            st.sortino
+        );
+        let wrong = mean / (down_sq / rets.len() as f64).sqrt();
+        assert!(
+            (st.sortino - wrong).abs() > 1e-6,
+            "两种口径碰巧相同, 该用例失去区分力"
+        );
+    }
+
+    /// SQN = √n · mean/stdev (Van Thorp), **不封顶**; `√n` 是定义中的统计显著性
+    /// 因子, 封顶会抹掉"证据量"这一维度。小样本可读性由 `num_trades >= 30`
+    /// 门槛解决(见 `sqn` 字段文档)。
+    #[test]
+    fn test_sqn_scales_with_full_sample_size() {
+        // 每笔的**相对**收益固定按 [+r, +r, -r] 循环, 故 mean/stdev 与笔数无关,
+        // SQN 的变化只能来自定义里的 √n 因子。
+        let r = 0.001f64;
+        let mk = |nt: u32| {
+            let n = nt as usize * 3 + 4;
+            let mut open = vec![100.0f64; n];
+            // delay=1: 3k 处 Buy → 3k+1 开盘成交; 3k+2 处 Close → 3k+3 开盘成交。
+            for k in 0..nt as usize {
+                let entry = open[3 * k + 1];
+                let step = if k % 3 == 2 { -r } else { r };
+                open[3 * k + 3] = entry * (1.0 + step);
+                if k + 1 < nt as usize {
+                    open[3 * (k + 1) + 1] = open[3 * k + 3];
+                }
+            }
+            let mut sig = vec![Signal::Hold; n];
+            for k in 0..nt as usize {
+                sig[3 * k] = Signal::Buy;
+                sig[3 * k + 2] = Signal::Close;
+            }
+            simulate(&open, &open, &sig, 10_000.0, 252.0, &ExecConfig::default())
+        };
+        let a = mk(30);
+        let b = mk(300);
+        assert_eq!(a.num_trades, 30);
+        assert_eq!(b.num_trades, 300);
+        assert!(a.sqn > 0.0 && b.sqn > 0.0, "用例应产生正 SQN");
+        let ratio = b.sqn / a.sqn;
+        assert!(
+            (2.0..5.0).contains(&ratio),
+            "SQN 未随 √n 增长(a={}, b={}, ratio={ratio}); 疑似被封顶",
+            a.sqn,
+            b.sqn
+        );
+    }
+
+    /// [`log_ret`] 必须在**两侧**都做定义域保护。只查 `prev` 不够: 首根即浮空
+    /// 时 `prev` 仍为正而 `curr/prev < 0`, `ln()` 返回 NaN。
+    #[test]
+    fn test_bar_log_returns_guards_nonpositive_equity() {
+        assert_eq!(bar_log_returns(&[100.0, -50.0]).next(), Some(0.0));
+        assert_eq!(bar_log_returns(&[100.0, 0.0]).next(), Some(0.0));
+        assert_eq!(bar_log_returns(&[-50.0, 100.0]).next(), Some(0.0));
+        assert_eq!(bar_log_returns(&[f64::NAN, 100.0]).next(), Some(0.0));
+        assert_eq!(bar_log_returns(&[100.0, f64::NAN]).next(), Some(0.0));
+        assert_eq!(bar_log_returns(&[f64::INFINITY, 100.0]).next(), Some(0.0));
+        let r = bar_log_returns(&[100.0, 110.0]).next().unwrap();
+        assert!((r - 1.1f64.ln()).abs() < 1e-15);
+        for &x in &[100.0, -1.0, 0.0, f64::NAN, 1e-300] {
+            assert!(bar_log_returns(&[x, x]).all(|r| r.is_finite()));
+        }
     }
 }

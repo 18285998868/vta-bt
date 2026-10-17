@@ -653,9 +653,38 @@ pub fn write_detail_parquet(
         writer.write(&trade_batch)?;
         writer.close()?;
 
-        // fixed 腿逐 bar 权益: `--pbo` 的 T×N 输入。分组元数据进 schema metadata,
-        // 文件名含 params 明文(含 `_` 清洗)故不做反向解析。
-        // `write_curves=false`（默认）时跳过：GB 级 I/O 只在做 PBO 时花。
+        // 分组元数据进 schema metadata, 文件名含 params 明文(含 `_` 清洗)故不
+        // 做反向解析。两条曲线的 stem 相同, 只有 kind 后缀不同。
+        let curve_meta = arrow::datatypes::Metadata::new()
+            .with("symbol", symbol.clone())
+            .with("timeframe", tf.clone())
+            .with("strategy", strategy.clone())
+            .with("params", params.clone());
+        let stem = format!("{}_{}_{}_{}", symbol, tf, strategy, clean_params);
+
+        // 复利腿逐 bar 权益。README 承诺 `detail/` 导出"逐笔交易/权益曲线",
+        // 但历史上**只写了 trades**: 权益曲线从未落盘, 复算需重跑整轮回测。
+        let mut bar_time = Int64Builder::new();
+        let mut equity = Float64Builder::new();
+        for d in group {
+            for &(ts, eq) in &d.equity_curve {
+                bar_time.append_value(ts as i64);
+                equity.append_value(eq);
+            }
+        }
+        write_curve_file(
+            path,
+            &stem,
+            "equitycurve",
+            &curve_meta,
+            Field::new("time", DataType::Int64, false),
+            Arc::new(bar_time.finish()),
+            Field::new("equity", DataType::Float64, false),
+            Arc::new(equity.finish()),
+        )?;
+
+        // fixed 腿逐 bar 权益: `--pbo` 的 T×N 输入。
+        // `write_curves=false`（默认）时跳过: GB 级 I/O 只在做 PBO 时花。
         if !write_curves {
             continue;
         }
@@ -667,37 +696,149 @@ pub fn write_detail_parquet(
                 fixed_equity.append_value(*v);
             }
         }
-        let curve_meta = arrow::datatypes::Metadata::new()
-            .with("symbol", symbol.clone())
-            .with("timeframe", tf.clone())
-            .with("strategy", strategy.clone())
-            .with("params", params.clone());
-        let curve_schema = arrow::datatypes::Schema::new_with_metadata(
-            vec![
-                Field::new("bar_idx", DataType::UInt64, false),
-                Field::new("fixed_equity", DataType::Float64, false),
-            ],
-            curve_meta,
-        );
-        let curve_batch = RecordBatch::try_new(
-            Arc::new(curve_schema),
-            vec![Arc::new(bar_idx.finish()), Arc::new(fixed_equity.finish())],
+        write_curve_file(
+            path,
+            &stem,
+            "fixedcurve",
+            &curve_meta,
+            Field::new("bar_idx", DataType::UInt64, false),
+            Arc::new(bar_idx.finish()),
+            Field::new("fixed_equity", DataType::Float64, false),
+            Arc::new(fixed_equity.finish()),
         )?;
-        let curve_path = path.join(format!(
-            "{}_{}_{}_{}_fixedcurve.parquet",
-            symbol, tf, strategy, clean_params
-        ));
-        let curve_file = File::create(&curve_path)?;
-        let mut curve_writer = ArrowWriter::try_new(
-            curve_file,
-            curve_batch.schema(),
-            Some(WriterProperties::builder().build()),
-        )?;
-        curve_writer.write(&curve_batch)?;
-        curve_writer.close()?;
     }
 
     Ok(())
+}
+
+/// 写一条逐 bar 曲线到 `{dir}/{stem}_{kind}.parquet`。
+///
+/// `kind` 为 `equitycurve` / `fixedcurve`; 两条曲线的**列语义不同**, 故索引列与
+/// 值列由调用方给出而不共用一套 schema(避免"列名对但含义错"的静默误读)。
+#[allow(clippy::too_many_arguments)]
+fn write_curve_file(
+    dir: &std::path::Path,
+    stem: &str,
+    kind: &str,
+    meta: &arrow::datatypes::Metadata,
+    idx_field: Field,
+    idx_col: ArrayRef,
+    val_field: Field,
+    val_col: ArrayRef,
+) -> Result<()> {
+    use parquet::arrow::ArrowWriter;
+    use parquet::file::properties::WriterProperties;
+    use std::fs::File;
+
+    let schema =
+        arrow::datatypes::Schema::new_with_metadata(vec![idx_field, val_field], meta.clone());
+    let batch = RecordBatch::try_new(Arc::new(schema), vec![idx_col, val_col])?;
+    let file = File::create(dir.join(format!("{stem}_{kind}.parquet")))?;
+    let mut writer = ArrowWriter::try_new(
+        file,
+        batch.schema(),
+        Some(WriterProperties::builder().build()),
+    )?;
+    writer.write(&batch)?;
+    writer.close()?;
+    Ok(())
+}
+
+/// 按**列名**取列序号; 缺列时 panic 并列出实际列名。
+///
+/// 优于魔法列号: 曲线文件的列顺序由 schema 决定, 用常量下标读取会在 schema
+/// 调整后**静默读错列**(类型恰好兼容时不报错, 数值静默错位)。
+pub fn col_by_name(
+    schema: &arrow::datatypes::Schema,
+    name: &str,
+    file: &std::path::Path,
+) -> Result<usize> {
+    schema.index_of(name).map_err(|_| {
+        crate::error::AppError::Msg(format!(
+            "{} 缺列 {name:?}; 实际列: {:?}",
+            file.display(),
+            schema
+                .fields()
+                .iter()
+                .map(|f| f.name().as_str())
+                .collect::<Vec<_>>()
+        ))
+    })
+}
+
+/// 权益曲线文件元组。
+#[derive(Debug, Clone)]
+pub struct EquityCurve {
+    pub symbol: String,
+    pub timeframe: String,
+    pub strategy: String,
+    pub params: String,
+    /// bar 时间戳(毫秒)。
+    pub times: Vec<i64>,
+    /// 复利腿逐 bar 权益。
+    pub values: Vec<f64>,
+}
+
+/// 读取目录下全部 `*_equitycurve.parquet`(一般为 detail/ 目录)。
+///
+/// 与 [`read_fixed_curves`] 同构但**列语义不同**: 前者返回 `(time, equity)`,
+/// 后者返回 `(bar_idx, fixed_equity)`。刻意不复用同一个 reader —— 两条曲线的
+/// 索引列类型(Int64 vs UInt64)、含义(时间戳 vs 序号)都不同, 混用会静默误读。
+pub fn read_equity_curves(dir: &str) -> Result<Vec<EquityCurve>> {
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+    use std::fs;
+    use std::fs::File;
+
+    let mut out = Vec::new();
+    let entries = fs::read_dir(dir).map_err(|e| {
+        crate::error::AppError::Msg(format!("读取 equitycurve 目录失败 {dir}: {e}"))
+    })?;
+    let mut paths: Vec<_> = entries
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| {
+            p.extension().is_some_and(|x| x == "parquet")
+                && p.file_stem()
+                    .is_some_and(|s| s.to_string_lossy().ends_with("_equitycurve"))
+        })
+        .collect();
+    paths.sort();
+    for path in paths {
+        let file = File::open(&path)?;
+        let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+        let schema = builder.schema().clone();
+        let idx = col_by_name(&schema, "time", &path)?;
+        let val = col_by_name(&schema, "equity", &path)?;
+        let meta = schema.metadata().clone();
+        let get = |k: &str| -> Result<String> {
+            meta.get(k).cloned().ok_or_else(|| {
+                crate::error::AppError::Msg(format!(
+                    "equitycurve 缺分组元数据 {k}: {}",
+                    path.display()
+                ))
+            })
+        };
+        let symbol = get("symbol")?;
+        let timeframe = get("timeframe")?;
+        let strategy = get("strategy")?;
+        let params = get("params")?;
+        let reader = builder.build()?;
+        let mut times = Vec::new();
+        let mut values = Vec::new();
+        for batch in reader {
+            let batch = batch?;
+            times.extend(i64_col(&batch, idx));
+            values.extend(f64_col(&batch, val));
+        }
+        out.push(EquityCurve {
+            symbol,
+            timeframe,
+            strategy,
+            params,
+            times,
+            values,
+        });
+    }
+    Ok(out)
 }
 
 /// fixed 曲线文件元组(供 `--pbo` 按(币,周期,策略)分组)。
@@ -769,6 +910,15 @@ fn str_col(batch: &RecordBatch, idx: usize) -> Vec<String> {
     (0..batch.num_rows())
         .map(|i| arr.value(i).to_string())
         .collect()
+}
+
+fn i64_col(batch: &RecordBatch, idx: usize) -> Vec<i64> {
+    let arr = batch
+        .column(idx)
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .expect("i64 column");
+    (0..batch.num_rows()).map(|i| arr.value(i)).collect()
 }
 
 fn f64_col(batch: &RecordBatch, idx: usize) -> Vec<f64> {
@@ -1170,5 +1320,115 @@ mod tests {
         assert_eq!(json_str("a\nb"), "\"a\\nb\"");
         assert_eq!(json_str("a\tb"), "\"a\\tb\"");
         assert_eq!(json_str("a\u{1}b"), "\"a\\u0001b\"");
+    }
+
+    /// README 承诺 `detail/` 导出"逐笔交易/**权益曲线**", 但历史上只写了 trades
+    /// —— 权益曲线从未落盘, 复算必须重跑整轮回测。detail 必须**无条件**产出它
+    /// (不像 fixedcurve 只在 PBO 时写)。
+    #[test]
+    fn test_detail_writes_equity_curve_regardless_of_flag() {
+        use crate::app::DetailResult;
+
+        let dir = std::env::temp_dir().join(format!("vta-eqcurve-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let mk = |param: &str, off: f64| DetailResult {
+            symbol: "BTCUSDT".into(),
+            timeframe: "1d".into(),
+            strategy: "sma".into(),
+            params: param.into(),
+            trades: Vec::new(),
+            equity_curve: (0..5)
+                .map(|i| {
+                    (
+                        1_700_000_000.0 + i as f64 * 86_400.0 + off,
+                        1000.0 + off + i as f64,
+                    )
+                })
+                .collect(),
+            fixed_curve: (0..5).map(|i| 1000.0 + off + i as f64).collect(),
+        };
+        // write_curves = false: fixedcurve 跳过, equitycurve 仍必须落盘
+        let details = vec![mk("period=10", 0.0), mk("period=20", 500.0)];
+        write_detail_parquet(&details, dir.to_str().unwrap(), false).unwrap();
+
+        let files: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            files
+                .iter()
+                .filter(|f| f.ends_with("_equitycurve.parquet"))
+                .count(),
+            2,
+            "每个参数组都应有 equitycurve: {files:?}"
+        );
+        assert!(
+            !files.iter().any(|f| f.ends_with("_fixedcurve.parquet")),
+            "write_curves=false 不应写 fixedcurve: {files:?}"
+        );
+
+        // 内容: time 与 equity 两列, 组内多参数按顺序拼接
+        let p = dir.join("BTCUSDT_1d_sma_period-10_equitycurve.parquet");
+        let curves = read_equity_curves(dir.to_str().unwrap()).unwrap();
+        let c = curves
+            .iter()
+            .find(|c| c.params == "period=10")
+            .expect("应能按 metadata 读回分组");
+        assert_eq!(c.symbol, "BTCUSDT");
+        assert_eq!(c.timeframe, "1d");
+        assert_eq!(c.strategy, "sma");
+        assert_eq!(c.times.len(), 5);
+        assert_eq!(c.values.len(), 5);
+        assert_eq!(c.times[0], 1_700_000_000);
+        assert_eq!(c.values[4], 1004.0);
+        assert!(p.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `write_curves = true` 时两条曲线都要有, 且列名不同(语义不同)。
+    #[test]
+    fn test_fixed_and_equity_curves_have_distinct_columns() {
+        use crate::app::DetailResult;
+
+        let dir = std::env::temp_dir().join(format!("vta-curves-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let details = vec![DetailResult {
+            symbol: "ETHUSDT".into(),
+            timeframe: "1h".into(),
+            strategy: "ema".into(),
+            params: "period=9".into(),
+            trades: Vec::new(),
+            equity_curve: (0..3)
+                .map(|i| (1_700_000_000.0 + i as f64 * 3600.0, 500.0 + i as f64))
+                .collect(),
+            fixed_curve: vec![500.0, 501.0, 502.0],
+        }];
+        write_detail_parquet(&details, dir.to_str().unwrap(), true).unwrap();
+
+        use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+        for (name, expect) in [
+            ("_equitycurve.parquet", vec!["time", "equity"]),
+            ("_fixedcurve.parquet", vec!["bar_idx", "fixed_equity"]),
+        ] {
+            let p = std::fs::read_dir(&dir)
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .find(|p| p.to_string_lossy().ends_with(name))
+                .unwrap_or_else(|| panic!("缺少 {name}"));
+            let f = std::fs::File::open(&p).unwrap();
+            let b = ParquetRecordBatchReaderBuilder::try_new(f).unwrap();
+            let cols: Vec<String> = b
+                .schema()
+                .fields()
+                .iter()
+                .map(|fld| fld.name().clone())
+                .collect();
+            assert_eq!(cols, expect, "{name} 列名/语义不符");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
