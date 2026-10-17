@@ -153,17 +153,6 @@ impl Strategy for BbrkM3Strategy {
         format!("sigma={}", self.sigmas[idx])
     }
 
-    fn generate_signals(
-        &self,
-        _open: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        _param_idx: usize,
-    ) -> crate::error::Result<Vec<Signal>> {
-        // 无 H/L：MFI 无法计算 → 全 Hold（P7，不静默降级）。
-        Ok(vec![Signal::Hold; close.len()])
-    }
-
     fn generate_signals_full(
         &self,
         _open: &[f64],
@@ -276,7 +265,6 @@ mod tests {
 
     #[test]
     fn test_nan_hold() {
-        let (lower, mid, upper) = bands(2);
         let nan = vec![f64::NAN, f64::NAN];
         let sig = bbrk_m3_signals(&nan, &nan, &nan, &nan, &nan);
         assert!(sig.iter().all(|&s| s == Signal::Hold));

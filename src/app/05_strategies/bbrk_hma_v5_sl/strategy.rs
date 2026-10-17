@@ -220,18 +220,6 @@ impl Strategy for BbrkHmaV5SlStrategy {
         format!("sigma={s},bblen={b},hmalen={g},stopk={k},atrlen={a}")
     }
 
-    fn generate_signals(
-        &self,
-        _open: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        param_idx: usize,
-    ) -> crate::error::Result<Vec<Signal>> {
-        // 无 high/low 时以 close 替代 → ATR=0 → 止损禁用、闩锁照常（bbrk_atr同惯例）。
-        let (s, b, g, k, a) = self.quints[param_idx];
-        compute(close, close, close, s, b, g, k, a)
-    }
-
     fn generate_signals_full(
         &self,
         _open: &[f64],
@@ -263,15 +251,7 @@ mod tests {
         let close = vec![101.0, 89.0, 88.0];
         let hma = vec![95.0, 85.0, 84.0];
         let sig = bbrk_hma_v5_sl_signals(
-            &close,
-            &close,
-            &close,
-            &lower,
-            &mid,
-            &upper,
-            &hma,
-            &[5.0; 3],
-            2.0,
+            &close, &close, &close, &lower, &mid, &upper, &hma, &[5.0; 3], 2.0,
         );
         assert_eq!(sig[1], Signal::Buy);
         assert_eq!(sig[2], Signal::Hold);
@@ -284,15 +264,7 @@ mod tests {
         let close = vec![101.0, 89.0, 102.0, 99.0];
         let hma = vec![95.0, 85.0, 90.0, 90.0];
         let sig = bbrk_hma_v5_sl_signals(
-            &close,
-            &close,
-            &close,
-            &lower,
-            &mid,
-            &upper,
-            &hma,
-            &[5.0; 4],
-            2.0,
+            &close, &close, &close, &lower, &mid, &upper, &hma, &[5.0; 4], 2.0,
         );
         assert_eq!(sig[1], Signal::Buy);
         assert_eq!(sig[2], Signal::Hold);
@@ -321,15 +293,7 @@ mod tests {
         let close = vec![101.0, 112.0, 99.0];
         let hma = vec![95.0; 3];
         let sig = bbrk_hma_v5_sl_signals(
-            &close,
-            &close,
-            &close,
-            &lower,
-            &mid,
-            &upper,
-            &hma,
-            &[5.0; 3],
-            2.0,
+            &close, &close, &close, &lower, &mid, &upper, &hma, &[5.0; 3], 2.0,
         );
         assert_eq!(sig[1], Signal::Buy);
         assert_eq!(sig[2], Signal::Close);
@@ -341,6 +305,9 @@ mod tests {
             quints: vec![(2.5, 20, 450, 2.0, 50)],
         };
         assert_eq!(s.name(), "BBRK_HMA_V5_SL");
-        assert_eq!(s.param_str(0), "sigma=2.5,bblen=20,hmalen=450,stopk=2,atrlen=50");
+        assert_eq!(
+            s.param_str(0),
+            "sigma=2.5,bblen=20,hmalen=450,stopk=2,atrlen=50"
+        );
     }
 }

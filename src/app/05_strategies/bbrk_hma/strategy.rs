@@ -75,7 +75,12 @@ pub fn bbrk_hma_signals(
     sig
 }
 
-fn compute(close: &[f64], sigma: f64, bblen: usize, hmalen: usize) -> crate::error::Result<Vec<Signal>> {
+fn compute(
+    close: &[f64],
+    sigma: f64,
+    bblen: usize,
+    hmalen: usize,
+) -> crate::error::Result<Vec<Signal>> {
     let bb = match bollinger_bands(&BollingerBandsInput::from_slice(
         close,
         BollingerBandsParams {
@@ -91,7 +96,9 @@ fn compute(close: &[f64], sigma: f64, bblen: usize, hmalen: usize) -> crate::err
     };
     let ma = match hma(&HmaInput::from_slice(
         close,
-        HmaParams { period: Some(hmalen) },
+        HmaParams {
+            period: Some(hmalen),
+        },
     )) {
         Ok(v) => v.values,
         Err(_) => return Ok(vec![Signal::Hold; close.len()]),
@@ -117,17 +124,6 @@ impl Strategy for BbrkHmaStrategy {
     fn param_str(&self, idx: usize) -> String {
         let (s, b, l) = self.pairs[idx];
         format!("sigma={s},bblen={b},hmalen={l}")
-    }
-
-    fn generate_signals(
-        &self,
-        _open: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        param_idx: usize,
-    ) -> crate::error::Result<Vec<Signal>> {
-        let (s, b, l) = self.pairs[param_idx];
-        compute(close, s, b, l)
     }
 
     fn generate_signals_full(

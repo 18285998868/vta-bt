@@ -75,7 +75,12 @@ pub fn bbrk_ema_signals(
     sig
 }
 
-fn compute(close: &[f64], sigma: f64, bblen: usize, reg: usize) -> crate::error::Result<Vec<Signal>> {
+fn compute(
+    close: &[f64],
+    sigma: f64,
+    bblen: usize,
+    reg: usize,
+) -> crate::error::Result<Vec<Signal>> {
     let bb = match bollinger_bands(&BollingerBandsInput::from_slice(
         close,
         BollingerBandsParams {
@@ -89,7 +94,10 @@ fn compute(close: &[f64], sigma: f64, bblen: usize, reg: usize) -> crate::error:
         Ok(v) => v,
         Err(_) => return Ok(vec![Signal::Hold; close.len()]),
     };
-    let ema_vals = match ema(&EmaInput::from_slice(close, EmaParams { period: Some(reg) })) {
+    let ema_vals = match ema(&EmaInput::from_slice(
+        close,
+        EmaParams { period: Some(reg) },
+    )) {
         Ok(v) => v.values,
         Err(_) => return Ok(vec![Signal::Hold; close.len()]),
     };
@@ -114,17 +122,6 @@ impl Strategy for BbrkEmaStrategy {
     fn param_str(&self, idx: usize) -> String {
         let (s, b, l) = self.pairs[idx];
         format!("sigma={s},bblen={b},emareg={l}")
-    }
-
-    fn generate_signals(
-        &self,
-        _open: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        param_idx: usize,
-    ) -> crate::error::Result<Vec<Signal>> {
-        let (s, b, l) = self.pairs[param_idx];
-        compute(close, s, b, l)
     }
 
     fn generate_signals_full(

@@ -47,10 +47,7 @@ pub fn mabb_short_signals(
     let mut keff = 0.0;
     for i in 0..n {
         if pos == 0 {
-            if ![close[i], lower[i], upper[i]]
-                .iter()
-                .all(|v| v.is_finite())
-            {
+            if ![close[i], lower[i], upper[i]].iter().all(|v| v.is_finite()) {
                 continue;
             }
             if close[i] < lower[i] {
@@ -108,8 +105,16 @@ pub fn mabb_bands_short(
     if mid.len() != close.len() || sd.len() != close.len() {
         return None;
     }
-    let lower: Vec<f64> = mid.iter().zip(sd.iter()).map(|(m, s)| m - sigma * s).collect();
-    let upper: Vec<f64> = mid.iter().zip(sd.iter()).map(|(m, s)| m + sigma * s).collect();
+    let lower: Vec<f64> = mid
+        .iter()
+        .zip(sd.iter())
+        .map(|(m, s)| m - sigma * s)
+        .collect();
+    let upper: Vec<f64> = mid
+        .iter()
+        .zip(sd.iter())
+        .map(|(m, s)| m + sigma * s)
+        .collect();
     Some((lower, mid, upper))
 }
 
@@ -183,17 +188,6 @@ impl Strategy for MabbShortStrategy {
         format!("ma={m},len={l},sigma={s},stopk={k},atrlen={a}")
     }
 
-    fn generate_signals(
-        &self,
-        _open: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        param_idx: usize,
-    ) -> crate::error::Result<Vec<Signal>> {
-        let (m, l, s, k, a) = &self.quints[param_idx];
-        compute(close, close, close, m, *l, *s, *k, *a)
-    }
-
     fn generate_signals_full(
         &self,
         _open: &[f64],
@@ -257,13 +251,25 @@ impl Strategy for MabbShortStrategy {
                 .into_par_iter()
                 .map(|i| {
                     let (_, _, s, k, a) = &self.quints[i];
-                    let lower: Vec<f64> =
-                        mi.iter().zip(sd.iter()).map(|(mm, ss)| mm - s * ss).collect();
-                    let upper: Vec<f64> =
-                        mi.iter().zip(sd.iter()).map(|(mm, ss)| mm + s * ss).collect();
-                    let av = atr_cache.get(a).cloned().unwrap_or(vec![f64::NAN; close.len()]);
+                    let lower: Vec<f64> = mi
+                        .iter()
+                        .zip(sd.iter())
+                        .map(|(mm, ss)| mm - s * ss)
+                        .collect();
+                    let upper: Vec<f64> = mi
+                        .iter()
+                        .zip(sd.iter())
+                        .map(|(mm, ss)| mm + s * ss)
+                        .collect();
+                    let av = atr_cache
+                        .get(a)
+                        .cloned()
+                        .unwrap_or(vec![f64::NAN; close.len()]);
                     let _ = (open, volume, time);
-                    (i, mabb_short_signals(close, high, low, &lower, &mi, &upper, &av, *k))
+                    (
+                        i,
+                        mabb_short_signals(close, high, low, &lower, &mi, &upper, &av, *k),
+                    )
                 })
                 .collect();
             for (i, sig) in done {
@@ -345,7 +351,9 @@ mod tests {
     #[test]
     fn test_batch_matches_single() {
         let n = 60;
-        let close: Vec<f64> = (0..n).map(|i| 100.0 + 10.0 * ((i as f64) / 5.0).sin() - i as f64 * 0.2).collect();
+        let close: Vec<f64> = (0..n)
+            .map(|i| 100.0 + 10.0 * ((i as f64) / 5.0).sin() - i as f64 * 0.2)
+            .collect();
         let high: Vec<f64> = close.iter().map(|c| c + 1.0).collect();
         let low: Vec<f64> = close.iter().map(|c| c - 1.0).collect();
         let time: Vec<i64> = (0..n as i64).collect();
@@ -358,11 +366,12 @@ mod tests {
         let batch = s
             .generate_signals_batch(&close, &high, &low, &close, &close, &time, 0..2)
             .unwrap();
-        for i in 0..2 {
+        assert_eq!(batch.len(), 2);
+        for (i, b) in batch.iter().enumerate() {
             let single = s
                 .generate_signals_full(&close, &high, &low, &close, &close, &time, i)
                 .unwrap();
-            assert_eq!(batch[i], single, "param {i} batch与single不一致");
+            assert_eq!(*b, single, "param {i} batch与single不一致");
         }
     }
 

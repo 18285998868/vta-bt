@@ -1,9 +1,9 @@
-use vector_ta::indicators::atr::{atr, AtrInput, AtrParams};
+use vector_ta::indicators::atr::{AtrInput, AtrParams, atr};
 use vector_ta::indicators::bollinger_bands::{
-    bollinger_bands, BollingerBandsInput, BollingerBandsParams,
+    BollingerBandsInput, BollingerBandsParams, bollinger_bands,
 };
-use vector_ta::indicators::kdj::{kdj, KdjInput, KdjParams};
-use vector_ta::indicators::moving_averages::sma::{sma, SmaInput, SmaParams};
+use vector_ta::indicators::kdj::{KdjInput, KdjParams, kdj};
+use vector_ta::indicators::moving_averages::sma::{SmaInput, SmaParams, sma};
 
 use crate::strategies::{Signal, Strategy};
 
@@ -227,17 +227,6 @@ impl Strategy for BbrkKdjStrategy {
         format!("sigma={}", self.sigmas[idx])
     }
 
-    fn generate_signals(
-        &self,
-        open: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        param_idx: usize,
-    ) -> crate::error::Result<Vec<Signal>> {
-        // 无 high/low：KDJ/ATR 退化，整窗按 P7 拦（compute 内 NaN→Hold 自然覆盖）。
-        compute(open, close, close, close, self.sigmas[param_idx])
-    }
-
     fn generate_signals_full(
         &self,
         open: &[f64],
@@ -257,9 +246,8 @@ mod tests {
     use super::*;
     use crate::strategies::Strategy;
 
-    fn base(
-        n: usize,
-    ) -> (
+    /// 测试夹具: (open, high, low, close, lower, upper, k, sqz) 全长 `n`。
+    type Fixture = (
         Vec<f64>,
         Vec<f64>,
         Vec<f64>,
@@ -268,7 +256,9 @@ mod tests {
         Vec<f64>,
         Vec<f64>,
         Vec<bool>,
-    ) {
+    );
+
+    fn base(n: usize) -> Fixture {
         // lower=90/upper=110，sqz全开；open=flat100。
         (
             vec![100.0; n],

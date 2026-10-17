@@ -189,19 +189,6 @@ impl Strategy for VwapTrendStrategy {
         format!("reset={}", self.modes[idx])
     }
 
-    fn generate_signals(
-        &self,
-        _open: &[f64],
-        _close: &[f64],
-        _volume: &[f64],
-        _param_idx: usize,
-    ) -> crate::error::Result<Vec<Signal>> {
-        Err(crate::error::AppError::Msg(
-            "vwap_trend needs full OHLCV+time (session/rolling VWAP), use generate_signals_full"
-                .into(),
-        ))
-    }
-
     fn generate_signals_full(
         &self,
         _open: &[f64],
@@ -310,7 +297,7 @@ mod tests {
     fn test_zero_volume_holds() {
         let close = vec![101.0; 5];
         let t: Vec<i64> = (0..5).map(|i| i * 60_000).collect();
-        let sig = compute(&close, &close, &close, &vec![0.0; 5], &t, 0);
+        let sig = compute(&close, &close, &close, &[0.0; 5], &t, 0);
         assert!(sig.iter().all(|&s| s == Signal::Hold));
     }
 

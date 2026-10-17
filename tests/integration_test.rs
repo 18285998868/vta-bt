@@ -29,7 +29,9 @@ fn test_ssf_standard_across_runs() {
     });
     assert!(s.param_count() > 0);
     for i in 0..s.param_count() {
-        let sig = s.generate_signals(&[], &close, &[], i).unwrap();
+        let sig = s
+            .generate_signals_full(&[], &[], &[], &close, &[], &[], i)
+            .unwrap();
         assert_eq!(sig.len(), 500);
     }
 }
@@ -89,7 +91,7 @@ fn test_engine_buy_sell_cycle() {
 }
 
 #[test]
-fn test_engine_cli_override_noop() {
+fn test_simulate_all_hold_yields_zero_trades() {
     let close = vec![100.0; 10];
     let sig = vec![Signal::Hold; 10];
     let m = engine::simulate(&close, &close, &sig, 1000.0, 365.0, &ExecConfig::default());
@@ -125,7 +127,9 @@ fn test_strategy_period_larger_than_window() {
         period: PeriodParam::Single(500),
         poles: PoleCount::Two,
     });
-    let sig = s.generate_signals(&[], &close, &[], 0).unwrap();
+    let sig = s
+        .generate_signals_full(&[], &[], &[], &close, &[], &[], 0)
+        .unwrap();
     assert_eq!(sig.len(), 50);
     assert!(sig.iter().all(|&s| s == Signal::Hold));
 }

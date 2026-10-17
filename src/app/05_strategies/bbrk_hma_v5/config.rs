@@ -1,3 +1,4 @@
+use crate::error::AppError;
 use serde::Deserialize;
 
 use crate::config::F64Param;
@@ -24,6 +25,22 @@ impl BbrkHmaV5Config {
             }
         }
         out
+    }
+}
+
+impl BbrkHmaV5Config {
+    /// 语义校验(原集中在 `config.rs::Config::validate` 的 match 中,
+    /// 已下沉到本类型; 分派处只保留一行调用)。
+    pub fn validate(&self) -> crate::error::Result<()> {
+        self.sigma.validate_range("bbrk_hma_v5.sigma", 0.1, 10.0)?;
+        self.bblen
+            .validate_range("bbrk_hma_v5.bblen", 2.0, 2000.0)?;
+        self.hmalen
+            .validate_range("bbrk_hma_v5.hmalen", 2.0, 2000.0)?;
+        if self.triples().is_empty() {
+            return Err(AppError::Msg("bbrk_hma_v5 参数组合为空".into()));
+        }
+        Ok(())
     }
 }
 

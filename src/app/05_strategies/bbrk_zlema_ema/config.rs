@@ -1,3 +1,4 @@
+use crate::error::AppError;
 use serde::Deserialize;
 
 use crate::config::F64Param;
@@ -25,6 +26,21 @@ impl BbrkZlemaEmaConfig {
             }
         }
         out
+    }
+}
+
+impl BbrkZlemaEmaConfig {
+    /// 语义校验(原集中在 `config.rs::Config::validate` 的 match 中,
+    /// 已下沉到本类型; 分派处只保留一行调用)。
+    pub fn validate(&self) -> crate::error::Result<()> {
+        self.sigma
+            .validate_range("bbrk_zlema_ema.sigma", 0.1, 10.0)?;
+        self.zlemareg
+            .validate_range("bbrk_zlema_ema.zlemareg", 2.0, 2000.0)?;
+        if self.pairs().is_empty() {
+            return Err(AppError::Msg("bbrk_zlema_ema 参数组合为空".into()));
+        }
+        Ok(())
     }
 }
 

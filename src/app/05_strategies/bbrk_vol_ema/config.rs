@@ -1,3 +1,4 @@
+use crate::error::AppError;
 use serde::Deserialize;
 
 use crate::config::F64Param;
@@ -25,6 +26,21 @@ impl BbrkVolEmaConfig {
             }
         }
         out
+    }
+}
+
+impl BbrkVolEmaConfig {
+    /// 语义校验(原集中在 `config.rs::Config::validate` 的 match 中,
+    /// 已下沉到本类型; 分派处只保留一行调用)。
+    pub fn validate(&self) -> crate::error::Result<()> {
+        self.sigma.validate_range("bbrk_vol_ema.sigma", 0.1, 10.0)?;
+        self.voln.validate_range("bbrk_vol_ema.voln", 2.0, 500.0)?;
+        self.volmult
+            .validate_range("bbrk_vol_ema.volmult", 0.5, 30.0)?;
+        if self.pairs().is_empty() {
+            return Err(AppError::Msg("bbrk_vol_ema 参数组合为空".into()));
+        }
+        Ok(())
     }
 }
 

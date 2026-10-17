@@ -80,16 +80,6 @@ impl Strategy for BBMRStrategy {
         format!("sigma={}", self.sigmas[idx])
     }
 
-    fn generate_signals(
-        &self,
-        _open: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        param_idx: usize,
-    ) -> crate::error::Result<Vec<Signal>> {
-        self.compute(close, self.sigmas[param_idx])
-    }
-
     fn generate_signals_full(
         &self,
         _open: &[f64],

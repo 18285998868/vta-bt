@@ -149,17 +149,6 @@ impl Strategy for BbrkTrailStrategy {
         format!("sigma={s},bblen={b},atrlen={a},trailk={k}")
     }
 
-    fn generate_signals(
-        &self,
-        _open: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        param_idx: usize,
-    ) -> crate::error::Result<Vec<Signal>> {
-        let (s, b, a, k) = self.pairs[param_idx];
-        compute(close, close, close, s, b, a, k)
-    }
-
     fn generate_signals_full(
         &self,
         _open: &[f64],

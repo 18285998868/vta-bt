@@ -117,17 +117,6 @@ impl Strategy for BbrkDonStrategy {
         format!("sigma={s},bblen={b},exitn={n}")
     }
 
-    fn generate_signals(
-        &self,
-        _open: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        param_idx: usize,
-    ) -> crate::error::Result<Vec<Signal>> {
-        let (s, b, n) = self.pairs[param_idx];
-        compute(close, close, close, s, b, n)
-    }
-
     fn generate_signals_full(
         &self,
         _open: &[f64],

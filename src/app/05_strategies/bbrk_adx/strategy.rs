@@ -135,18 +135,6 @@ impl Strategy for BbrkAdxStrategy {
         format!("sigma={s},len={l},adxlen={a},adx={t}")
     }
 
-    fn generate_signals(
-        &self,
-        _open: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        param_idx: usize,
-    ) -> crate::error::Result<Vec<Signal>> {
-        // 无 high/low 入口：用 close 充当(ADX≈0→开仓被门限拦住，P7 不静默退化)。
-        let (s, l, a, t) = self.pairs[param_idx];
-        compute(close, close, close, s, l, a, t)
-    }
-
     fn generate_signals_full(
         &self,
         _open: &[f64],

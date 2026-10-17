@@ -97,18 +97,6 @@ impl Strategy for TurtleStrategy {
         format!("entry={e},exit={x}")
     }
 
-    fn generate_signals(
-        &self,
-        _open: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        param_idx: usize,
-    ) -> crate::error::Result<Vec<Signal>> {
-        // trait 兼容入口(high/low 缺席时用 close 代理, 书面化为乐观近似)。
-        let (e, x) = self.pairs[param_idx];
-        Ok(signals_from_ohlc(close, close, close, e, x))
-    }
-
     fn generate_signals_full(
         &self,
         _open: &[f64],

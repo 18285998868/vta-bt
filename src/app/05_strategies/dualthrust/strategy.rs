@@ -109,17 +109,6 @@ impl Strategy for DualThrustStrategy {
         format!("n={n},k={k}")
     }
 
-    fn generate_signals(
-        &self,
-        _open: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        _param_idx: usize,
-    ) -> crate::error::Result<Vec<Signal>> {
-        // 无时间信息无法切交易日: 全 Hold(调用方走 full 入口)。
-        Ok(vec![Signal::Hold; close.len()])
-    }
-
     fn generate_signals_full(
         &self,
         open: &[f64],

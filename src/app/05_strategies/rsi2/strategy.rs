@@ -63,22 +63,6 @@ impl Strategy for RSI2Strategy {
         format!("buy={b},sell={s}")
     }
 
-    fn generate_signals(
-        &self,
-        _open: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        param_idx: usize,
-    ) -> crate::error::Result<Vec<Signal>> {
-        // RSI 只需 close, 本入口可完整计算(与 full 入口逐位一致)。
-        let (b, s) = self.pairs[param_idx];
-        let rsi_vals = match rsi(&RsiInput::from_slice(close, RsiParams { period: Some(2) })) {
-            Ok(v) => v.values,
-            Err(_) => return Ok(vec![Signal::Hold; close.len()]),
-        };
-        Ok(rsi2_signals(close, &rsi_vals, b, s))
-    }
-
     fn generate_signals_full(
         &self,
         _open: &[f64],

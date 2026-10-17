@@ -1,3 +1,4 @@
+use crate::error::AppError;
 use serde::Deserialize;
 
 use crate::config::F64Param;
@@ -42,6 +43,21 @@ impl BbrkRexConfig {
             }
         }
         out
+    }
+}
+
+impl BbrkRexConfig {
+    /// 语义校验(原集中在 `config.rs::Config::validate` 的 match 中,
+    /// 已下沉到本类型; 分派处只保留一行调用)。
+    pub fn validate(&self) -> crate::error::Result<()> {
+        self.sigma.validate_range("bbrk_rex.sigma", 0.1, 10.0)?;
+        self.bblen.validate_range("bbrk_rex.bblen", 2.0, 2000.0)?;
+        self.rexn.validate_range("bbrk_rex.rexn", 2.0, 100.0)?;
+        self.rexmult.validate_range("bbrk_rex.rexmult", 0.5, 30.0)?;
+        if self.pairs().is_empty() {
+            return Err(AppError::Msg("bbrk_rex 参数组合为空".into()));
+        }
+        Ok(())
     }
 }
 

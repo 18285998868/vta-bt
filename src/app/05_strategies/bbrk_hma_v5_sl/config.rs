@@ -1,3 +1,4 @@
+use crate::error::AppError;
 use serde::Deserialize;
 
 use crate::config::F64Param;
@@ -22,13 +23,40 @@ impl BbrkHmaV5SlConfig {
                 for &g in &self.hmalen.values() {
                     for &k in &self.stopk.values() {
                         for &a in &self.atrlen.values() {
-                            out.push((s, b.round() as usize, g.round() as usize, k, a.round() as usize));
+                            out.push((
+                                s,
+                                b.round() as usize,
+                                g.round() as usize,
+                                k,
+                                a.round() as usize,
+                            ));
                         }
                     }
                 }
             }
         }
         out
+    }
+}
+
+impl BbrkHmaV5SlConfig {
+    /// 语义校验(原集中在 `config.rs::Config::validate` 的 match 中,
+    /// 已下沉到本类型; 分派处只保留一行调用)。
+    pub fn validate(&self) -> crate::error::Result<()> {
+        self.sigma
+            .validate_range("bbrk_hma_v5_sl.sigma", 0.1, 10.0)?;
+        self.bblen
+            .validate_range("bbrk_hma_v5_sl.bblen", 2.0, 2000.0)?;
+        self.hmalen
+            .validate_range("bbrk_hma_v5_sl.hmalen", 2.0, 2000.0)?;
+        self.stopk
+            .validate_range("bbrk_hma_v5_sl.stopk", 0.5, 10.0)?;
+        self.atrlen
+            .validate_range("bbrk_hma_v5_sl.atrlen", 2.0, 500.0)?;
+        if self.quints().is_empty() {
+            return Err(AppError::Msg("bbrk_hma_v5_sl 参数组合为空".into()));
+        }
+        Ok(())
     }
 }
 

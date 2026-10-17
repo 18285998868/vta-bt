@@ -1077,7 +1077,10 @@ mod tests {
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
-        assert!(names2.iter().any(|f| f.contains("fixedcurve")), "{names2:?}");
+        assert!(
+            names2.iter().any(|f| f.contains("fixedcurve")),
+            "{names2:?}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&dir2);
     }

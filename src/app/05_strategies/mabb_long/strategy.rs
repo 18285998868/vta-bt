@@ -48,10 +48,7 @@ pub fn mabb_long_signals(
     let mut keff = 0.0;
     for i in 0..n {
         if pos == 0 {
-            if ![close[i], lower[i], upper[i]]
-                .iter()
-                .all(|v| v.is_finite())
-            {
+            if ![close[i], lower[i], upper[i]].iter().all(|v| v.is_finite()) {
                 continue;
             }
             if close[i] > upper[i] {
@@ -109,8 +106,16 @@ pub fn mabb_bands(
     if mid.len() != close.len() || sd.len() != close.len() {
         return None;
     }
-    let lower: Vec<f64> = mid.iter().zip(sd.iter()).map(|(m, s)| m - sigma * s).collect();
-    let upper: Vec<f64> = mid.iter().zip(sd.iter()).map(|(m, s)| m + sigma * s).collect();
+    let lower: Vec<f64> = mid
+        .iter()
+        .zip(sd.iter())
+        .map(|(m, s)| m - sigma * s)
+        .collect();
+    let upper: Vec<f64> = mid
+        .iter()
+        .zip(sd.iter())
+        .map(|(m, s)| m + sigma * s)
+        .collect();
     Some((lower, mid, upper))
 }
 
@@ -184,17 +189,6 @@ impl Strategy for MabbLongStrategy {
         format!("ma={m},len={l},sigma={s},stopk={k},atrlen={a}")
     }
 
-    fn generate_signals(
-        &self,
-        _open: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        param_idx: usize,
-    ) -> crate::error::Result<Vec<Signal>> {
-        let (m, l, s, k, a) = &self.quints[param_idx];
-        compute(close, close, close, m, *l, *s, *k, *a)
-    }
-
     fn generate_signals_full(
         &self,
         _open: &[f64],
@@ -259,14 +253,25 @@ impl Strategy for MabbLongStrategy {
                 .into_par_iter()
                 .map(|i| {
                     let (_, _, s, k, a) = &self.quints[i];
-                    let lower: Vec<f64> =
-                        mi.iter().zip(sd.iter()).map(|(mm, ss)| mm - s * ss).collect();
-                    let upper: Vec<f64> =
-                        mi.iter().zip(sd.iter()).map(|(mm, ss)| mm + s * ss).collect();
-                    let av =
-                        atr_cache.get(a).cloned().unwrap_or(vec![f64::NAN; close.len()]);
+                    let lower: Vec<f64> = mi
+                        .iter()
+                        .zip(sd.iter())
+                        .map(|(mm, ss)| mm - s * ss)
+                        .collect();
+                    let upper: Vec<f64> = mi
+                        .iter()
+                        .zip(sd.iter())
+                        .map(|(mm, ss)| mm + s * ss)
+                        .collect();
+                    let av = atr_cache
+                        .get(a)
+                        .cloned()
+                        .unwrap_or(vec![f64::NAN; close.len()]);
                     let _ = (open, volume, time);
-                    (i, mabb_long_signals(close, high, low, &lower, &mi, &upper, &av, *k))
+                    (
+                        i,
+                        mabb_long_signals(close, high, low, &lower, &mi, &upper, &av, *k),
+                    )
                 })
                 .collect();
             for (i, sig) in done {
@@ -356,7 +361,9 @@ mod tests {
     fn test_registry_all_compute_on_slice() {
         // 注册表43名必须全可在close切片上算出（否则大跑出现静默全Hold）。
         use super::super::MABB_MA_NAMES;
-        let close: Vec<f64> = (0..600).map(|i| 100.0 + 10.0 * ((i as f64) / 9.0).sin()).collect();
+        let close: Vec<f64> = (0..600)
+            .map(|i| 100.0 + 10.0 * ((i as f64) / 9.0).sin())
+            .collect();
         let mut dead = Vec::new();
         for name in MABB_MA_NAMES {
             if mabb_bands(&close, name, 50, 2.0).is_none() {
@@ -379,7 +386,9 @@ mod tests {
     fn test_batch_matches_single() {
         // 60根合成波：batch与逐个调逐位一致。
         let n = 60;
-        let close: Vec<f64> = (0..n).map(|i| 100.0 + 10.0 * ((i as f64) / 5.0).sin() + i as f64 * 0.2).collect();
+        let close: Vec<f64> = (0..n)
+            .map(|i| 100.0 + 10.0 * ((i as f64) / 5.0).sin() + i as f64 * 0.2)
+            .collect();
         let high: Vec<f64> = close.iter().map(|c| c + 1.0).collect();
         let low: Vec<f64> = close.iter().map(|c| c - 1.0).collect();
         let time: Vec<i64> = (0..n as i64).collect();
@@ -393,11 +402,12 @@ mod tests {
         let batch = s
             .generate_signals_batch(&close, &high, &low, &close, &close, &time, 0..3)
             .unwrap();
-        for i in 0..3 {
+        assert_eq!(batch.len(), 3);
+        for (i, b) in batch.iter().enumerate() {
             let single = s
                 .generate_signals_full(&close, &high, &low, &close, &close, &time, i)
                 .unwrap();
-            assert_eq!(batch[i], single, "param {i} batch与single不一致");
+            assert_eq!(*b, single, "param {i} batch与single不一致");
         }
     }
 }

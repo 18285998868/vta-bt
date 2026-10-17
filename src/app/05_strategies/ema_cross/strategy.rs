@@ -43,11 +43,14 @@ impl Strategy for EmaCrossStrategy {
         format!("fast={f},slow={s}")
     }
 
-    fn generate_signals(
+    fn generate_signals_full(
         &self,
         _open: &[f64],
+        _high: &[f64],
+        _low: &[f64],
         close: &[f64],
         _volume: &[f64],
+        _time: &[i64],
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
         let (fast_p, slow_p) = self.pairs[param_idx];
@@ -106,7 +109,9 @@ mod tests {
         // 单调上涨: 快线恒在慢线上方 → 首个有效 bar 给 Buy, 之后全 Hold。
         let close: Vec<f64> = (0..300).map(|i| 100.0 + i as f64).collect();
         let s = EmaCrossStrategy::new(cfg_one(10, 20));
-        let sig = s.generate_signals(&[], &close, &[], 0).unwrap();
+        let sig = s
+            .generate_signals_full(&[], &[], &[], &close, &[], &[], 0)
+            .unwrap();
         assert_eq!(sig.len(), 300);
         let buys: Vec<usize> = sig
             .iter()
@@ -125,7 +130,9 @@ mod tests {
         close.extend((0..200).map(|i| 200.0 - i as f64 * 0.5));
         close.extend((0..200).map(|i| 100.0 + i as f64 * 0.5));
         let s = EmaCrossStrategy::new(cfg_one(5, 20));
-        let sig = s.generate_signals(&[], &close, &[], 0).unwrap();
+        let sig = s
+            .generate_signals_full(&[], &[], &[], &close, &[], &[], 0)
+            .unwrap();
         assert!(sig.contains(&Signal::Buy));
         assert!(sig.contains(&Signal::Sell));
     }

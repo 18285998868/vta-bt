@@ -49,10 +49,7 @@ pub fn bbrk_hma_v3_sl_signals(
     let mut stopd = f64::INFINITY;
     for i in 0..n {
         if pos == 0 {
-            if ![close[i], lower[i], upper[i]]
-                .iter()
-                .all(|v| v.is_finite())
-            {
+            if ![close[i], lower[i], upper[i]].iter().all(|v| v.is_finite()) {
                 continue;
             }
             if close[i] > upper[i] {
@@ -157,17 +154,6 @@ impl Strategy for BbrkHmaV3SlStrategy {
     fn param_str(&self, idx: usize) -> String {
         let (s, b, k, a) = self.quads[idx];
         format!("sigma={s},bblen={b},stopk={k},atrlen={a}")
-    }
-
-    fn generate_signals(
-        &self,
-        _open: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        param_idx: usize,
-    ) -> crate::error::Result<Vec<Signal>> {
-        let (s, b, k, a) = self.quads[param_idx];
-        compute(close, close, close, s, b, k, a)
     }
 
     fn generate_signals_full(

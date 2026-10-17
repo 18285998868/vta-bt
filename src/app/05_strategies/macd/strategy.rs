@@ -71,11 +71,14 @@ impl Strategy for MacdStrategy {
         format!("macd_{f}_{s}_{g}")
     }
 
-    fn generate_signals(
+    fn generate_signals_full(
         &self,
         _open: &[f64],
+        _high: &[f64],
+        _low: &[f64],
         close: &[f64],
         _volume: &[f64],
+        _time: &[i64],
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
         let (f, s, g) = self.triples[param_idx];

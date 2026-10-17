@@ -106,18 +106,6 @@ impl Strategy for VwapStrategy {
         format!("thresh={}", self.threshs[idx])
     }
 
-    fn generate_signals(
-        &self,
-        _open: &[f64],
-        _close: &[f64],
-        _volume: &[f64],
-        _param_idx: usize,
-    ) -> crate::error::Result<Vec<Signal>> {
-        Err(crate::error::AppError::Msg(
-            "vwap needs full OHLCV+time (session reset), use generate_signals_full".into(),
-        ))
-    }
-
     fn generate_signals_full(
         &self,
         _open: &[f64],
@@ -154,9 +142,7 @@ mod tests {
         let n = 60;
         let t = bars(n, 1_700_000_000_000, 60_000);
         let mut close = vec![100.0; n];
-        for i in 30..35 {
-            close[i] = 90.0;
-        }
+        close[30..35].fill(90.0);
         let high = close.clone();
         let low = close.clone();
         let volume = vec![10.0; n];
@@ -169,9 +155,7 @@ mod tests {
         let n = 60;
         let t = bars(n, 1_700_000_000_000, 60_000);
         let mut close = vec![100.0; n];
-        for i in 30..35 {
-            close[i] = 110.0;
-        }
+        close[30..35].fill(110.0);
         let high = close.clone();
         let low = close.clone();
         let volume = vec![10.0; n];

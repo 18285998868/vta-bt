@@ -63,10 +63,26 @@ fn run_pair(symbol: &str, timeframe: &str, len: usize, sigma: f64, adxlen: usize
         adx: F64Param::Single(thr),
     });
     let bs = base
-        .generate_signals_full(&cols.open, &cols.high, &cols.low, &cols.close, &cols.volume, &cols.time, 0)
+        .generate_signals_full(
+            &cols.open,
+            &cols.high,
+            &cols.low,
+            &cols.close,
+            &cols.volume,
+            &cols.time,
+            0,
+        )
         .expect("base signals");
     let fs = filt
-        .generate_signals_full(&cols.open, &cols.high, &cols.low, &cols.close, &cols.volume, &cols.time, 0)
+        .generate_signals_full(
+            &cols.open,
+            &cols.high,
+            &cols.low,
+            &cols.close,
+            &cols.volume,
+            &cols.time,
+            0,
+        )
         .expect("filt signals");
 
     // 基线交易: (entry, exit, dir)
@@ -77,13 +93,13 @@ fn run_pair(symbol: &str, timeframe: &str, len: usize, sigma: f64, adxlen: usize
             Signal::Buy | Signal::Sell => {
                 let d = if bs[i] == Signal::Buy { 1 } else { -1 };
                 let mut e = n - 1;
-                for k in (i + 1)..n {
-                    if bs[k] == Signal::Close {
+                for (k, &sig_k) in bs.iter().enumerate().skip(i + 1) {
+                    if sig_k == Signal::Close {
                         e = k;
                         break;
                     }
                     // 基线同向再入场不应出现(持仓中无Buy/Sell); 若有则截断
-                    if bs[k] == Signal::Buy || bs[k] == Signal::Sell {
+                    if sig_k == Signal::Buy || sig_k == Signal::Sell {
                         e = k;
                         break;
                     }
@@ -106,8 +122,8 @@ fn run_pair(symbol: &str, timeframe: &str, len: usize, sigma: f64, adxlen: usize
     for (bi, be, d) in &trades {
         let want = if *d == 1 { Signal::Buy } else { Signal::Sell };
         let mut hit: Option<usize> = None;
-        for j in *bi..=*be {
-            if fs[j] == want {
+        for (j, &sig_j) in fs.iter().enumerate().take(*be + 1).skip(*bi) {
+            if sig_j == want {
                 hit = Some(j);
                 break;
             }
@@ -172,10 +188,10 @@ fn run_pair(symbol: &str, timeframe: &str, len: usize, sigma: f64, adxlen: usize
 
 fn main() {
     // README原口径: len20 sigma2 adxlen14 thr25; 附thr20对照
-    for (tf, ) in [("1h",), ("4h",)] {
+    for (tf,) in [("1h",), ("4h",)] {
         run_pair("BTCUSDT", tf, 20, 2.0, 14, 25.0);
     }
-    for (tf, ) in [("1h",), ("4h",)] {
+    for (tf,) in [("1h",), ("4h",)] {
         run_pair("BTCUSDT", tf, 20, 2.0, 14, 20.0);
     }
 }

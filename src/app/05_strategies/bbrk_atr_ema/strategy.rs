@@ -166,18 +166,6 @@ impl Strategy for BbrkAtrEmaStrategy {
         format!("sigma={s},atrthr={t}")
     }
 
-    fn generate_signals(
-        &self,
-        open: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        param_idx: usize,
-    ) -> crate::error::Result<Vec<Signal>> {
-        // 无 high/low 时 ATR 无从算起 → 用 close 充当（ATR=0 → 门全拦，P7）。
-        let (s, t) = self.pairs[param_idx];
-        compute(open, close, close, close, s, t)
-    }
-
     fn generate_signals_full(
         &self,
         open: &[f64],

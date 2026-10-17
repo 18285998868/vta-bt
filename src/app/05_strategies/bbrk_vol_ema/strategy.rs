@@ -158,18 +158,6 @@ impl Strategy for BbrkVolEmaStrategy {
         format!("sigma={s},voln={n},volmult={m}")
     }
 
-    fn generate_signals(
-        &self,
-        open: &[f64],
-        close: &[f64],
-        volume: &[f64],
-        param_idx: usize,
-    ) -> crate::error::Result<Vec<Signal>> {
-        // 量能门三要素 open/close/volume 本入口齐备（无需 high/low）。
-        let (s, n, m) = self.pairs[param_idx];
-        compute(open, close, volume, s, n, m)
-    }
-
     fn generate_signals_full(
         &self,
         open: &[f64],

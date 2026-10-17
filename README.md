@@ -13,8 +13,9 @@
 
 - rust
 - edition = "2024"
-- 指标计算：`vector-ta` 0.3（crates.io）
+- 指标计算：`vector-ta`（**workspace path 依赖**，不是 crates.io —— 换 patch 版本会改变 NaN 前缀长度，进而改变全部历史回测结果）
 - 数据读取：自研 `kline-reader`（workspace path 依赖）
+- MSRV：`rust-version = "1.97"`（`pbo.rs` 的 Gosper hack 用到 1.97 稳定的 `isolate_lowest_one`）
 - 并行：rayon（参数索引 `into_par_iter`）
 - 输出：arrow 60 + parquet 60
 - 配置：clap 4（derive）+ toml 1.1 + serde（derive）
@@ -38,12 +39,75 @@ initial_balance = 10000.0 # 必填，初始资金（>0）
 [output]
 dir = "/tmp/vta-smoke" # 可选，输出目录，默认 "reports"
 detail = true # 可选，是否导出逐笔交易/权益曲线，默认 false
+fixed_curves = false # 可选，是否写 *_fixedcurve.parquet（--pbo 的 T×N 输入），默认 false
 overwrite = true # 可选，是否覆盖已存在结果，默认 false（跳过已完成组合）
 
 [[strategy]]
 type = "sma" # 必填
 period = { start = 5, end = 100, step = 5 } # 必填，参数范围；单值可写 period = 20
 ```
+
+## 关键设计约束（改动前必读）
+
+这些不是风格偏好，而是踩过坑之后定下来的硬约束。违反它们会**静默产出错误结果**。
+
+### 1. 外层三层循环必须串行（品种 × 周期 × 策略）
+
+`app/mod.rs::run` 的三个外层循环**刻意保持串行**，不得"优化"为并行：
+
+- `cols`（一个 (symbol, tf) 的全部 K 线）在 1m 级数据下约 125MB（2.6M bar × 6 数组 × 8B）。并行加载会直接 OOM。
+- 每个策略的 `generate_signals_batch` 会常驻整个 chunk 的 `Vec<Vec<Signal>>`，单策略即可打满 4GiB 预算。策略层并行会让内存乘以策略数。
+
+只有**参数索引**一层并行（rayon `into_par_iter`）。这是内存约束下的唯一安全形态。
+
+### 2. `delay_bars` 恒 ≥ 1（类型级保证）
+
+`ExecConfig::delay_bars` 是 `NonZeroUsize`，`delay_bars = 0`（信号当根成交）属前视乐观口径，已在**引擎层彻底删除**，`try_from_bps_fill(0, ..)` 直接返回 `Err`。配置层 `Config::validate` 亦拒绝。
+
+### 3. `generate_signals_full` 的形参顺序由测试锁定
+
+形参是 `&self, open, high, low, close, volume, time, param_idx`，**全部 `&[f64]`，编译器无法发现错位**。
+历史故障：移除 close-only 入口时把 `high`/`low` 插到 `open` 之前 → high/low 的数据被喂进 `open`，静默产出错误信号且无任何报错。
+
+`strategies::arg_order_tests::test_full_arg_order_contract` 用等长但内容差异极大的切片做探针锁定该契约。**新增或改签名时必须让该测试通过。**
+
+### 4. 权益曲线穿零（空头浮空）按 0 收益处理
+
+空头持仓期间权益可能 ≤ 0，此时 `ln(curr/prev)` 返回 NaN；NaN 经 Welford 污染均值/方差后会让 `ret_m2 > 0.0` 守卫失效，导致 **sharpe/volatility 被静默归零**、sortino 直接输出 NaN。
+
+`engine::bar_log_returns` 是全部收益口径的唯一来源（含 `pbo.rs`），两侧都要检查 `prev <= 0` 与 `curr <= 0`。**不要绕过它直接调 `.ln()`。**
+
+### 5. 指标口径（报告引用前请确认）
+
+| 指标 | 口径 | 备注 |
+|---|---|---|
+| `sharpe` | 逐 bar **对数收益**，样本方差 ddof=1 × √bpy | |
+| `sortino` | 下行偏差按**下行 bar 数** ddof=1 归一 | 与 sharpe 同一自由度约定，可并列比较 |
+| `sqn` | `√n · mean/stdev`，**n 不封顶** | Van Thorp 1998。`√n` 是定义中有意的统计显著性因子；小样本由 `num_trades >= 30` 门槛约束（Van Thorp 建议），不改写公式 |
+| `fixed_*` | 固定名义、不复利 | 研究报告统一引用 `fixed_*` 前缀列 |
+
+### 6. 参数网格的唯一性在构建期校验
+
+`strategy_params` 整数列由 `strategy_params_value` 手工把参数元组压进 u32，溢出时回退 `fnv1a_32`（**有损**）。
+行主键实为 `(symbol, timeframe, strategy, params)` 四元组，该列仅作"同策略内按参数大小排序"的代理，碰撞不构成数据损坏，但会让排序错乱。
+
+`build_strategies_checked` 在每次启动时对展开后的完整网格做 `HashSet` 唯一性自检，碰撞即**报错退出**（O(N)，微秒级）。新增策略后若看到该错误，说明 `param_str` 格式写错了。
+
+### 7. 缓存指纹覆盖数据身份
+
+`temps/{...}_{指纹}.parquet` 的指纹 = FNV-1a(资金 + 日期窗口 + **bar 数** + **数据目录 mtime/长度摘要** + 执行口径 + 逐参数 `param_str`)。
+
+数据被重新下载或增量更新时指纹必然变化 → 缓存自动失效重跑（偏保守：`touch` 数据文件也会触发重跑）。
+缺少数据维度时 `overwrite=false` 会静默返回**基于旧数据**的结果，且文件名与 parquet 内容都看不出。
+
+### 8. `strategy_params_json` 必须始终是合法 JSON
+
+值统一为 JSON **字符串**并转义（`{"ma":"hma","malen":"100"}`）。历史实现对 `ma=`/`variant=` 形态输出裸 token（`{"ma":hma}`），
+**非法 JSON 且与同列内合法的 `{"sigma":2.5}` 并存**，使整列无法被 JSON 工具消费。测试用 `serde_json` 实解析断言。
+
+### 9. 缺列兼容分支不是长期方案
+
+`read_parquet` 为旧缓存保留了"按 `num_columns()` 判断列是否存在"的回退分支。**新增输出列一律追加到末尾**，否则插入中间会让所有后续列号偏移，而相邻同为 `Float64` 的列 `downcast_ref` **不会 panic，而是静默读错列**。
 
 ## 逻辑编排
 
@@ -87,7 +151,7 @@ app/03_run_backtest.rs # 回测引擎（lib 映射为 engine）：持仓/成交/
 app/04_write_output/    # 输出（lib 映射为 output）
 app/04_write_output/parquet.rs # Parquet 读写：write_single_parquet(单组合 temps/) / write_detail_parquet(detail/) / read_parquet(缓存校验) / merge_parquet_files(显式合并)
 app/05_strategies/      # 策略叶（lib 映射为 strategies，~80+ 子目录）
-app/05_strategies/mod.rs # Strategy trait(name/param_count/param_str/generate_signals, Send+Sync) + shared 再导出
+app/05_strategies/mod.rs # Strategy trait(name/param_count/param_str/generate_signals_full/generate_signals_batch, Send+Sync) + shared 再导出
 app/05_strategies/shared.rs # Signal 枚举(Hold/Buy/Sell/Close) / price_cross_signal 穿越信号 / bars_per_year
 app/05_strategies/build.rs # 策略构建工厂(build_ma! 宏 MA 变体 → Box<dyn Strategy>) + ssf/ssf_st
 app/05_strategies/{alma,dema,...,zlema}/… # 单 MA 策略（周期遍历 → vector_ta 指标 → 价格穿越）

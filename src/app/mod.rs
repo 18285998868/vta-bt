@@ -246,7 +246,9 @@ fn run_combo(
         // 单 param 约 T×size_of::<Signal>()B; 峰值钳在 BATCH_MEM_BUDGET, 超量分批。
         const BATCH_MEM_BUDGET: u64 = 4 * 1024 * 1024 * 1024;
         let per_param = cols.len() as u64 * size_of::<crate::strategies::Signal>() as u64;
-        let chunk = ((BATCH_MEM_BUDGET / per_param.max(1)).max(1).min(n.max(1) as u64)) as usize;
+        let chunk = ((BATCH_MEM_BUDGET / per_param.max(1))
+            .max(1)
+            .min(n.max(1) as u64)) as usize;
         if n > chunk {
             println!(
                 "  [{}] batch 分块: {} 参数, 分 {} 批",

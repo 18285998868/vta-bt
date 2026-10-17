@@ -1,3 +1,4 @@
+use crate::error::AppError;
 use serde::Deserialize;
 
 use crate::config::F64Param;
@@ -18,6 +19,18 @@ pub struct BbrkM3Config {
 impl BbrkM3Config {
     pub fn values(&self) -> Vec<f64> {
         self.sigma.values()
+    }
+}
+
+impl BbrkM3Config {
+    /// 语义校验(原集中在 `config.rs::Config::validate` 的 match 中,
+    /// 已下沉到本类型; 分派处只保留一行调用)。
+    pub fn validate(&self) -> crate::error::Result<()> {
+        self.sigma.validate_range("bbrk_m3.sigma", 0.1, 10.0)?;
+        if self.values().is_empty() {
+            return Err(AppError::Msg("bbrk_m3 参数组合为空".into()));
+        }
+        Ok(())
     }
 }
 

@@ -1,3 +1,4 @@
+use crate::error::AppError;
 use serde::Deserialize;
 
 use crate::config::F64Param;
@@ -12,6 +13,18 @@ pub struct ATRBandConfig {
 impl ATRBandConfig {
     pub fn values(&self) -> Vec<f64> {
         self.mult.values()
+    }
+}
+
+impl ATRBandConfig {
+    /// 语义校验(原集中在 `config.rs::Config::validate` 的 match 中,
+    /// 已下沉到本类型; 分派处只保留一行调用)。
+    pub fn validate(&self) -> crate::error::Result<()> {
+        self.mult.validate_range("atrband.mult", 0.1, 20.0)?;
+        if self.values().is_empty() {
+            return Err(AppError::Msg("atrband 参数组合为空".into()));
+        }
+        Ok(())
     }
 }
 

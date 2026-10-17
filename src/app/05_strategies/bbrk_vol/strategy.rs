@@ -1,5 +1,5 @@
 use vector_ta::indicators::bollinger_bands::{
-    bollinger_bands, BollingerBandsInput, BollingerBandsParams,
+    BollingerBandsInput, BollingerBandsParams, bollinger_bands,
 };
 
 use crate::strategies::{Signal, Strategy};
@@ -159,18 +159,6 @@ impl Strategy for BbrkVolStrategy {
         format!("sigma={s},bblen={l},voln={n},volmult={m}")
     }
 
-    fn generate_signals(
-        &self,
-        open: &[f64],
-        close: &[f64],
-        volume: &[f64],
-        param_idx: usize,
-    ) -> crate::error::Result<Vec<Signal>> {
-        // 量能门三要素 open/close/volume 本入口齐备（无需 high/low）。
-        let (s, l, n, m) = self.pairs[param_idx];
-        compute(open, close, volume, s, l, n, m)
-    }
-
     fn generate_signals_full(
         &self,
         open: &[f64],
@@ -200,10 +188,9 @@ impl Strategy for BbrkVolStrategy {
         use rayon::prelude::*;
         use std::collections::HashMap;
         use vector_ta::indicators::bollinger_bands::{
-            bollinger_bands, BollingerBandsInput, BollingerBandsParams,
+            BollingerBandsInput, BollingerBandsParams, bollinger_bands,
         };
-        let mut bbmap: HashMap<(u64, usize), crate::strategies::CachedBands> =
-            HashMap::new();
+        let mut bbmap: HashMap<(u64, usize), crate::strategies::CachedBands> = HashMap::new();
         for idx in range.clone() {
             let (s, l, _, _) = self.pairs[idx];
             bbmap.entry((s.to_bits(), l)).or_insert_with(|| {

@@ -87,17 +87,6 @@ impl Strategy for BbrkBbStrategy {
         format!("ma={m},len={l},sigma={s}")
     }
 
-    fn generate_signals(
-        &self,
-        _open: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        param_idx: usize,
-    ) -> crate::error::Result<Vec<Signal>> {
-        let (m, l, s) = &self.triples[param_idx];
-        compute(close, m, *l, *s)
-    }
-
     fn generate_signals_full(
         &self,
         _open: &[f64],

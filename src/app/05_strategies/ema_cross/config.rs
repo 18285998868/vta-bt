@@ -1,3 +1,4 @@
+use crate::error::AppError;
 use serde::Deserialize;
 
 use crate::config::PeriodParam;
@@ -27,6 +28,19 @@ impl EmaCrossConfig {
             }
         }
         out
+    }
+}
+
+impl EmaCrossConfig {
+    /// 语义校验(原集中在 `config.rs::Config::validate` 的 match 中,
+    /// 已下沉到本类型; 分派处只保留一行调用)。
+    pub fn validate(&self) -> crate::error::Result<()> {
+        self.fast.validate()?;
+        self.slow.validate()?;
+        if self.pairs().is_empty() {
+            return Err(AppError::Msg("ema_cross 无 fast<slow 有效组合".into()));
+        }
+        Ok(())
     }
 }
 

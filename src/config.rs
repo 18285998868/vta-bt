@@ -166,502 +166,101 @@ impl Config {
         if self.strategy.is_empty() {
             return Err(AppError::Msg("strategy 不能为空".into()));
         }
+        // 策略专属校验: **下沉到各 config 的 `validate()`**, 此处只做分派。
+        //
+        // 这个 match **刻意不写 `_` 兜底**: 枚举穷尽性由编译器强制, 新增变体而忘记
+        // 接入 validate 会在**编译期**失败。旧实现用
+        // `_ => period_param().ok_or_else(...)?.validate()` 兜底, 漏改只会**静默**
+        // 少校验(只校验 period), 是隐蔽的正确性陷阱。
         for sc in &self.strategy {
             match sc {
-                // 双均线用 fast/slow 双参数, 无单一 period。
-                StrategyConfig::EmaCross(c) => {
-                    c.fast.validate()?;
-                    c.slow.validate()?;
-                    if c.pairs().is_empty() {
-                        return Err(AppError::Msg("ema_cross 无 fast<slow 有效组合".into()));
-                    }
-                }
-                StrategyConfig::Turtle(c) => {
-                    for pp in [&c.entry, &c.exit] {
-                        pp.validate()?;
-                    }
-                    if c.pairs().is_empty() {
-                        return Err(AppError::Msg("turtle 参数组合为空".into()));
-                    }
-                }
-                StrategyConfig::DualThrust(c) => {
-                    c.n.validate()?;
-                    c.k.validate_range("dualthrust.k", 0.01, 5.0)?;
-                    if c.pairs().is_empty() {
-                        return Err(AppError::Msg("dualthrust 参数组合为空".into()));
-                    }
-                }
-                StrategyConfig::RBreaker(c) => {
-                    c.stop_pct.validate_range("rbreaker.stop_pct", 0.01, 50.0)?;
-                    if c.values().is_empty() {
-                        return Err(AppError::Msg("rbreaker 参数组合为空".into()));
-                    }
-                }
-                StrategyConfig::Fiali(_) => {}
-                StrategyConfig::Aberration(c) => {
-                    c.n.validate()?;
-                    c.mult.validate_range("aberration.mult", 0.1, 20.0)?;
-                    if c.pairs().is_empty() {
-                        return Err(AppError::Msg("aberration 参数组合为空".into()));
-                    }
-                }
-                StrategyConfig::ATRBand(c) => {
-                    c.mult.validate_range("atrband.mult", 0.1, 20.0)?;
-                    if c.values().is_empty() {
-                        return Err(AppError::Msg("atrband 参数组合为空".into()));
-                    }
-                }
-                StrategyConfig::Keltner(c) => {
-                    c.mult.validate_range("keltner.mult", 0.1, 20.0)?;
-                    if c.values().is_empty() {
-                        return Err(AppError::Msg("keltner 参数组合为空".into()));
-                    }
-                }
-                StrategyConfig::BBMR(c) => {
-                    c.sigma.validate_range("bbmr.sigma", 0.1, 10.0)?;
-                    if c.values().is_empty() {
-                        return Err(AppError::Msg("bbmr 参数组合为空".into()));
-                    }
-                }
-                StrategyConfig::Bbrk(c) => {
-                    c.sigma.validate_range("bbrk.sigma", 0.1, 10.0)?;
-                    if c.values().is_empty() {
-                        return Err(AppError::Msg("bbrk 参数组合为空".into()));
-                    }
-                }
-                StrategyConfig::BbrkAdx(c) => {
-                    c.sigma.validate_range("bbrk_adx.sigma", 0.1, 10.0)?;
-                    c.bblen.validate_range("bbrk_adx.bblen", 2.0, 2000.0)?;
-                    c.adxlen.validate_range("bbrk_adx.adxlen", 2.0, 200.0)?;
-                    c.adx.validate_range("bbrk_adx.adx", 0.0, 100.0)?;
-                    if c.pairs().is_empty() {
-                        return Err(AppError::Msg("bbrk_adx 参数组合为空".into()));
-                    }
-                }
-                StrategyConfig::BbrkTrail(c) => {
-                    c.sigma.validate_range("bbrk_trail.sigma", 0.1, 10.0)?;
-                    c.bblen.validate_range("bbrk_trail.bblen", 2.0, 2000.0)?;
-                    c.atrlen.validate_range("bbrk_trail.atrlen", 2.0, 500.0)?;
-                    c.trailk.validate_range("bbrk_trail.trailk", 0.1, 20.0)?;
-                    if c.pairs().is_empty() {
-                        return Err(AppError::Msg("bbrk_trail 参数组合为空".into()));
-                    }
-                }
-                StrategyConfig::BbrkDon(c) => {
-                    c.sigma.validate_range("bbrk_don.sigma", 0.1, 10.0)?;
-                    c.bblen.validate_range("bbrk_don.bblen", 2.0, 2000.0)?;
-                    c.exitn.validate_range("bbrk_don.exitn", 2.0, 100.0)?;
-                    if c.pairs().is_empty() {
-                        return Err(AppError::Msg("bbrk_don 参数组合为空".into()));
-                    }
-                }
-                StrategyConfig::BbrkEma(c) => {
-                    c.sigma.validate_range("bbrk_ema.sigma", 0.1, 10.0)?;
-                    c.bblen.validate_range("bbrk_ema.bblen", 2.0, 2000.0)?;
-                    c.emareg.validate_range("bbrk_ema.emareg", 2.0, 2000.0)?;
-                    if c.pairs().is_empty() {
-                        return Err(AppError::Msg("bbrk_ema 参数组合为空".into()));
-                    }
-                }
-                StrategyConfig::BbrkPctb(c) => {
-                    c.sigma.validate_range("bbrk_pctb.sigma", 0.1, 10.0)?;
-                    c.exitb.validate_range("bbrk_pctb.exitb", 0.0, 1.0)?;
-                    if c.pairs().is_empty() {
-                        return Err(AppError::Msg("bbrk_pctb 参数组合为空".into()));
-                    }
-                }
-                StrategyConfig::BbrkAtr(c) => {
-                    c.sigma.validate_range("bbrk_atr.sigma", 0.1, 10.0)?;
-                    c.bblen.validate_range("bbrk_atr.bblen", 2.0, 2000.0)?;
-                    c.atr1.validate_range("bbrk_atr.atr1", 2.0, 500.0)?;
-                    c.atr2.validate_range("bbrk_atr.atr2", 2.0, 500.0)?;
-                    c.atrthr.validate_range("bbrk_atr.atrthr", 0.1, 5.0)?;
-                    if c.pairs().is_empty() {
-                        return Err(AppError::Msg("bbrk_atr 参数组合为空".into()));
-                    }
-                }
-                StrategyConfig::BbrkStr(c) => {
-                    c.sigma.validate_range("bbrk_str.sigma", 0.1, 10.0)?;
-                    c.body.validate_range("bbrk_str.body", 0.0, 1.0)?;
-                    if c.pairs().is_empty() {
-                        return Err(AppError::Msg("bbrk_str 参数组合为空".into()));
-                    }
-                }
-                StrategyConfig::BbrkSma(c) => {
-                    c.sigma.validate_range("bbrk_sma.sigma", 0.1, 10.0)?;
-                    c.bblen.validate_range("bbrk_sma.bblen", 2.0, 2000.0)?;
-                    c.smareg.validate_range("bbrk_sma.smareg", 2.0, 2000.0)?;
-                    if c.pairs().is_empty() {
-                        return Err(AppError::Msg("bbrk_sma 参数组合为空".into()));
-                    }
-                }
-                StrategyConfig::BbrkHma(c) => {
-                    c.sigma.validate_range("bbrk_hma.sigma", 0.1, 10.0)?;
-                    c.bblen.validate_range("bbrk_hma.bblen", 2.0, 2000.0)?;
-                    c.hmalen.validate_range("bbrk_hma.hmalen", 2.0, 2000.0)?;
-                    if c.pairs().is_empty() {
-                        return Err(AppError::Msg("bbrk_hma 参数组合为空".into()));
-                    }
-                }
-                StrategyConfig::BbrkMax(c) => {
-                    c.malen.validate_range("bbrk_max.malen", 2.0, 2000.0)?;
-                    c.validate_names()?;
-                }
-                StrategyConfig::BbrkBb(c) => {
-                    c.bblen.validate_range("bbrk_bb.bblen", 2.0, 2000.0)?;
-                    c.sigma.validate_range("bbrk_bb.sigma", 0.1, 10.0)?;
-                    c.validate_names()?;
-                }
-                StrategyConfig::BbrkVolEma(c) => {
-                    c.sigma.validate_range("bbrk_vol_ema.sigma", 0.1, 10.0)?;
-                    c.voln.validate_range("bbrk_vol_ema.voln", 2.0, 500.0)?;
-                    c.volmult
-                        .validate_range("bbrk_vol_ema.volmult", 0.5, 30.0)?;
-                    if c.pairs().is_empty() {
-                        return Err(AppError::Msg("bbrk_vol_ema 参数组合为空".into()));
-                    }
-                }
-                StrategyConfig::BbrkAtrEma(c) => {
-                    c.sigma.validate_range("bbrk_atr_ema.sigma", 0.1, 10.0)?;
-                    c.atrthr.validate_range("bbrk_atr_ema.atrthr", 0.1, 5.0)?;
-                    if c.pairs().is_empty() {
-                        return Err(AppError::Msg("bbrk_atr_ema 参数组合为空".into()));
-                    }
-                }
-                StrategyConfig::BbrkSmaEma(c) => {
-                    c.sigma.validate_range("bbrk_sma_ema.sigma", 0.1, 10.0)?;
-                    c.smareg
-                        .validate_range("bbrk_sma_ema.smareg", 2.0, 2000.0)?;
-                    if c.pairs().is_empty() {
-                        return Err(AppError::Msg("bbrk_sma_ema 参数组合为空".into()));
-                    }
-                }
-                StrategyConfig::BbrkHmaEma(c) => {
-                    c.sigma.validate_range("bbrk_hma_ema.sigma", 0.1, 10.0)?;
-                    c.hmalen
-                        .validate_range("bbrk_hma_ema.hmalen", 2.0, 2000.0)?;
-                    if c.pairs().is_empty() {
-                        return Err(AppError::Msg("bbrk_hma_ema 参数组合为空".into()));
-                    }
-                }
-                StrategyConfig::BbrkHmaV1(c) => {
-                    c.sigma.validate_range("bbrk_hma_v1.sigma", 0.1, 10.0)?;
-                    c.bblen.validate_range("bbrk_hma_v1.bblen", 2.0, 2000.0)?;
-                    c.hmalen
-                        .validate_range("bbrk_hma_v1.hmalen", 2.0, 2000.0)?;
-                    if c.triples().is_empty() {
-                        return Err(AppError::Msg("bbrk_hma_v1 参数组合为空".into()));
-                    }
-                }
-                StrategyConfig::BbrkHmaV2(c) => {
-                    c.sigma.validate_range("bbrk_hma_v2.sigma", 0.1, 10.0)?;
-                    c.bblen.validate_range("bbrk_hma_v2.bblen", 2.0, 2000.0)?;
-                    c.hmalen
-                        .validate_range("bbrk_hma_v2.hmalen", 2.0, 2000.0)?;
-                    if c.triples().is_empty() {
-                        return Err(AppError::Msg("bbrk_hma_v2 参数组合为空".into()));
-                    }
-                }
-                StrategyConfig::BbrkHmaV3(c) => {
-                    c.sigma.validate_range("bbrk_hma_v3.sigma", 0.1, 10.0)?;
-                    c.bblen.validate_range("bbrk_hma_v3.bblen", 2.0, 2000.0)?;
-                    if c.pairs().is_empty() {
-                        return Err(AppError::Msg("bbrk_hma_v3 参数组合为空".into()));
-                    }
-                }
-                StrategyConfig::BbrkHmaV4(c) => {
-                    c.sigma.validate_range("bbrk_hma_v4.sigma", 0.1, 10.0)?;
-                    c.bblen.validate_range("bbrk_hma_v4.bblen", 2.0, 2000.0)?;
-                    if c.pairs().is_empty() {
-                        return Err(AppError::Msg("bbrk_hma_v4 参数组合为空".into()));
-                    }
-                }
-                StrategyConfig::BbrkHmaV5(c) => {
-                    c.sigma.validate_range("bbrk_hma_v5.sigma", 0.1, 10.0)?;
-                    c.bblen.validate_range("bbrk_hma_v5.bblen", 2.0, 2000.0)?;
-                    c.hmalen
-                        .validate_range("bbrk_hma_v5.hmalen", 2.0, 2000.0)?;
-                    if c.triples().is_empty() {
-                        return Err(AppError::Msg("bbrk_hma_v5 参数组合为空".into()));
-                    }
-                }
-                StrategyConfig::BbrkHmaV1Sl(c) => {
-                    c.sigma.validate_range("bbrk_hma_v1_sl.sigma", 0.1, 10.0)?;
-                    c.bblen.validate_range("bbrk_hma_v1_sl.bblen", 2.0, 2000.0)?;
-                    c.hmalen
-                        .validate_range("bbrk_hma_v1_sl.hmalen", 2.0, 2000.0)?;
-                    c.stopk.validate_range("bbrk_hma_v1_sl.stopk", 0.5, 10.0)?;
-                    c.atrlen.validate_range("bbrk_hma_v1_sl.atrlen", 2.0, 500.0)?;
-                    if c.quints().is_empty() {
-                        return Err(AppError::Msg("bbrk_hma_v1_sl 参数组合为空".into()));
-                    }
-                }
-                StrategyConfig::BbrkHmaV2Sl(c) => {
-                    c.sigma.validate_range("bbrk_hma_v2_sl.sigma", 0.1, 10.0)?;
-                    c.bblen.validate_range("bbrk_hma_v2_sl.bblen", 2.0, 2000.0)?;
-                    c.hmalen
-                        .validate_range("bbrk_hma_v2_sl.hmalen", 2.0, 2000.0)?;
-                    c.stopk.validate_range("bbrk_hma_v2_sl.stopk", 0.5, 10.0)?;
-                    c.atrlen.validate_range("bbrk_hma_v2_sl.atrlen", 2.0, 500.0)?;
-                    if c.quints().is_empty() {
-                        return Err(AppError::Msg("bbrk_hma_v2_sl 参数组合为空".into()));
-                    }
-                }
-                StrategyConfig::BbrkHmaV3Sl(c) => {
-                    c.sigma.validate_range("bbrk_hma_v3_sl.sigma", 0.1, 10.0)?;
-                    c.bblen.validate_range("bbrk_hma_v3_sl.bblen", 2.0, 2000.0)?;
-                    c.stopk.validate_range("bbrk_hma_v3_sl.stopk", 0.5, 10.0)?;
-                    c.atrlen.validate_range("bbrk_hma_v3_sl.atrlen", 2.0, 500.0)?;
-                    if c.quads().is_empty() {
-                        return Err(AppError::Msg("bbrk_hma_v3_sl 参数组合为空".into()));
-                    }
-                }
-                StrategyConfig::BbrkHmaV4Sl(c) => {
-                    c.sigma.validate_range("bbrk_hma_v4_sl.sigma", 0.1, 10.0)?;
-                    c.bblen.validate_range("bbrk_hma_v4_sl.bblen", 2.0, 2000.0)?;
-                    c.stopk.validate_range("bbrk_hma_v4_sl.stopk", 0.5, 10.0)?;
-                    c.atrlen.validate_range("bbrk_hma_v4_sl.atrlen", 2.0, 500.0)?;
-                    if c.quads().is_empty() {
-                        return Err(AppError::Msg("bbrk_hma_v4_sl 参数组合为空".into()));
-                    }
-                }
-                StrategyConfig::BbrkHmaV5Sl(c) => {
-                    c.sigma.validate_range("bbrk_hma_v5_sl.sigma", 0.1, 10.0)?;
-                    c.bblen.validate_range("bbrk_hma_v5_sl.bblen", 2.0, 2000.0)?;
-                    c.hmalen
-                        .validate_range("bbrk_hma_v5_sl.hmalen", 2.0, 2000.0)?;
-                    c.stopk.validate_range("bbrk_hma_v5_sl.stopk", 0.5, 10.0)?;
-                    c.atrlen.validate_range("bbrk_hma_v5_sl.atrlen", 2.0, 500.0)?;
-                    if c.quints().is_empty() {
-                        return Err(AppError::Msg("bbrk_hma_v5_sl 参数组合为空".into()));
-                    }
-                }
-                StrategyConfig::BbrkZlemaEma(c) => {
-                    c.sigma.validate_range("bbrk_zlema_ema.sigma", 0.1, 10.0)?;
-                    c.zlemareg
-                        .validate_range("bbrk_zlema_ema.zlemareg", 2.0, 2000.0)?;
-                    if c.pairs().is_empty() {
-                        return Err(AppError::Msg("bbrk_zlema_ema 参数组合为空".into()));
-                    }
-                }
-                StrategyConfig::BbrkRex(c) => {
-                    c.sigma.validate_range("bbrk_rex.sigma", 0.1, 10.0)?;
-                    c.bblen.validate_range("bbrk_rex.bblen", 2.0, 2000.0)?;
-                    c.rexn.validate_range("bbrk_rex.rexn", 2.0, 100.0)?;
-                    c.rexmult.validate_range("bbrk_rex.rexmult", 0.5, 30.0)?;
-                    if c.pairs().is_empty() {
-                        return Err(AppError::Msg("bbrk_rex 参数组合为空".into()));
-                    }
-                }
-                StrategyConfig::BbrkVol(c) => {
-                    c.sigma.validate_range("bbrk_vol.sigma", 0.1, 10.0)?;
-                    c.bblen.validate_range("bbrk_vol.bblen", 2.0, 2000.0)?;
-                    c.voln.validate_range("bbrk_vol.voln", 2.0, 500.0)?;
-                    c.volmult.validate_range("bbrk_vol.volmult", 0.5, 30.0)?;
-                    if c.pairs().is_empty() {
-                        return Err(AppError::Msg("bbrk_vol 参数组合为空".into()));
-                    }
-                }
-                StrategyConfig::BbrkTtm(c) => {
-                    c.sigma.validate_range("bbrk_ttm.sigma", 0.1, 10.0)?;
-                    c.kc.validate_range("bbrk_ttm.kc", 0.5, 5.0)?;
-                    c.ttmn.validate_range("bbrk_ttm.ttmn", 2.0, 100.0)?;
-                    if c.pairs().is_empty() {
-                        return Err(AppError::Msg("bbrk_ttm 参数组合为空".into()));
-                    }
-                }
-                StrategyConfig::BbrkTtmFire(c) => {
-                    c.sigma.validate_range("bbrk_ttm_fire.sigma", 0.1, 10.0)?;
-                    c.kc.validate_range("bbrk_ttm_fire.kc", 0.5, 5.0)?;
-                    if c.pairs().is_empty() {
-                        return Err(AppError::Msg("bbrk_ttm_fire 参数组合为空".into()));
-                    }
-                }
-                StrategyConfig::BbrkCross(c) => {
-                    c.sigma.validate_range("bbrk_cross.sigma", 0.1, 10.0)?;
-                    if c.values().is_empty() {
-                        return Err(AppError::Msg("bbrk_cross 参数组合为空".into()));
-                    }
-                }
-                StrategyConfig::BbrkKdj(c) => {
-                    c.sigma.validate_range("bbrk_kdj.sigma", 0.1, 10.0)?;
-                    if c.values().is_empty() {
-                        return Err(AppError::Msg("bbrk_kdj 参数组合为空".into()));
-                    }
-                }
-                StrategyConfig::BbrkM2(c) => {
-                    c.sigma.validate_range("bbrk_m2.sigma", 0.1, 10.0)?;
-                    if c.values().is_empty() {
-                        return Err(AppError::Msg("bbrk_m2 参数组合为空".into()));
-                    }
-                }
-                StrategyConfig::BbrkM3(c) => {
-                    c.sigma.validate_range("bbrk_m3.sigma", 0.1, 10.0)?;
-                    if c.values().is_empty() {
-                        return Err(AppError::Msg("bbrk_m3 参数组合为空".into()));
-                    }
-                }
-                StrategyConfig::BbrkOrth(c) => {
-                    c.sigma.validate_range("bbrk_orth.sigma", 0.1, 10.0)?;
-                    if c.values().is_empty() {
-                        return Err(AppError::Msg("bbrk_orth 参数组合为空".into()));
-                    }
-                }
-                StrategyConfig::VwapTrend(c) => {
-                    c.reset.validate_range("vwap_trend.reset", 0.0, 4.0)?;
-                    if c.modes().is_empty() {
-                        return Err(AppError::Msg("vwap_trend 参数组合为空".into()));
-                    }
-                }
-                StrategyConfig::RSI2(c) => {
-                    c.buy.validate_range("rsi2.buy", 0.0, 100.0)?;
-                    c.sell.validate_range("rsi2.sell", 0.0, 100.0)?;
-                    if c.pairs().is_empty() {
-                        return Err(AppError::Msg("rsi2 参数组合为空".into()));
-                    }
-                }
-                StrategyConfig::MabbLong(c) => {
-                    c.sigma.validate_range("mabb_long.sigma", 0.1, 10.0)?;
-                    c.bblen.validate_range("mabb_long.bblen", 2.0, 2000.0)?;
-                    c.stopk.validate_range("mabb_long.stopk", 0.0, 10.0)?;
-                    c.atrlen.validate_range("mabb_long.atrlen", 0.0, 500.0)?;
-                    c.validate_names()?;
-                }
-                StrategyConfig::MabbShort(c) => {
-                    c.sigma.validate_range("mabb_short.sigma", 0.1, 10.0)?;
-                    c.bblen.validate_range("mabb_short.bblen", 2.0, 2000.0)?;
-                    c.stopk.validate_range("mabb_short.stopk", 0.0, 10.0)?;
-                    c.atrlen.validate_range("mabb_short.atrlen", 0.0, 500.0)?;
-                    c.validate_names()?;
-                }
-                StrategyConfig::Vwap(c) => {
-                    c.thresh.validate_range("vwap.thresh", 0.5, 10.0)?;
-                    if c.values().is_empty() {
-                        return Err(AppError::Msg("vwap 参数组合为空".into()));
-                    }
-                }
-                StrategyConfig::Edma(c) => {
-                    c.period.validate()?;
-                }
-                StrategyConfig::Atma(c) => {
-                    c.up.validate()?;
-                    c.down.validate()?;
-                }
-                StrategyConfig::Sgma(c) => {
-                    c.period.validate()?;
-                }
-                StrategyConfig::Macd(c) => {
-                    if c.triples().is_empty() {
-                        return Err(AppError::Msg("macd 参数组合为空".into()));
-                    }
-                    for (f, s, g) in c.triples() {
-                        if f == 0 || s == 0 || g == 0 || f >= s {
-                            return Err(AppError::Msg(format!(
-                                "macd 非法三元组 ({f},{s},{g})：需 0<fast<slow, signal>0"
-                            )));
-                        }
-                    }
-                }
-                _ => {
-                    sc.period_param()
-                        .ok_or_else(|| AppError::Msg("strategy 缺少 period 参数(无法解析)".into()))?
-                        .validate()?;
-                }
+                StrategyConfig::ATRBand(c) => c.validate()?,
+                StrategyConfig::Aberration(c) => c.validate()?,
+                StrategyConfig::Atma(c) => c.validate()?,
+                StrategyConfig::BBMR(c) => c.validate()?,
+                StrategyConfig::Bbrk(c) => c.validate()?,
+                StrategyConfig::BbrkAdx(c) => c.validate()?,
+                StrategyConfig::BbrkAtr(c) => c.validate()?,
+                StrategyConfig::BbrkAtrEma(c) => c.validate()?,
+                StrategyConfig::BbrkBb(c) => c.validate()?,
+                StrategyConfig::BbrkCross(c) => c.validate()?,
+                StrategyConfig::BbrkDon(c) => c.validate()?,
+                StrategyConfig::BbrkEma(c) => c.validate()?,
+                StrategyConfig::BbrkHma(c) => c.validate()?,
+                StrategyConfig::BbrkHmaEma(c) => c.validate()?,
+                StrategyConfig::BbrkHmaV1(c) => c.validate()?,
+                StrategyConfig::BbrkHmaV1Sl(c) => c.validate()?,
+                StrategyConfig::BbrkHmaV2(c) => c.validate()?,
+                StrategyConfig::BbrkHmaV2Sl(c) => c.validate()?,
+                StrategyConfig::BbrkHmaV3(c) => c.validate()?,
+                StrategyConfig::BbrkHmaV3Sl(c) => c.validate()?,
+                StrategyConfig::BbrkHmaV4(c) => c.validate()?,
+                StrategyConfig::BbrkHmaV4Sl(c) => c.validate()?,
+                StrategyConfig::BbrkHmaV5(c) => c.validate()?,
+                StrategyConfig::BbrkHmaV5Sl(c) => c.validate()?,
+                StrategyConfig::BbrkKdj(c) => c.validate()?,
+                StrategyConfig::BbrkM2(c) => c.validate()?,
+                StrategyConfig::BbrkM3(c) => c.validate()?,
+                StrategyConfig::BbrkMax(c) => c.validate()?,
+                StrategyConfig::BbrkOrth(c) => c.validate()?,
+                StrategyConfig::BbrkPctb(c) => c.validate()?,
+                StrategyConfig::BbrkRex(c) => c.validate()?,
+                StrategyConfig::BbrkSma(c) => c.validate()?,
+                StrategyConfig::BbrkSmaEma(c) => c.validate()?,
+                StrategyConfig::BbrkStr(c) => c.validate()?,
+                StrategyConfig::BbrkTrail(c) => c.validate()?,
+                StrategyConfig::BbrkTtm(c) => c.validate()?,
+                StrategyConfig::BbrkTtmFire(c) => c.validate()?,
+                StrategyConfig::BbrkVol(c) => c.validate()?,
+                StrategyConfig::BbrkVolEma(c) => c.validate()?,
+                StrategyConfig::BbrkZlemaEma(c) => c.validate()?,
+                StrategyConfig::DualThrust(c) => c.validate()?,
+                StrategyConfig::Edma(c) => c.validate()?,
+                StrategyConfig::EmaCross(c) => c.validate()?,
+                StrategyConfig::Fiali(c) => c.validate()?,
+                StrategyConfig::Keltner(c) => c.validate()?,
+                StrategyConfig::Alma(c)
+                | StrategyConfig::Dema(c)
+                | StrategyConfig::Dma(c)
+                | StrategyConfig::Ehma(c)
+                | StrategyConfig::Ema(c)
+                | StrategyConfig::Frama(c)
+                | StrategyConfig::Fwma(c)
+                | StrategyConfig::Hma(c)
+                | StrategyConfig::Jma(c)
+                | StrategyConfig::Kama(c)
+                | StrategyConfig::LinReg(c)
+                | StrategyConfig::McGinley(c)
+                | StrategyConfig::Pwma(c)
+                | StrategyConfig::SinWma(c)
+                | StrategyConfig::Sma(c)
+                | StrategyConfig::SmaCd(c)
+                | StrategyConfig::Smma(c)
+                | StrategyConfig::Swma(c)
+                | StrategyConfig::Tema(c)
+                | StrategyConfig::Tilson(c)
+                | StrategyConfig::Trima(c)
+                | StrategyConfig::Vidya(c)
+                | StrategyConfig::Vwma(c)
+                | StrategyConfig::Wilders(c)
+                | StrategyConfig::Wma(c)
+                | StrategyConfig::Zlma(c) => c.validate()?,
+                StrategyConfig::MabbLong(c) => c.validate()?,
+                StrategyConfig::MabbShort(c) => c.validate()?,
+                StrategyConfig::Macd(c) => c.validate()?,
+                StrategyConfig::RBreaker(c) => c.validate()?,
+                StrategyConfig::RSI2(c) => c.validate()?,
+                StrategyConfig::Sgma(c) => c.validate()?,
+                StrategyConfig::SsfCd(c) => c.validate()?,
+                StrategyConfig::Ssf(c) => c.validate()?,
+                StrategyConfig::SsfStCd(c) => c.validate()?,
+                StrategyConfig::SsfSt(c) => c.validate()?,
+                StrategyConfig::Turtle(c) => c.validate()?,
+                StrategyConfig::Vwap(c) => c.validate()?,
+                StrategyConfig::VwapTrend(c) => c.validate()?,
             }
         }
         Ok(())
-    }
-}
-
-impl StrategyConfig {
-    fn period_param(&self) -> Option<&PeriodParam> {
-        match self {
-            StrategyConfig::Sma(c)
-            | StrategyConfig::SmaCd(c)
-            | StrategyConfig::Ema(c)
-            | StrategyConfig::Hma(c)
-            | StrategyConfig::Zlma(c)
-            | StrategyConfig::Alma(c)
-            | StrategyConfig::Dema(c)
-            | StrategyConfig::Fwma(c)
-            | StrategyConfig::Jma(c)
-            | StrategyConfig::Kama(c)
-            | StrategyConfig::LinReg(c)
-            | StrategyConfig::Pwma(c)
-            | StrategyConfig::SinWma(c)
-            | StrategyConfig::Swma(c)
-            | StrategyConfig::Tema(c)
-            | StrategyConfig::Tilson(c)
-            | StrategyConfig::Trima(c)
-            | StrategyConfig::Wilders(c)
-            | StrategyConfig::Smma(c)
-            | StrategyConfig::Ehma(c)
-            | StrategyConfig::Frama(c)
-            | StrategyConfig::Dma(c)
-            | StrategyConfig::Wma(c)
-            | StrategyConfig::Vwma(c)
-            | StrategyConfig::Vidya(c)
-            | StrategyConfig::McGinley(c) => Some(&c.period),
-            StrategyConfig::Ssf(c) => Some(&c.period),
-            StrategyConfig::SsfCd(c) => Some(&c.period),
-            StrategyConfig::SsfSt(c) => Some(&c.period),
-            StrategyConfig::SsfStCd(c) => Some(&c.period),
-            StrategyConfig::Turtle(_)
-            | StrategyConfig::DualThrust(_)
-            | StrategyConfig::RBreaker(_)
-            | StrategyConfig::Fiali(_)
-            | StrategyConfig::Edma(_)
-            | StrategyConfig::Atma(_)
-            | StrategyConfig::Sgma(_)
-            | StrategyConfig::Aberration(_)
-            | StrategyConfig::ATRBand(_)
-            | StrategyConfig::BbrkAtr(_)
-            | StrategyConfig::Keltner(_)
-            | StrategyConfig::BBMR(_)
-            | StrategyConfig::Bbrk(_)
-            | StrategyConfig::BbrkAdx(_)
-            | StrategyConfig::BbrkTrail(_)
-            | StrategyConfig::BbrkDon(_)
-            | StrategyConfig::BbrkEma(_)
-            | StrategyConfig::BbrkPctb(_)
-            | StrategyConfig::BbrkStr(_)
-            | StrategyConfig::BbrkSma(_)
-            | StrategyConfig::BbrkHma(_)
-            | StrategyConfig::BbrkMax(_)
-            | StrategyConfig::BbrkBb(_)
-            | StrategyConfig::BbrkVolEma(_)
-            | StrategyConfig::BbrkAtrEma(_)
-            | StrategyConfig::BbrkSmaEma(_)
-            | StrategyConfig::BbrkHmaEma(_)
-            | StrategyConfig::BbrkHmaV1(_)
-            | StrategyConfig::BbrkHmaV2(_)
-            | StrategyConfig::BbrkHmaV3(_)
-            | StrategyConfig::BbrkHmaV4(_)
-            | StrategyConfig::BbrkHmaV5(_)
-            | StrategyConfig::BbrkHmaV1Sl(_)
-            | StrategyConfig::BbrkHmaV2Sl(_)
-            | StrategyConfig::BbrkHmaV3Sl(_)
-            | StrategyConfig::BbrkHmaV4Sl(_)
-            | StrategyConfig::BbrkHmaV5Sl(_)
-            | StrategyConfig::BbrkZlemaEma(_)
-            | StrategyConfig::BbrkRex(_)
-            | StrategyConfig::BbrkVol(_)
-            | StrategyConfig::BbrkTtm(_)
-            | StrategyConfig::BbrkTtmFire(_)
-            | StrategyConfig::BbrkCross(_)
-            | StrategyConfig::BbrkKdj(_)
-            | StrategyConfig::BbrkM2(_)
-            | StrategyConfig::BbrkM3(_)
-            | StrategyConfig::BbrkOrth(_)
-            | StrategyConfig::VwapTrend(_)
-            | StrategyConfig::RSI2(_)
-            | StrategyConfig::MabbLong(_)
-            | StrategyConfig::MabbShort(_)
-            | StrategyConfig::Macd(_)
-            | StrategyConfig::Vwap(_) => None,
-            // 双均线无单一 period, 调用方走 validate() 的 EmaCross 分支。
-            StrategyConfig::EmaCross(_) => None,
-        }
     }
 }
 
@@ -724,6 +323,41 @@ pub struct OutputConfig {
 #[serde(deny_unknown_fields)]
 pub struct MaGridCfg {
     pub period: PeriodParam,
+}
+
+impl MaGridCfg {
+    /// 语义校验: 单周期策略只需校验 `period` 的区间与方向。
+    pub fn validate(&self) -> crate::error::Result<()> {
+        self.period.validate()
+    }
+}
+
+impl SsfStConfig {
+    /// 语义校验: 单周期策略只需校验 `period` 的区间与方向。
+    pub fn validate(&self) -> crate::error::Result<()> {
+        self.period.validate()
+    }
+}
+
+impl SsfStCdConfig {
+    /// 语义校验: 单周期策略只需校验 `period` 的区间与方向。
+    pub fn validate(&self) -> crate::error::Result<()> {
+        self.period.validate()
+    }
+}
+
+impl SsfCdConfig {
+    /// 语义校验: 单周期策略只需校验 `period` 的区间与方向。
+    pub fn validate(&self) -> crate::error::Result<()> {
+        self.period.validate()
+    }
+}
+
+impl SsfConfig {
+    /// 语义校验: 单周期策略只需校验 `period` 的区间与方向。
+    pub fn validate(&self) -> crate::error::Result<()> {
+        self.period.validate()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

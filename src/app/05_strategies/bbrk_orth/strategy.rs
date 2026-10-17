@@ -124,16 +124,6 @@ impl Strategy for BbrkOrthStrategy {
         format!("sigma={}", self.sigmas[idx])
     }
 
-    fn generate_signals(
-        &self,
-        _open: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        param_idx: usize,
-    ) -> crate::error::Result<Vec<Signal>> {
-        self.compute(close, self.sigmas[param_idx])
-    }
-
     fn generate_signals_full(
         &self,
         _open: &[f64],
@@ -236,7 +226,6 @@ mod tests {
 
     #[test]
     fn test_nan_hold() {
-        let (lower, mid, upper) = bands(2);
         let nan = vec![f64::NAN, f64::NAN];
         let sig = bbrk_orth_signals(&nan, &nan, &nan, &nan);
         assert!(sig.iter().all(|&s| s == Signal::Hold));

@@ -105,17 +105,6 @@ impl Strategy for BbrkM2Strategy {
         format!("sigma={}", self.sigmas[idx])
     }
 
-    fn generate_signals(
-        &self,
-        _open: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        _param_idx: usize,
-    ) -> crate::error::Result<Vec<Signal>> {
-        // 无 H/L：MFI 的 TP 无法计算 → 全 Hold（P7，不静默降级）。
-        Ok(vec![Signal::Hold; close.len()])
-    }
-
     fn generate_signals_full(
         &self,
         _open: &[f64],

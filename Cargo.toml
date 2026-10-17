@@ -4,12 +4,18 @@
 name = "vta"
 version = "0.1.0"
 edition = "2024"
+# 真实下限: pbo.rs 的 Gosper hack 用 `isolate_lowest_one`(1.97 稳定),
+# pbo.rs 的 `is_multiple_of`(1.87 稳定)。声明过低会被 `clippy::incompatible_msrv` 抓到。
+rust-version = "1.97"
 authors = ["NautilusTrader Developer"]
 license = "MIT"
 
 [dependencies]
-vector-ta = { path = "/home/lkf/src/VectorTA" }
-kline-reader = { path = "../libs/kline-reader" }
+# 注意: 均为 **workspace path 依赖**(见 [workspace.dependencies])。
+# 不用 crates.io 版本是为了保证指标实现与回测口径逐位一致 —— 换一个 patch 版本就可能
+# 改变 NaN 前缀长度, 进而改变全部历史回测结果。
+vector-ta = { workspace = true }
+kline-reader = { workspace = true }
 rayon = "1"
 chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
@@ -22,9 +28,36 @@ thiserror = "2"
 tracing = { version = "0.1", features = ["log"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
+[lints]
+workspace = true
+
+[dev-dependencies]
+serde_json = "1"
+
+[workspace.dependencies]
+# 相对路径: 换机器/进 CI 无需改任何文件(此前 `vector-ta` 写死 `/home/lkf/src/VectorTA`,
+# 导致构建环境不可复现)。
+vector-ta = { path = "/home/lkf/src/VectorTA" }
+kline-reader = { path = "../libs/kline-reader" }
+
+# 统一 lint 门禁: CI 与本地 `cargo clippy -- -D warnings` 行为一致。
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+correctness = { level = "deny", priority = -1 }
+suspicious = { level = "deny", priority = -1 }
+# `needless_range_loop` 在测试夹具里噪音大, 但生产代码应遵守; 故不全局开。
+style = { level = "warn", priority = -1 }
+complexity = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+
 [profile.release]
 lto = "fat"
 codegen-units = 1
 opt-level = 3
 incremental = false
 strip = "symbols"
+
+[profile.dev.package."*"]
+opt-level = 3

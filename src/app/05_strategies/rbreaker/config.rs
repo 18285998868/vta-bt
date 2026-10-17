@@ -1,3 +1,4 @@
+use crate::error::AppError;
 use serde::Deserialize;
 
 use crate::config::F64Param;
@@ -14,6 +15,19 @@ pub struct RBreakerConfig {
 impl RBreakerConfig {
     pub fn values(&self) -> Vec<f64> {
         self.stop_pct.values()
+    }
+}
+
+impl RBreakerConfig {
+    /// 语义校验(原集中在 `config.rs::Config::validate` 的 match 中,
+    /// 已下沉到本类型; 分派处只保留一行调用)。
+    pub fn validate(&self) -> crate::error::Result<()> {
+        self.stop_pct
+            .validate_range("rbreaker.stop_pct", 0.01, 50.0)?;
+        if self.values().is_empty() {
+            return Err(AppError::Msg("rbreaker 参数组合为空".into()));
+        }
+        Ok(())
     }
 }
 

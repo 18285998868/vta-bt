@@ -27,7 +27,10 @@ impl BbrkMaxConfig {
         out
     }
 
-    pub fn validate_names(&self) -> crate::error::Result<()> {
+    pub fn validate(&self) -> crate::error::Result<()> {
+        // 范围校验(原在 config.rs 的 match 中, 已下沉到本类型)
+        self.malen.validate_range("bbrk_max.malen", 2.0, 2000.0)?;
+
         for name in &self.ma {
             if !MA_NAMES.contains(&name.as_str()) {
                 return Err(crate::error::AppError::Msg(format!(
@@ -74,6 +77,6 @@ mod tests {
             ma: vec!["nope".into()],
             malen: F64Param::Single(100.0),
         };
-        assert!(c.validate_names().is_err());
+        assert!(c.validate().is_err()); // 原 validate_names, 已并入 validate
     }
 }

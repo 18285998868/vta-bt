@@ -1,6 +1,6 @@
-use vector_ta::indicators::atr::{atr, AtrInput, AtrParams};
+use vector_ta::indicators::atr::{AtrInput, AtrParams, atr};
 use vector_ta::indicators::bollinger_bands::{
-    bollinger_bands, BollingerBandsInput, BollingerBandsParams,
+    BollingerBandsInput, BollingerBandsParams, bollinger_bands,
 };
 
 use crate::strategies::{Signal, Strategy};
@@ -122,9 +122,7 @@ fn compute(
         high,
         low,
         close,
-        AtrParams {
-            length: Some(atr1),
-        },
+        AtrParams { length: Some(atr1) },
     )) {
         Ok(v) => v.values,
         Err(_) => return Ok(vec![Signal::Hold; close.len()]),
@@ -133,9 +131,7 @@ fn compute(
         high,
         low,
         close,
-        AtrParams {
-            length: Some(atr2),
-        },
+        AtrParams { length: Some(atr2) },
     )) {
         Ok(v) => v.values,
         Err(_) => return Ok(vec![Signal::Hold; close.len()]),
@@ -164,18 +160,6 @@ impl Strategy for BbrkAtrStrategy {
     fn param_str(&self, idx: usize) -> String {
         let (s, l, a1, a2, t) = self.pairs[idx];
         format!("sigma={s},bblen={l},atr1={a1},atr2={a2},atrthr={t}")
-    }
-
-    fn generate_signals(
-        &self,
-        open: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        param_idx: usize,
-    ) -> crate::error::Result<Vec<Signal>> {
-        // 无 high/low 时 ATR 无从算起 → 用 close 充当（ATR=0 → 门全拦，P7）。
-        let (s, l, a1, a2, t) = self.pairs[param_idx];
-        compute(open, close, close, close, s, l, a1, a2, t)
     }
 
     fn generate_signals_full(
@@ -207,7 +191,7 @@ impl Strategy for BbrkAtrStrategy {
         use rayon::prelude::*;
         use std::collections::HashMap;
         use vector_ta::indicators::bollinger_bands::{
-            bollinger_bands, BollingerBandsInput, BollingerBandsParams,
+            BollingerBandsInput, BollingerBandsParams, bollinger_bands,
         };
         let mut atrmap: HashMap<usize, Option<Vec<f64>>> = HashMap::new();
         for idx in range.clone() {
@@ -218,17 +202,14 @@ impl Strategy for BbrkAtrStrategy {
                         high,
                         low,
                         close,
-                        AtrParams {
-                            length: Some(len),
-                        },
+                        AtrParams { length: Some(len) },
                     ))
                     .ok()
                     .map(|a| a.values)
                 });
             }
         }
-        let mut bbmap: HashMap<(u64, usize), crate::strategies::CachedBands> =
-            HashMap::new();
+        let mut bbmap: HashMap<(u64, usize), crate::strategies::CachedBands> = HashMap::new();
         for idx in range.clone() {
             let (s, l, _, _, _) = self.pairs[idx];
             bbmap.entry((s.to_bits(), l)).or_insert_with(|| {
@@ -255,13 +236,9 @@ impl Strategy for BbrkAtrStrategy {
                     atrmap.get(&a2),
                     bbmap.get(&(s.to_bits(), l)),
                 ) {
-                    (
-                        Some(Some(short)),
-                        Some(Some(long)),
-                        Some(Some((lower, mid, upper))),
-                    ) => Ok(bbrk_atr_signals(
-                        open, close, lower, mid, upper, short, long, t,
-                    )),
+                    (Some(Some(short)), Some(Some(long)), Some(Some((lower, mid, upper)))) => Ok(
+                        bbrk_atr_signals(open, close, lower, mid, upper, short, long, t),
+                    ),
                     _ => Ok(vec![Signal::Hold; close.len()]),
                 }
             })

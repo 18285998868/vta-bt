@@ -35,11 +35,14 @@ impl Strategy for SsfStrategy {
         )
     }
 
-    fn generate_signals(
+    fn generate_signals_full(
         &self,
         _open: &[f64],
+        _high: &[f64],
+        _low: &[f64],
         close: &[f64],
         _volume: &[f64],
+        _time: &[i64],
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
         let period = self.periods[param_idx];
@@ -96,7 +99,9 @@ mod tests {
     fn test_ssf_standard() {
         let s = SsfStrategy::new(cfg(PoleCount::Two));
         assert!(s.param_count() > 0);
-        let sig = s.generate_signals(&[], &prices(200), &[], 0).unwrap();
+        let sig = s
+            .generate_signals_full(&[], &[], &[], &prices(200), &[], &[], 0)
+            .unwrap();
         assert_eq!(sig.len(), 200);
         assert!(sig.contains(&Signal::Buy));
     }
@@ -104,7 +109,9 @@ mod tests {
     #[test]
     fn test_ssf_three_pole() {
         let s = SsfStrategy::new(cfg(PoleCount::Three));
-        let sig = s.generate_signals(&[], &prices(200), &[], 0).unwrap();
+        let sig = s
+            .generate_signals_full(&[], &[], &[], &prices(200), &[], &[], 0)
+            .unwrap();
         assert_eq!(sig.len(), 200);
         assert!(sig.contains(&Signal::Buy));
     }
@@ -113,10 +120,10 @@ mod tests {
     fn test_ssf_two_and_three_pole_differ() {
         let close = prices(400);
         let two = SsfStrategy::new(cfg(PoleCount::Two))
-            .generate_signals(&[], &close, &[], 0)
+            .generate_signals_full(&[], &[], &[], &close, &[], &[], 0)
             .unwrap();
         let three = SsfStrategy::new(cfg(PoleCount::Three))
-            .generate_signals(&[], &close, &[], 0)
+            .generate_signals_full(&[], &[], &[], &close, &[], &[], 0)
             .unwrap();
         assert_ne!(two, three, "2 极与 3 极不应产生完全相同的信号序列");
     }
@@ -133,7 +140,9 @@ mod tests {
     fn test_ssf_short_data_holds() {
         // 数据长度小于 period 时 crate 报错, 应降级为全 Hold 而非 panic
         let s = SsfStrategy::new(cfg(PoleCount::Two));
-        let sig = s.generate_signals(&[], &prices(5), &[], 0).unwrap();
+        let sig = s
+            .generate_signals_full(&[], &[], &[], &prices(5), &[], &[], 0)
+            .unwrap();
         assert!(sig.iter().all(|&x| x == Signal::Hold));
     }
 }

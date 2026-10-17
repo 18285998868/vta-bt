@@ -1,3 +1,4 @@
+use crate::error::AppError;
 use serde::Deserialize;
 
 use crate::config::F64Param;
@@ -20,6 +21,18 @@ impl VwapTrendConfig {
             .iter()
             .map(|v| v.round() as u8)
             .collect()
+    }
+}
+
+impl VwapTrendConfig {
+    /// 语义校验(原集中在 `config.rs::Config::validate` 的 match 中,
+    /// 已下沉到本类型; 分派处只保留一行调用)。
+    pub fn validate(&self) -> crate::error::Result<()> {
+        self.reset.validate_range("vwap_trend.reset", 0.0, 4.0)?;
+        if self.modes().is_empty() {
+            return Err(AppError::Msg("vwap_trend 参数组合为空".into()));
+        }
+        Ok(())
     }
 }
 

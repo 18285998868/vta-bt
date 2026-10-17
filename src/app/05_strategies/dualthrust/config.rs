@@ -1,3 +1,4 @@
+use crate::error::AppError;
 use serde::Deserialize;
 
 use crate::config::{F64Param, PeriodParam};
@@ -24,6 +25,19 @@ impl DualThrustConfig {
             }
         }
         out
+    }
+}
+
+impl DualThrustConfig {
+    /// 语义校验(原集中在 `config.rs::Config::validate` 的 match 中,
+    /// 已下沉到本类型; 分派处只保留一行调用)。
+    pub fn validate(&self) -> crate::error::Result<()> {
+        self.n.validate()?;
+        self.k.validate_range("dualthrust.k", 0.01, 5.0)?;
+        if self.pairs().is_empty() {
+            return Err(AppError::Msg("dualthrust 参数组合为空".into()));
+        }
+        Ok(())
     }
 }
 

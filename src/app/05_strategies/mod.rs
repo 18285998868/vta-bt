@@ -92,22 +92,24 @@ pub use shared::{
 };
 pub use sma_cd::SmaCdStrategy;
 
+/// 策略接口。
+///
+/// **信号生成只有一条路径**: [`Strategy::generate_signals_full`]。历史上曾并存
+/// `generate_signals`(close-only, required) / `generate_signals_full`(默认桥接前
+/// 者) / `generate_signals_batch`(默认并行调 full) 三个入口, 而引擎只经 batch 调
+/// full —— 于是 48 个重写 full 的策略同时维护了一份**永不执行**的
+/// `generate_signals`, 且两者语义分叉(例如 FRAMA 的 close-only 版用
+/// `close` 充当 high/low, 与 full 的真实 high/low 结果不同)。任何走错入口的
+/// 调用方都会静默拿到错误信号。现已删除 close-only 入口。
 pub trait Strategy: Send + Sync {
     fn name(&self) -> &'static str;
     fn param_count(&self) -> usize;
     fn param_str(&self, idx: usize) -> String;
-    /// 生成信号。返回 Err 表示该参数/数据无法计算 (例如 VWMA 缺少等长 volume), 不做静默降级。
-    fn generate_signals(
-        &self,
-        open: &[f64],
-        close: &[f64],
-        volume: &[f64],
-        param_idx: usize,
-    ) -> crate::error::Result<Vec<Signal>>;
 
-    /// 全量信号入口(high/low/time)。默认实现忽略多余输入, 行为与
-    /// `generate_signals` 逐位一致 —— 老策略零改动; 日内/通道策略重写本方法。
-    /// run_combo 只调本方法。
+    /// 生成信号。返回 `Err` 表示该参数/数据无法计算 (例如 VWMA 缺少等长 volume),
+    /// 不做静默降级。
+    // 参数全为 `&[f64]`, 编译器无法校验顺序 —— 顺序契约由
+    // `test_full_arg_order_contract` 显式锁定。
     #[allow(clippy::too_many_arguments)]
     fn generate_signals_full(
         &self,
@@ -118,16 +120,16 @@ pub trait Strategy: Send + Sync {
         volume: &[f64],
         time: &[i64],
         param_idx: usize,
-    ) -> crate::error::Result<Vec<Signal>> {
-        let _ = (high, low, time);
-        self.generate_signals(open, close, volume, param_idx)
-    }
+    ) -> crate::error::Result<Vec<Signal>>;
 
     /// 批量信号入口：一次算出 [start, end) 参数的全部信号（与 range 一一对应，
     /// 顺序保证），允许重参数策略在内部复用跨参数共享指标
     /// （如:**同σ的BB、与参数无关的ATR/量能前缀和/动量柱**）。
-    /// 默认实现 = 按参数并行逐个调（与旧引擎循环等价）；重参数策略重写本方法做hoist。
+    /// 默认实现 = 按参数并行逐个调 [`Strategy::generate_signals_full`]（与旧引擎
+    /// 循环等价）；重参数策略重写本方法做 hoist。
     /// 引擎是唯一调用方（逐批调，内存预算逻辑不变）。
+    ///
+    /// **契约**: 返回长度必须等于 `range` 长度, 否则 `run_combo` 会 panic。
     #[allow(clippy::too_many_arguments)]
     fn generate_signals_batch(
         &self,
@@ -142,9 +144,7 @@ pub trait Strategy: Send + Sync {
         use rayon::prelude::*;
         range
             .into_par_iter()
-            .map(|i| {
-                self.generate_signals_full(open, high, low, close, volume, time, i)
-            })
+            .map(|i| self.generate_signals_full(open, high, low, close, volume, time, i))
             .collect()
     }
 }

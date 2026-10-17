@@ -1,5 +1,5 @@
 use vector_ta::indicators::bollinger_bands::{
-    bollinger_bands, BollingerBandsInput, BollingerBandsParams,
+    BollingerBandsInput, BollingerBandsParams, bollinger_bands,
 };
 
 use crate::strategies::{Signal, Strategy};
@@ -170,17 +170,6 @@ impl Strategy for BbrkRexStrategy {
         format!("sigma={s},bblen={l},rexn={n},rexmult={m}")
     }
 
-    fn generate_signals(
-        &self,
-        _open: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        param_idx: usize,
-    ) -> crate::error::Result<Vec<Signal>> {
-        let (s, l, n, m) = self.pairs[param_idx];
-        compute(close, close, close, close, s, l, n, m)
-    }
-
     fn generate_signals_full(
         &self,
         open: &[f64],
@@ -210,10 +199,9 @@ impl Strategy for BbrkRexStrategy {
         use rayon::prelude::*;
         use std::collections::HashMap;
         use vector_ta::indicators::bollinger_bands::{
-            bollinger_bands, BollingerBandsInput, BollingerBandsParams,
+            BollingerBandsInput, BollingerBandsParams, bollinger_bands,
         };
-        let mut bbmap: HashMap<(u64, usize), crate::strategies::CachedBands> =
-            HashMap::new();
+        let mut bbmap: HashMap<(u64, usize), crate::strategies::CachedBands> = HashMap::new();
         for idx in range.clone() {
             let (s, l, _, _) = self.pairs[idx];
             bbmap.entry((s.to_bits(), l)).or_insert_with(|| {
@@ -290,10 +278,10 @@ mod tests {
         // 不足 win_n 根 → 不开仓。
         let (lower, mid, upper) = flat_bands(5);
         let sig = bbrk_rex_signals(
-            &vec![100.0; 5],
-            &vec![113.0; 5],
-            &vec![99.0; 5],
-            &vec![112.0; 5],
+            &[100.0; 5],
+            &[113.0; 5],
+            &[99.0; 5],
+            &[112.0; 5],
             &lower,
             &mid,
             &upper,

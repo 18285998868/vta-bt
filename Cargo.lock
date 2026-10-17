@@ -1948,6 +1948,7 @@ dependencies = [
  "parquet",
  "rayon",
  "serde",
+ "serde_json",
  "thiserror",
  "toml",
  "tracing",

@@ -255,17 +255,6 @@ impl Strategy for BbrkMaxStrategy {
         format!("ma={m},malen={l}")
     }
 
-    fn generate_signals(
-        &self,
-        _open: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        param_idx: usize,
-    ) -> crate::error::Result<Vec<Signal>> {
-        let (m, l) = &self.pairs[param_idx];
-        compute(close, m, *l)
-    }
-
     fn generate_signals_full(
         &self,
         _open: &[f64],

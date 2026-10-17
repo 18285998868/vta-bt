@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+  branches: [main, master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  # 保持历史结果可复现: 未显式固定的依赖解析到固定版本集。
+  CARGO_NET_OFFLINE: "false"
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain (MSRV from Cargo.toml)
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup component add rustfmt clippy
+          rustup default stable
+
+      # fmt 先行: 纯机械, 失败信息最短。
+      # 刻意**不加 --all**: path 依赖的 vector-ta 是另一个项目, 不由本仓库的 CI 改写。
+      - name: cargo fmt --check
+        run: cargo fmt --check
+
+      - name: cargo check --all-targets
+        run: cargo check --all-targets --locked
+
+      # 本项目把"逐位一致"当作核心不变量, 故 clippy 零容忍。
+      - name: cargo clippy -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test --workspace --locked
+
+      - name: 冒烟: 无数据目录时应明确报错而非 panic
+        run: |
+          cargo run --release -- -c /nonexistent-config.toml 2>&1 | grep -q "Error" \
+            || (echo "预期错误退出却成功了"; exit 1)

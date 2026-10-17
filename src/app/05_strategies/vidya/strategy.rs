@@ -69,11 +69,14 @@ impl Strategy for VidyaStrategy {
         format!("vidya_{}", self.periods[idx])
     }
 
-    fn generate_signals(
+    fn generate_signals_full(
         &self,
         _open: &[f64],
+        _high: &[f64],
+        _low: &[f64],
         close: &[f64],
         _volume: &[f64],
+        _time: &[i64],
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
         let period = self.periods[param_idx];
@@ -98,8 +101,8 @@ mod tests {
         }
         let alpha_base = 2.0 / (period as f64 + 1.0);
         let mut v = close[0];
-        for i in 1..=period {
-            v = alpha_base * close[i] + (1.0 - alpha_base) * v;
+        for &c in &close[1..=period] {
+            v = alpha_base * c + (1.0 - alpha_base) * v;
         }
         out[period] = v;
         for i in (period + 1)..n {
@@ -158,7 +161,9 @@ mod tests {
             end: 20,
             step: 1,
         });
-        let sig = s.generate_signals(&[], &close, &[], 0).unwrap();
+        let sig = s
+            .generate_signals_full(&[], &[], &[], &close, &[], &[], 0)
+            .unwrap();
         assert!(sig.contains(&Signal::Buy));
     }
 }

@@ -30,11 +30,14 @@ impl Strategy for SmaCdStrategy {
         format!("period={},variant=sma_cd", self.periods[idx])
     }
 
-    fn generate_signals(
+    fn generate_signals_full(
         &self,
         open: &[f64],
+        _high: &[f64],
+        _low: &[f64],
         close: &[f64],
         _volume: &[f64],
+        _time: &[i64],
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
         let period = self.periods[param_idx];
@@ -91,7 +94,9 @@ mod tests {
         assert_eq!(s.param_count(), 1);
         let close = prices(200);
         let open = mixed_open(&close);
-        let sig = s.generate_signals(&open, &close, &[], 0).unwrap();
+        let sig = s
+            .generate_signals_full(&open, &[], &[], &close, &[], &[], 0)
+            .unwrap();
         assert_eq!(sig.len(), 200);
     }
 
@@ -100,7 +105,9 @@ mod tests {
         let s = SmaCdStrategy::new(cfg());
         let close = prices(400);
         let open = mixed_open(&close);
-        let sig = s.generate_signals(&open, &close, &[], 0).unwrap();
+        let sig = s
+            .generate_signals_full(&open, &[], &[], &close, &[], &[], 0)
+            .unwrap();
         for (i, &sg) in sig.iter().enumerate() {
             match sg {
                 Signal::Buy => assert!(
@@ -125,10 +132,10 @@ mod tests {
         let close = prices(400);
         let open = mixed_open(&close);
         let base = SmaStrategy::new(cfg().period.into_range())
-            .generate_signals(&open, &close, &[], 0)
+            .generate_signals_full(&open, &[], &[], &close, &[], &[], 0)
             .unwrap();
         let filtered = SmaCdStrategy::new(cfg())
-            .generate_signals(&open, &close, &[], 0)
+            .generate_signals_full(&open, &[], &[], &close, &[], &[], 0)
             .unwrap();
         let cnt = |v: &[Signal]| v.iter().filter(|&&s| s != Signal::Hold).count();
         assert!(
@@ -144,7 +151,7 @@ mod tests {
         let close = prices(400);
         let open: Vec<f64> = close.iter().map(|c| c - 1.0).collect();
         let sig = SmaCdStrategy::new(cfg())
-            .generate_signals(&open, &close, &[], 0)
+            .generate_signals_full(&open, &[], &[], &close, &[], &[], 0)
             .unwrap();
         assert!(!sig.contains(&Signal::Sell), "全阳线下不应出现 Sell 信号");
     }
@@ -154,7 +161,7 @@ mod tests {
         let close = prices(400);
         let open: Vec<f64> = close.iter().map(|c| c + 1.0).collect();
         let sig = SmaCdStrategy::new(cfg())
-            .generate_signals(&open, &close, &[], 0)
+            .generate_signals_full(&open, &[], &[], &close, &[], &[], 0)
             .unwrap();
         assert!(!sig.contains(&Signal::Buy), "全阴线下不应出现 Buy 信号");
     }
@@ -172,7 +179,7 @@ mod tests {
         let close = prices(5);
         let open = mixed_open(&close);
         let sig = SmaCdStrategy::new(cfg())
-            .generate_signals(&open, &close, &[], 0)
+            .generate_signals_full(&open, &[], &[], &close, &[], &[], 0)
             .unwrap();
         assert!(sig.iter().all(|&x| x == Signal::Hold));
     }

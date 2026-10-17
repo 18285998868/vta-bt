@@ -34,18 +34,6 @@ impl Strategy for AberrationStrategy {
         format!("n={n},m={m}")
     }
 
-    fn generate_signals(
-        &self,
-        _open: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        param_idx: usize,
-    ) -> crate::error::Result<Vec<Signal>> {
-        // trait 兼容入口：无 high/low 时退化为 close 代理(书面化乐观近似)。
-        let (n, m) = self.pairs[param_idx];
-        Self::compute(close, close, close, n, m)
-    }
-
     fn generate_signals_full(
         &self,
         _open: &[f64],

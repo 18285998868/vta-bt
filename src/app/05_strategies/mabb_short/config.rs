@@ -43,7 +43,14 @@ impl MabbShortConfig {
         out
     }
 
-    pub fn validate_names(&self) -> crate::error::Result<()> {
+    pub fn validate(&self) -> crate::error::Result<()> {
+        // 范围校验(原在 config.rs 的 match 中, 已下沉到本类型)
+        self.sigma.validate_range("mabb_short.sigma", 0.1, 10.0)?;
+        self.bblen.validate_range("mabb_short.bblen", 2.0, 2000.0)?;
+        self.stopk.validate_range("mabb_short.stopk", 0.0, 10.0)?;
+        self.atrlen
+            .validate_range("mabb_short.atrlen", 0.0, 500.0)?;
+
         for name in &self.ma {
             if !MABB_MA_NAMES.contains(&name.as_str()) {
                 return Err(crate::error::AppError::Msg(format!(
@@ -52,7 +59,9 @@ impl MabbShortConfig {
             }
         }
         if self.quints().is_empty() {
-            return Err(crate::error::AppError::Msg("mabb_short 参数组合为空".into()));
+            return Err(crate::error::AppError::Msg(
+                "mabb_short 参数组合为空".into(),
+            ));
         }
         Ok(())
     }

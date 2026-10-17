@@ -1,3 +1,4 @@
+use crate::error::AppError;
 use serde::Deserialize;
 
 use crate::config::F64Param;
@@ -22,6 +23,19 @@ impl RSI2Config {
             }
         }
         out
+    }
+}
+
+impl RSI2Config {
+    /// 语义校验(原集中在 `config.rs::Config::validate` 的 match 中,
+    /// 已下沉到本类型; 分派处只保留一行调用)。
+    pub fn validate(&self) -> crate::error::Result<()> {
+        self.buy.validate_range("rsi2.buy", 0.0, 100.0)?;
+        self.sell.validate_range("rsi2.sell", 0.0, 100.0)?;
+        if self.pairs().is_empty() {
+            return Err(AppError::Msg("rsi2 参数组合为空".into()));
+        }
+        Ok(())
     }
 }
 

@@ -20,7 +20,12 @@ impl BbrkHmaV3Strategy {
 }
 
 /// 纯决策函数(可手算单测)。
-pub fn bbrk_hma_v3_signals(close: &[f64], lower: &[f64], mid: &[f64], upper: &[f64]) -> Vec<Signal> {
+pub fn bbrk_hma_v3_signals(
+    close: &[f64],
+    lower: &[f64],
+    mid: &[f64],
+    upper: &[f64],
+) -> Vec<Signal> {
     let n = close.len().min(lower.len()).min(mid.len()).min(upper.len());
     let mut sig = vec![Signal::Hold; n];
     let mut pos: i8 = 0;
@@ -80,17 +85,6 @@ impl Strategy for BbrkHmaV3Strategy {
     fn param_str(&self, idx: usize) -> String {
         let (s, b) = self.pairs[idx];
         format!("sigma={s},bblen={b}")
-    }
-
-    fn generate_signals(
-        &self,
-        _open: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        param_idx: usize,
-    ) -> crate::error::Result<Vec<Signal>> {
-        let (s, b) = self.pairs[param_idx];
-        compute(close, s, b)
     }
 
     fn generate_signals_full(

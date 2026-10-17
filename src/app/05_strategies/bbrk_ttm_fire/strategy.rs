@@ -1,12 +1,12 @@
-use vector_ta::indicators::atr::{atr, AtrInput, AtrParams};
+use vector_ta::indicators::atr::{AtrInput, AtrParams, atr};
 use vector_ta::indicators::bollinger_bands::{
-    bollinger_bands, BollingerBandsInput, BollingerBandsParams,
+    BollingerBandsInput, BollingerBandsParams, bollinger_bands,
 };
-use vector_ta::indicators::moving_averages::ema::{ema, EmaInput, EmaParams};
-use vector_ta::indicators::moving_averages::linreg::{linreg, LinRegInput, LinRegParams};
-use vector_ta::indicators::moving_averages::sma::{sma, SmaInput, SmaParams};
+use vector_ta::indicators::moving_averages::ema::{EmaInput, EmaParams, ema};
+use vector_ta::indicators::moving_averages::linreg::{LinRegInput, LinRegParams, linreg};
+use vector_ta::indicators::moving_averages::sma::{SmaInput, SmaParams, sma};
 
-use crate::strategies::{rolling_highest, rolling_lowest, Signal, Strategy};
+use crate::strategies::{Signal, Strategy, rolling_highest, rolling_lowest};
 
 use super::config::BbrkTtmFireConfig;
 
@@ -190,18 +190,6 @@ impl Strategy for BbrkTtmFireStrategy {
         format!("sigma={s},kc={k}")
     }
 
-    fn generate_signals(
-        &self,
-        _open: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        param_idx: usize,
-    ) -> crate::error::Result<Vec<Signal>> {
-        // 无 high/low：用 close 充当（Donchian中轴=close，delta退化为距SMA距离，P7备注）。
-        let (s, k) = self.pairs[param_idx];
-        compute(close, close, close, s, k)
-    }
-
     fn generate_signals_full(
         &self,
         _open: &[f64],
@@ -232,7 +220,7 @@ impl Strategy for BbrkTtmFireStrategy {
         use rayon::prelude::*;
         use std::collections::HashMap;
         use vector_ta::indicators::bollinger_bands::{
-            bollinger_bands, BollingerBandsInput, BollingerBandsParams,
+            BollingerBandsInput, BollingerBandsParams, bollinger_bands,
         };
         let hist = momentum(high, low, close);
         let basis: Option<Vec<f64>> = ema(&EmaInput::from_slice(

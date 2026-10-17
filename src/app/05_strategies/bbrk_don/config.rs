@@ -1,3 +1,4 @@
+use crate::error::AppError;
 use serde::Deserialize;
 
 use crate::config::F64Param;
@@ -35,6 +36,20 @@ impl BbrkDonConfig {
             }
         }
         out
+    }
+}
+
+impl BbrkDonConfig {
+    /// 语义校验(原集中在 `config.rs::Config::validate` 的 match 中,
+    /// 已下沉到本类型; 分派处只保留一行调用)。
+    pub fn validate(&self) -> crate::error::Result<()> {
+        self.sigma.validate_range("bbrk_don.sigma", 0.1, 10.0)?;
+        self.bblen.validate_range("bbrk_don.bblen", 2.0, 2000.0)?;
+        self.exitn.validate_range("bbrk_don.exitn", 2.0, 100.0)?;
+        if self.pairs().is_empty() {
+            return Err(AppError::Msg("bbrk_don 参数组合为空".into()));
+        }
+        Ok(())
     }
 }
 

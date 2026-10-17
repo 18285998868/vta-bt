@@ -204,16 +204,34 @@ fn rolling_extreme(data: &[f64], n: usize, want_max: bool) -> Vec<f64> {
     out
 }
 
-/// f64 范围展开(6位小数取整, 避免 0.1 累加漂移)。上限 100000 档防爆。
+/// f64 范围展开(6位小数取整, 避免 0.1 累加漂移)。上限 [`MAX_F64_RANGE`] 档防爆。
+///
+/// **上限命中时会 `warn!`**: 原实现静默截断, 导致实际执行的参数网格与配置文件
+/// 不符且无任何提示(例如 `start=0.000001, end=1.0, step=0.000001` 理论 10 亿档,
+/// 实际只跑 10 万档, `validate_range` 仍通过)。这是"配置说的"与"跑的"不一致,
+/// 故必须显式告警。
+pub const MAX_F64_RANGE: usize = 100_000;
+
 pub fn expand_f64_range(start: f64, end: f64, step: f64) -> Vec<f64> {
     let mut out = Vec::new();
     if !step.is_finite() || step <= 0.0 || !start.is_finite() || !end.is_finite() || start > end {
         return out;
     }
     let mut v = start;
-    while v <= end + 1e-9 && out.len() < 100_000 {
+    while v <= end + 1e-9 && out.len() < MAX_F64_RANGE {
         out.push((v * 1e6).round() / 1e6);
         v += step;
+    }
+    // 触顶且未自然走完 → 网格被截断, 告警而非静默
+    if out.len() >= MAX_F64_RANGE && v <= end + 1e-9 {
+        tracing::warn!(
+            requested_start = start,
+            requested_end = end,
+            step,
+            produced = out.len(),
+            cap = MAX_F64_RANGE,
+            "参数范围展开被上限截断: 实际执行的网格小于配置声明的网格"
+        );
     }
     out
 }
@@ -441,6 +459,16 @@ mod tests {
         assert!(expand_f64_range(1.0, 2.0, 0.0).is_empty());
     }
 
+    /// 上限截断时返回恰好 `MAX_F64_RANGE` 档且**告警**(而非静默按截断后的网格跑)。
+    #[test]
+    fn test_expand_f64_range_truncates_at_cap() {
+        // 理论档数远超上限
+        let out = expand_f64_range(0.000_001, 1.0, 0.000_001);
+        assert_eq!(out.len(), MAX_F64_RANGE);
+        // 未触顶的正常范围不受影响
+        assert!(expand_f64_range(0.0, 1.0, 0.25).len() < MAX_F64_RANGE);
+    }
+
     #[test]
     fn test_shift_right_1() {
         assert_eq!(shift_right_1(&[1.0, 2.0, 3.0])[1], 1.0);
@@ -596,7 +624,7 @@ mod tests {
         let m = money_flow_index(&t, &t, &t, &z, 2);
         assert!(m.iter().all(|x| !x.is_finite()));
         let nan = vec![f64::NAN; 4];
-        let m2 = money_flow_index(&nan, &nan, &nan, &vec![100.0; 4], 2);
+        let m2 = money_flow_index(&nan, &nan, &nan, &[100.0; 4], 2);
         assert!(m2.iter().all(|x| !x.is_finite()));
     }
 }

@@ -1,3 +1,4 @@
+use crate::error::AppError;
 use serde::Deserialize;
 
 use crate::config::F64Param;
@@ -13,6 +14,18 @@ pub struct VwapConfig {
 impl VwapConfig {
     pub fn values(&self) -> Vec<f64> {
         self.thresh.values()
+    }
+}
+
+impl VwapConfig {
+    /// 语义校验(原集中在 `config.rs::Config::validate` 的 match 中,
+    /// 已下沉到本类型; 分派处只保留一行调用)。
+    pub fn validate(&self) -> crate::error::Result<()> {
+        self.thresh.validate_range("vwap.thresh", 0.5, 10.0)?;
+        if self.values().is_empty() {
+            return Err(AppError::Msg("vwap 参数组合为空".into()));
+        }
+        Ok(())
     }
 }
 

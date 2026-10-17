@@ -145,16 +145,6 @@ impl Strategy for RBreakerStrategy {
         format!("stop={}", self.stops[idx])
     }
 
-    fn generate_signals(
-        &self,
-        _open: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        _param_idx: usize,
-    ) -> crate::error::Result<Vec<Signal>> {
-        Ok(vec![Signal::Hold; close.len()])
-    }
-
     fn generate_signals_full(
         &self,
         open: &[f64],

@@ -99,7 +99,12 @@ fn rolling_sma(close: &[f64], len: usize) -> Vec<f64> {
     out
 }
 
-fn compute(close: &[f64], sigma: f64, bblen: usize, reg: usize) -> crate::error::Result<Vec<Signal>> {
+fn compute(
+    close: &[f64],
+    sigma: f64,
+    bblen: usize,
+    reg: usize,
+) -> crate::error::Result<Vec<Signal>> {
     let bb = match bollinger_bands(&BollingerBandsInput::from_slice(
         close,
         BollingerBandsParams {
@@ -135,17 +140,6 @@ impl Strategy for BbrkSmaStrategy {
     fn param_str(&self, idx: usize) -> String {
         let (s, b, l) = self.pairs[idx];
         format!("sigma={s},bblen={b},smareg={l}")
-    }
-
-    fn generate_signals(
-        &self,
-        _open: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        param_idx: usize,
-    ) -> crate::error::Result<Vec<Signal>> {
-        let (s, b, l) = self.pairs[param_idx];
-        compute(close, s, b, l)
     }
 
     fn generate_signals_full(

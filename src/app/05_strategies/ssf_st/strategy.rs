@@ -57,11 +57,14 @@ impl Strategy for SsfStStrategy {
         )
     }
 
-    fn generate_signals(
+    fn generate_signals_full(
         &self,
         _open: &[f64],
+        _high: &[f64],
+        _low: &[f64],
         close: &[f64],
         _volume: &[f64],
+        _time: &[i64],
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
         let period = self.periods[param_idx];
@@ -101,14 +104,18 @@ mod tests {
     #[test]
     fn test_ssf_st_generates_signals() {
         let s = SsfStStrategy::new(cfg(PoleCount::Two));
-        let sig = s.generate_signals(&[], &prices(200), &[], 0).unwrap();
+        let sig = s
+            .generate_signals_full(&[], &[], &[], &prices(200), &[], &[], 0)
+            .unwrap();
         assert_eq!(sig.len(), 200);
     }
 
     #[test]
     fn test_ssf_st_three_pole() {
         let s = SsfStStrategy::new(cfg(PoleCount::Three));
-        let sig = s.generate_signals(&[], &prices(200), &[], 0).unwrap();
+        let sig = s
+            .generate_signals_full(&[], &[], &[], &prices(200), &[], &[], 0)
+            .unwrap();
         assert_eq!(sig.len(), 200);
         assert!(sig.contains(&Signal::Buy));
     }
@@ -118,7 +125,7 @@ mod tests {
         // 3 极在 ssf 与 ssf_st 之间共用同一实现, 信号必须逐根一致
         let close = prices(400);
         let a = SsfStStrategy::new(cfg(PoleCount::Three))
-            .generate_signals(&[], &close, &[], 0)
+            .generate_signals_full(&[], &[], &[], &close, &[], &[], 0)
             .unwrap();
         let b = crate::strategies::ssf::SsfStrategy::new(crate::strategies::ssf::SsfConfig {
             period: PeriodParam::Range(RangeParam {
@@ -128,7 +135,7 @@ mod tests {
             }),
             poles: PoleCount::Three,
         })
-        .generate_signals(&[], &close, &[], 0)
+        .generate_signals_full(&[], &[], &[], &close, &[], &[], 0)
         .unwrap();
         assert_eq!(a, b);
     }
@@ -137,10 +144,10 @@ mod tests {
     fn test_ssf_st_two_and_three_pole_differ() {
         let close = prices(400);
         let two = SsfStStrategy::new(cfg(PoleCount::Two))
-            .generate_signals(&[], &close, &[], 0)
+            .generate_signals_full(&[], &[], &[], &close, &[], &[], 0)
             .unwrap();
         let three = SsfStStrategy::new(cfg(PoleCount::Three))
-            .generate_signals(&[], &close, &[], 0)
+            .generate_signals_full(&[], &[], &[], &close, &[], &[], 0)
             .unwrap();
         assert_ne!(two, three, "2 极与 3 极不应产生完全相同的信号序列");
     }

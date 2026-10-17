@@ -10,7 +10,6 @@ use super::bbrk_atr::BbrkAtrStrategy;
 use super::bbrk_atr_ema::BbrkAtrEmaStrategy;
 use super::bbrk_bb::BbrkBbStrategy;
 use super::bbrk_cross::BbrkCrossStrategy;
-use super::bbrk_kdj::BbrkKdjStrategy;
 use super::bbrk_don::BbrkDonStrategy;
 use super::bbrk_ema::BbrkEmaStrategy;
 use super::bbrk_hma::BbrkHmaStrategy;
@@ -25,6 +24,7 @@ use super::bbrk_hma_v4::BbrkHmaV4Strategy;
 use super::bbrk_hma_v4_sl::BbrkHmaV4SlStrategy;
 use super::bbrk_hma_v5::BbrkHmaV5Strategy;
 use super::bbrk_hma_v5_sl::BbrkHmaV5SlStrategy;
+use super::bbrk_kdj::BbrkKdjStrategy;
 use super::bbrk_m2::BbrkM2Strategy;
 use super::bbrk_m3::BbrkM3Strategy;
 use super::bbrk_max::BbrkMaxStrategy;
@@ -154,6 +154,51 @@ macro_rules! build_ma {
     };
 }
 
+/// 构建全部策略, 并对展开后的参数网格做**唯一性自检**。
+///
+/// # Errors
+/// 任一策略的 `param_str(i)` 在 `0..param_count()` 内出现重复时返回
+/// [`AppError::Msg`](crate::error::AppError::Msg), 列出冲突串。
+///
+/// 背景: parquet 的 `strategy_params` 整数列由 `strategy_params_value` 把参数元组
+/// 压缩而成, 超出槽位时回退 `fnv1a_32`(**有损**: 不同参数组可映射到同一 u32)。
+/// 行主键实为 `(symbol, timeframe, strategy, params)` 四元组, 故该列只是"同策略内
+/// 按参数大小排序"的代理, 碰撞不构成正确性灾难; 但它仍会让排序结果错乱。
+/// 单测只锁了当前网格(如 BBRK_VOL 720 串), 用户一旦扩大范围就可能引入碰撞且
+/// **完全静默**。这里把静默损坏变成构建期硬失败 —— 代价是 O(N) 次 HashSet 插入
+/// (N ≤ 数万, 微秒级), 只在每次启动时跑一次。
+pub fn build_strategies_checked(
+    configs: &[StrategyConfig],
+) -> crate::error::Result<Vec<Box<dyn Strategy>>> {
+    let strategies = build_strategies(configs);
+    check_param_uniqueness(&strategies)?;
+    Ok(strategies)
+}
+
+/// 逐策略检查 `param_str` 在参数网格内两两不同。
+fn check_param_uniqueness(strategies: &[Box<dyn Strategy>]) -> crate::error::Result<()> {
+    for st in strategies {
+        let n = st.param_count();
+        let mut seen: std::collections::HashSet<String> =
+            std::collections::HashSet::with_capacity(n);
+        let mut dup: Option<String> = None;
+        for i in 0..n {
+            let p = st.param_str(i);
+            if !seen.insert(p.clone()) && dup.is_none() {
+                dup = Some(p);
+            }
+        }
+        if let Some(d) = dup {
+            return Err(crate::error::AppError::Msg(format!(
+                "[{}] 参数串重复: {d:?} —— 参数网格展开有误(或该策略的 param_str 未覆盖全部维度), \
+                 会导致 parquet 的 strategy_params 列碰撞与选参结果错乱",
+                st.name()
+            )));
+        }
+    }
+    Ok(())
+}
+
 pub fn build_strategies(configs: &[StrategyConfig]) -> Vec<Box<dyn Strategy>> {
     let ma_strategies: Vec<Box<dyn Strategy>> = configs
         .iter()
@@ -181,7 +226,7 @@ pub fn build_strategies(configs: &[StrategyConfig]) -> Vec<Box<dyn Strategy>> {
                     | StrategyConfig::BbrkAdx(_)
                     | StrategyConfig::BbrkTrail(_)
                     | StrategyConfig::BbrkDon(_)
-            | StrategyConfig::BbrkEma(_)
+                    | StrategyConfig::BbrkEma(_)
                     | StrategyConfig::BbrkPctb(_)
                     | StrategyConfig::BbrkAtr(_)
                     | StrategyConfig::BbrkStr(_)

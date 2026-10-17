@@ -137,17 +137,6 @@ impl Strategy for BbrkSmaEmaStrategy {
         format!("sigma={s},smareg={l}")
     }
 
-    fn generate_signals(
-        &self,
-        _open: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        param_idx: usize,
-    ) -> crate::error::Result<Vec<Signal>> {
-        let (s, l) = self.pairs[param_idx];
-        compute(close, s, l)
-    }
-
     fn generate_signals_full(
         &self,
         _open: &[f64],

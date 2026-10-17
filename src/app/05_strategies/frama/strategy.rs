@@ -28,30 +28,6 @@ impl Strategy for FramaStrategy {
         format!("frama_{}", self.periods[idx])
     }
 
-    fn generate_signals(
-        &self,
-        _open: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        param_idx: usize,
-    ) -> crate::error::Result<Vec<Signal>> {
-        let period = self.periods[param_idx];
-        let ma = match frama(&FramaInput::from_slices(
-            close,
-            close,
-            close,
-            FramaParams {
-                window: Some(period),
-                sc: Some(300),
-                fc: Some(1),
-            },
-        )) {
-            Ok(v) => v.values,
-            Err(_) => return Ok(vec![Signal::Hold; close.len()]),
-        };
-        Ok(price_cross_signal(&ma, close))
-    }
-
     fn generate_signals_full(
         &self,
         _open: &[f64],
@@ -97,7 +73,40 @@ mod tests {
             step: 1,
         });
         assert_eq!(s.param_count(), 1);
-        let sig = s.generate_signals(&[], &close, &[], 0).unwrap();
-        assert!(sig.contains(&Signal::Buy));
+        // FRAMA 用真实 high/low(±1% 包络)计算; 引擎自 A2 起只走 full 入口。
+        let high: Vec<f64> = close.iter().map(|v| v * 1.01).collect();
+        let low: Vec<f64> = close.iter().map(|v| v * 0.99).collect();
+        let sig = s
+            .generate_signals_full(&[], &high, &low, &close, &[], &[], 0)
+            .unwrap();
+        assert_eq!(sig.len(), close.len());
+        assert!(sig.contains(&Signal::Buy) || sig.contains(&Signal::Sell));
+    }
+
+    /// 回归: 历史上的 close-only 入口用 `close` 充当 high/low, 与 full 的真实
+    /// high/low 结果**不同**; 两条路径并存正是 A2 要消除的分叉。现只剩 full。
+    #[test]
+    fn test_full_uses_real_high_low_not_close_proxy() {
+        let n = 200;
+        let close: Vec<f64> = (0..n)
+            .map(|i| 100.0 + (i as f64 * 0.3).sin() * 20.0)
+            .collect();
+        let high: Vec<f64> = close.iter().map(|v| v * 1.5).collect();
+        let low: Vec<f64> = close.iter().map(|v| v * 0.5).collect();
+        let s = FramaStrategy::new(RangeParam {
+            start: 20,
+            end: 20,
+            step: 1,
+        });
+        let full = s
+            .generate_signals_full(&[], &high, &low, &close, &[], &[], 0)
+            .unwrap();
+        let close_as_hl = s
+            .generate_signals_full(&[], &close, &close, &close, &[], &[], 0)
+            .unwrap();
+        assert_ne!(
+            full, close_as_hl,
+            "FRAMA 必须使用真实 high/low; 若与 close 代理结果相同说明退化成了旧口径"
+        );
     }
 }

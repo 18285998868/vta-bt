@@ -32,11 +32,14 @@ impl Strategy for EdmaStrategy {
         format!("edma_p{}_o{}", p, o)
     }
 
-    fn generate_signals(
+    fn generate_signals_full(
         &self,
         _open: &[f64],
+        _high: &[f64],
+        _low: &[f64],
         close: &[f64],
         _volume: &[f64],
+        _time: &[i64],
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
         let (period, offset) = self.pairs[param_idx];
@@ -70,7 +73,9 @@ mod tests {
         };
         let s = EdmaStrategy::new(cfg);
         assert_eq!(s.param_count(), 1);
-        let sig = s.generate_signals(&[], &close, &[], 0).unwrap();
+        let sig = s
+            .generate_signals_full(&[], &[], &[], &close, &[], &[], 0)
+            .unwrap();
         assert!(sig.contains(&Signal::Buy));
     }
 }
