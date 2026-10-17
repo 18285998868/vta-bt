@@ -793,7 +793,7 @@ fn to_dto(
     let mut markers = Vec::with_capacity(sim.trades.len() * 2);
     let mut trades = Vec::with_capacity(sim.trades.len());
     for t in &sim.trades {
-        let side = if t.side == 1 { "long" } else { "short" };
+        let side = if t.side == vta::engine::Side::Long { "long" } else { "short" };
         markers.push(MarkerDto {
             time: t.entry_time,
             side: side.into(),

@@ -2356,7 +2356,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
- "vector-ta 0.3.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "vector-ta",
  "vta",
  "zip",
 ]
@@ -2422,34 +2422,7 @@ checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
 name = "vector-ta"
-version = "0.3.1"
-dependencies = [
- "aligned-vec",
- "anyhow",
- "chrono",
- "csv",
- "ctor",
- "float-cmp",
- "getrandom 0.2.17",
- "itertools",
- "libc",
- "lru",
- "ndarray",
- "num-traits",
- "once_cell",
- "pastey",
- "rayon",
- "serde",
- "serde_json",
- "smallvec",
- "thiserror",
-]
-
-[[package]]
-name = "vector-ta"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b530eeccbf2577e6c5e583f85a9e5f7b75042379d77936bdf5eed2116210af4f"
+version = "0.3.2"
 dependencies = [
  "aligned-vec",
  "anyhow",
@@ -2494,7 +2467,7 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
- "vector-ta 0.3.1",
+ "vector-ta",
 ]
 
 [[package]]
