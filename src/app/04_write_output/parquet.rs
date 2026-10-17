@@ -9,9 +9,18 @@ use crate::app::RunResult;
 use crate::engine::SummaryMetrics;
 use crate::error::Result;
 
-fn params_to_json(params: &str) -> String {
+/// 参数串 → JSON 对象字符串。**必须产出合法 JSON**(下游整列解析)。
+///
+/// `param_str` 的形态分两类, 值一律按 **JSON 字符串**输出并转义:
+/// - `k=v,k=v` 形态: 键即参数名(`{"sigma":"2.5","bblen":"20"}`)
+/// - `k=v,variant=Name` 形态: 值含非数字枚举(`{"period":"20","variant":"Three"}`)
+///
+/// 历史缺陷: 数字形态原样内插输出 `{"sigma":2.5}`, 而字符串形态(`ma=hma` /
+/// `variant=`)输出裸 token `{"ma":hma}` —— **非法 JSON 且与同列内合法值并存**,
+/// 使整列无法被 JSON 工具消费。
+pub fn params_to_json(params: &str) -> String {
     let clean = params.replace(' ', "");
-    // 双均线 "fast=F,slow=S" → {"fast":F,"slow":S}。
+    // 双均线 "fast=F,slow=S" → {"fast":"F","slow":"S"}。
     if let Some(rest) = clean.strip_prefix("fast=") {
         let mut it = rest.split(',');
         let f = it.next().unwrap_or("0");
@@ -20,7 +29,7 @@ fn params_to_json(params: &str) -> String {
             .unwrap_or("0")
             .strip_prefix("slow=")
             .unwrap_or("0");
-        return format!("{{\"fast\":{},\"slow\":{}}}", f, s);
+        return format!("{{\"fast\":{},\"slow\":{}}}", json_str(f), json_str(s));
     }
     // 新策略 param_str 原样转 JSON 键(键名即含义, 各策略内唯一)。
     for prefix in [
@@ -31,7 +40,7 @@ fn params_to_json(params: &str) -> String {
             for kv in clean.split(',') {
                 let mut it = kv.splitn(2, '=');
                 if let (Some(k), Some(v)) = (it.next(), it.next()) {
-                    parts.push(format!("\"{}\":{}", k, v));
+                    parts.push(format!("\"{}\":{}", k, json_str(v)));
                 }
             }
             return format!("{{{}}}", parts.join(","));
@@ -41,22 +50,46 @@ fn params_to_json(params: &str) -> String {
         let period = rest.split(',').next().unwrap_or("0");
         if let Some(variant_pos) = rest.find(",variant=") {
             let variant = &rest[variant_pos + 9..];
-            format!("{{\"period\":{},\"variant\":\"{}\"}}", period, variant)
+            format!(
+                "{{\"period\":{},\"variant\":{}}}",
+                json_str(period),
+                json_str(variant)
+            )
         } else {
-            format!("{{\"period\":{}}}", period)
+            format!("{{\"period\":{}}}", json_str(period))
         }
     } else {
         // MA strategies: "ema_3", "sma_10", etc. — extract digits after last '_'
         let period = clean
             .chars()
             .rev()
-            .take_while(|c| c.is_ascii_digit())
+            .take_while(char::is_ascii_digit)
             .collect::<String>()
             .chars()
             .rev()
             .collect::<String>();
-        format!("{{\"period\":{}}}", period)
+        format!("{{\"period\":{}}}", json_str(&period))
     }
+}
+
+/// 极简 JSON 字符串字面量: 加引号 + 转义 `"` `\\` 与控制字符。
+/// 参数串只含 ASCII 键值与少量符号, 故不引入 serde_json 运行时依赖。
+fn json_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// FNV-1a 32（编码槽位溢出时的回退口径，确定性；见 `strategy_params_value`）。
@@ -1002,13 +1035,14 @@ mod tests {
         assert_eq!(strategy_params_value("sigma=2.5,smareg=100"), 2_500_001_000);
         assert_eq!(strategy_params_value("sigma=2.5,hmalen=100"), 2_500_001_000);
         assert_eq!(strategy_params_value("ma=hma,malen=100"), 7_000_100);
+        // 该编码对应的人类可读 JSON 必须是合法值(见 test_params_json_is_always_valid_json)。
+        assert_eq!(
+            params_to_json("ma=hma,malen=100"),
+            "{\"ma\":\"hma\",\"malen\":\"100\"}"
+        );
         assert_eq!(strategy_params_value("ma=sma,malen=200"), 200);
         assert_eq!(strategy_params_value("ma=sma,len=20,sigma=2.5"), 202_500);
         assert_eq!(strategy_params_value("ma=hma,len=5,sigma=3"), 20_053_000);
-        assert_eq!(
-            params_to_json("ma=hma,malen=100"),
-            "{\"ma\":hma,\"malen\":100}"
-        );
         assert_eq!(strategy_params_value("sigma=2.5,rexn=7"), 2_500_000_070);
         assert_eq!(
             strategy_params_value("sigma=2.5,voln=10,volmult=1.5"),
@@ -1085,14 +1119,56 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir2);
     }
 
+    /// `strategy_params_json` 整列必须是**合法 JSON**: 值一律为字符串并转义。
+    /// 历史缺陷: 数字形态内插为裸数字、字符串形态内插为裸 token(`{"ma":hma}`),
+    /// 两者与同列内的合法值并存, 使整列无法被 JSON 工具消费。
     #[test]
-    fn test_params_json_new_strategies() {
+    fn test_params_json_is_always_valid_json() {
+        for p in [
+            "entry=20,exit=10",
+            "n=5,k=0.2",
+            "sigma=2.5",
+            "buy=10,sell=90",
+            "ma=hma,malen=100",
+            "period=20,variant=Three",
+            "fast=10,slow=30",
+            "ema_100",
+            "ma=hma",
+        ] {
+            let js = params_to_json(p);
+            // 合法 JSON 对象: 以 { 开头、以 } 结尾、内部引号成对
+            assert!(js.starts_with('{') && js.ends_with('}'), "{p} → {js}");
+            assert_eq!(js.matches('"').count() % 2, 0, "{p} → {js} 引号不成对");
+            assert!(!js.contains(": hma"), "{p} → {js} 含未加引号的 token");
+            // 无未转义的裸引号/反斜杠
+            assert!(!js.contains(char::from(92u8)), "{p} → {js} 含裸反斜杠");
+        }
+        // 具体形态: 值统一为字符串
         assert_eq!(
             params_to_json("entry=20,exit=10"),
-            "{\"entry\":20,\"exit\":10}"
+            "{\"entry\":\"20\",\"exit\":\"10\"}"
         );
-        assert_eq!(params_to_json("n=5,k=0.2"), "{\"n\":5,\"k\":0.2}");
-        assert_eq!(params_to_json("sigma=2.5"), "{\"sigma\":2.5}");
-        assert_eq!(params_to_json("buy=10,sell=90"), "{\"buy\":10,\"sell\":90}");
+        assert_eq!(params_to_json("n=5,k=0.2"), "{\"n\":\"5\",\"k\":\"0.2\"}");
+        assert_eq!(params_to_json("sigma=2.5"), "{\"sigma\":\"2.5\"}");
+        assert_eq!(
+            params_to_json("ma=hma,malen=100"),
+            "{\"ma\":\"hma\",\"malen\":\"100\"}"
+        );
+        assert_eq!(
+            params_to_json("period=20,variant=Three"),
+            "{\"period\":\"20\",\"variant\":\"Three\"}"
+        );
+        assert_eq!(params_to_json("ema_100"), "{\"period\":\"100\"}");
+    }
+
+    /// 转义: 键值内的引号/反斜杠/控制字符必须被转义, 否则 JSON 失效。
+    #[test]
+    fn test_json_str_escapes_control_characters() {
+        assert_eq!(json_str("abc"), "\"abc\"");
+        assert_eq!(json_str("a\"b"), "\"a\\\"b\"");
+        assert_eq!(json_str("a\\b"), "\"a\\\\b\"");
+        assert_eq!(json_str("a\nb"), "\"a\\nb\"");
+        assert_eq!(json_str("a\tb"), "\"a\\tb\"");
+        assert_eq!(json_str("a\u{1}b"), "\"a\\u0001b\"");
     }
 }

@@ -1,3 +1,5 @@
+use std::num::NonZeroUsize;
+
 use rayon::prelude::*;
 
 use crate::strategies::Signal;
@@ -7,6 +9,8 @@ pub struct SummaryMetrics {
     pub total_return_pct: f64,
     pub total_return: f64,
     pub sharpe_ratio: f64,
+    /// 下行偏差口径, 分母为**下行 bar 数**的样本方差(ddof=1), 与 `sharpe_ratio`
+    /// 同一自由度约定, 两者可并列比较。
     pub sortino_ratio: f64,
     pub max_drawdown_pct: f64,
     pub win_rate: f64,
@@ -28,6 +32,9 @@ pub struct SummaryMetrics {
     pub wl_ratio: f64,
     pub skewness: f64,
     pub kurtosis: f64,
+    /// SQN = √n · mean/stdev (Van Thorp 1998)。**仅在 `num_trades` >= 30 时有意义**
+    /// (Van Thorp 建议门槛); n 越大 SQN 越高是统计显著性的体现, 非过拟合信号。
+    /// 判读时必须与 `num_trades` 配对。
     pub sqn: f64,
     pub pf_stability: f64,
     pub z_score: f64,
@@ -57,20 +64,27 @@ pub struct SummaryMetrics {
 /// 成交执行假设。`delay_bars = 0` 为旧口径(信号当根收盘成交, 前视乐观);
 /// `delay_bars = 1` 为推荐口径(信号次根 fill bar 成交, `fill_close=false` 取开盘,
 /// `fill_close=true` 取收盘)。费率按单边名义扣除。
+///
+/// **`delay_bars` 恒 ≥ 1**: 信号次根 fill bar 成交。`delay_bars = 0`(信号当根收盘成交)
+/// 属前视乐观口径, 已在**引擎层彻底移除** —— 字段是 [`NonZeroUsize`], 类型上无法
+/// 构造 0。费率按单边名义扣除。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ExecConfig {
-    pub delay_bars: usize,
+    /// 信号到成交的 bar 间隔, 恒 ≥ 1(类型保证)。1 = 次根 fill bar。
+    pub delay_bars: NonZeroUsize,
+    /// 单边佣金率(= bps / 10000)。
     pub fee_rate: f64,
+    /// 单边逆向滑点率(= bps / 10000)。
     pub slip_rate: f64,
-    /// delay>0 时 fill bar 取收盘(true)还是开盘(false, 默认)。
+    /// fill bar 取收盘(true)还是开盘(false, 默认)。
     pub fill_close: bool,
 }
 
 impl Default for ExecConfig {
-    /// 全零/false = 旧口径, 逐位一致。
+    /// 推荐口径: 次根 fill bar 成交(开盘价)、无成本。
     fn default() -> Self {
         Self {
-            delay_bars: 0,
+            delay_bars: NonZeroUsize::MIN,
             fee_rate: 0.0,
             slip_rate: 0.0,
             fill_close: false,
@@ -79,11 +93,33 @@ impl Default for ExecConfig {
 }
 
 impl ExecConfig {
-    #[must_use]
-    pub fn from_bps(delay_bars: usize, fee_bps: f64, slippage_bps: f64) -> Self {
-        Self::from_bps_fill(delay_bars, fee_bps, slippage_bps, false)
+    /// 构造执行配置。`delay_bars = 0` 直接拒绝(前视乐观口径已删除)。
+    ///
+    /// # Errors
+    /// `delay_bars == 0` 时返回 [`AppError::Msg`](crate::error::AppError::Msg)。
+    pub fn try_from_bps_fill(
+        delay_bars: usize,
+        fee_bps: f64,
+        slippage_bps: f64,
+        fill_close: bool,
+    ) -> crate::error::Result<Self> {
+        let delay_bars = NonZeroUsize::new(delay_bars).ok_or_else(|| {
+            crate::error::AppError::Msg(
+                "delay_bars 必须 >= 1: 信号当根成交为前视乐观口径, 已移除".to_string(),
+            )
+        })?;
+        Ok(Self {
+            delay_bars,
+            fee_rate: fee_bps / 10_000.0,
+            slip_rate: slippage_bps / 10_000.0,
+            fill_close,
+        })
     }
 
+    /// [`Self::try_from_bps_fill`] 的 infallible 版本(固定 `fill_close = false`)。
+    ///
+    /// # Panics
+    /// `delay_bars == 0` 时 panic(前视乐观口径已移除)。
     #[must_use]
     pub fn from_bps_fill(
         delay_bars: usize,
@@ -91,12 +127,22 @@ impl ExecConfig {
         slippage_bps: f64,
         fill_close: bool,
     ) -> Self {
-        Self {
-            delay_bars,
-            fee_rate: fee_bps / 10_000.0,
-            slip_rate: slippage_bps / 10_000.0,
-            fill_close,
-        }
+        Self::try_from_bps_fill(delay_bars, fee_bps, slippage_bps, fill_close)
+            .expect("delay_bars >= 1: 前视乐观口径(delay=0)已在引擎层移除")
+    }
+
+    /// [`Self::from_bps_fill`] 的 `fill_close = false` 简写。
+    ///
+    /// # Panics
+    /// 同 [`Self::from_bps_fill`]。
+    #[must_use]
+    pub fn from_bps(delay_bars: usize, fee_bps: f64, slippage_bps: f64) -> Self {
+        Self::from_bps_fill(delay_bars, fee_bps, slippage_bps, false)
+    }
+
+    #[must_use]
+    pub fn delay(&self) -> usize {
+        self.delay_bars.get()
     }
 }
 
@@ -183,8 +229,9 @@ pub fn buy_hold_pnl(close: &[f64], nominal: f64) -> (f64, f64) {
 }
 
 /// 信号 bar `i`、订单方向 `side` 的成交位置与价格。
-/// - `delay_bars = 0`: 当根收盘(旧口径)。
-/// - `delay_bars > 0`: fill bar 的开盘(`fill_close=false`, 默认)或收盘(`fill_close=true`);
+/// `delay_bars` 恒 ≥ 1(`NonZeroUsize` 保证), 故成交只可能落在 fill bar
+/// `i + delay_bars`, 无"当根成交"分支:
+/// - fill bar 的开盘(`fill_close=false`, 默认)或收盘(`fill_close=true`);
 ///   开仓 fill bar 超出数据返回 `None`(放弃, 无未来可成交),
 ///   平仓钳到末根收盘(与旧口径的末根离场一致)。
 fn resolve_fill(
@@ -196,10 +243,7 @@ fn resolve_fill(
     n: usize,
     exec: &ExecConfig,
 ) -> Option<(usize, f64)> {
-    if exec.delay_bars == 0 {
-        return Some((i, fill_price(side, close[i], exec.slip_rate)));
-    }
-    let fb = i + exec.delay_bars;
+    let fb = i + exec.delay();
     if fb >= n {
         if is_open {
             return None;
@@ -419,6 +463,31 @@ fn scan_trades(
     (trades, cash, equity_curve, trade_pnl_pcts, fixed_curve)
 }
 
+/// 单根 bar 的对数收益, 含**定义域保护**(两侧都要查)。
+///
+/// 空头持仓期间权益可能 ≤ 0(浮空)。此时比值 `curr/prev` 为负, `ln()` 返回 NaN;
+/// NaN 经 Welford 污染 `ret_mean`/`ret_m2` 后会让 `ret_m2 > 0.0` 守卫失效,
+/// 于是 sharpe/volatility 被**静默归零**(比 NaN 更危险: NaN 会暴露, 0 会被读成
+/// "零波动低风险"), 同时 sortino 直接输出 NaN。故 `prev <= 0`、`curr <= 0`
+/// 或任一侧非有限时记 0(退化而非污染)。
+///
+/// 注意: 只查 `prev` 不够 —— 首根即浮空(空头开仓当根权益转负)时 `prev` 仍为正,
+/// `curr/prev < 0` 依旧产出 NaN。
+#[inline]
+fn log_ret(prev: f64, curr: f64) -> f64 {
+    if !prev.is_finite() || !curr.is_finite() || prev <= 0.0 || curr <= 0.0 {
+        0.0
+    } else {
+        (curr / prev).ln()
+    }
+}
+
+/// 权益曲线 → 逐 bar 对数收益。引擎全部夏普口径的唯一来源; `pbo.rs::to_returns`
+/// 也必须调用本函数, 否则 CSCV 的 IS/OOS 排序与引擎排名不同源。
+pub fn bar_log_returns(curve: &[f64]) -> impl ExactSizeIterator<Item = f64> + '_ {
+    curve.windows(2).map(|w| log_ret(w[0], w[1]))
+}
+
 /// 权益曲线的核心统计(对数收益口径): 返回 (sharpe, max_dd, volatility, total_return)。
 /// 复利腿与 fixed 腿共用同一公式, 保证两套 Sharpe 口径一致可比。
 fn curve_stats(curve: &[f64], initial_cash: f64, bars_per_year: f64) -> (f64, f64, f64, f64) {
@@ -430,21 +499,21 @@ fn curve_stats(curve: &[f64], initial_cash: f64, bars_per_year: f64) -> (f64, f6
     let mut ret_m2 = 0.0;
     let mut peak = initial_cash;
     let mut max_dd = 0.0;
-    for i in 1..n {
-        let ret = (curve[i] / curve[i - 1]).ln();
+    for (k, ret) in bar_log_returns(curve).enumerate() {
+        let curr = curve[k + 1];
         let delta = ret - ret_mean;
-        ret_mean += delta / i as f64;
+        ret_mean += delta / (k + 1) as f64;
         ret_m2 += delta * (ret - ret_mean);
-        if curve[i] > peak {
-            peak = curve[i];
+        if curr > peak {
+            peak = curr;
         }
-        let dd = (peak - curve[i]) / peak;
+        let dd = (peak - curr) / peak;
         if dd > max_dd {
             max_dd = dd;
         }
     }
     let num_bars = (n - 1) as f64;
-    let (sharpe, volatility) = if ret_m2 > 0.0 && num_bars > 1.0 {
+    let (sharpe, volatility) = if ret_m2.is_finite() && ret_m2 > 0.0 && num_bars > 1.0 {
         let variance = ret_m2 / (num_bars - 1.0);
         (
             ret_mean / variance.sqrt() * bars_per_year.sqrt(),
@@ -482,20 +551,19 @@ fn compute_metrics(
     let mut ret_mean = 0.0;
     let mut ret_m2 = 0.0;
     let mut ret_m2_downside = 0.0;
+    let mut n_downside = 0.0;
     let mut peak = initial_cash;
     let mut max_dd = 0.0;
 
-    for i in 1..n {
-        let prev = equity_curve[i - 1];
-        let curr = equity_curve[i];
-        let ret = (curr / prev).ln();
-
+    for (k, ret) in bar_log_returns(equity_curve).enumerate() {
+        let curr = equity_curve[k + 1];
         let delta = ret - ret_mean;
-        ret_mean += delta / i as f64;
+        ret_mean += delta / (k + 1) as f64;
         let delta2 = ret - ret_mean;
         ret_m2 += delta * delta2;
         if ret < 0.0 {
             ret_m2_downside += ret * ret;
+            n_downside += 1.0;
         }
 
         if curr > peak {
@@ -513,21 +581,24 @@ fn compute_metrics(
     } else {
         0.0
     };
-    let sharpe = if ret_m2 > 0.0 && num_bars > 1.0 {
+    let sharpe = if ret_m2.is_finite() && ret_m2 > 0.0 && num_bars > 1.0 {
         let variance = ret_m2 / (num_bars - 1.0);
         ret_mean / variance.sqrt() * bars_per_year.sqrt()
     } else {
         0.0
     };
 
-    let sortino = if ret_m2_downside > 0.0 && num_bars > 1.0 {
-        let downside_var = ret_m2_downside / num_bars;
+    // 下行偏差按**下行 bar 数**(n_downside)归一, 与 sharpe 同为 ddof=1。
+    // 原实现除以 num_bars(全部 bar 数), 使 sortino 的分母自由度与 sharpe 不一致
+    // (后者除以 num_bars-1), 两者并列报告时不可比。
+    let sortino = if ret_m2_downside.is_finite() && ret_m2_downside > 0.0 && n_downside > 1.0 {
+        let downside_var = ret_m2_downside / (n_downside - 1.0);
         ret_mean / downside_var.sqrt() * bars_per_year.sqrt()
     } else {
         0.0
     };
 
-    let volatility = if ret_m2 > 0.0 && num_bars > 1.0 {
+    let volatility = if ret_m2.is_finite() && ret_m2 > 0.0 && num_bars > 1.0 {
         (ret_m2 / (num_bars - 1.0)).sqrt() * bars_per_year.sqrt() * 100.0
     } else {
         0.0
@@ -676,8 +747,11 @@ fn compute_metrics(
     let sqn = if nt > 1.0 && pnl_m2 > 0.0 {
         let pnl_std = (pnl_m2 / (nt - 1.0)).sqrt();
         if pnl_std > 0.0 {
-            let effective_n = nt.min(100.0);
-            pnl_mean / pnl_std * effective_n.sqrt()
+            // SQN = √n · mean/stdev (Van Thorp, "The Risk of Ruin" 1998)。
+            // √n 是定义中**有意的**统计显著性因子, 不可封顶: 原实现用 min(n,100)
+            // 会让 n=200 与 n=20000 得到相同 SQN, 抹掉"证据量"这一维度。
+            // 小样本的可读性由"配对 num_trades 列 + 门槛"解决(Van Thorp 建议 n>=30)。
+            pnl_mean / pnl_std * nt.sqrt()
         } else {
             0.0
         }
@@ -863,7 +937,7 @@ pub fn simulate(
         initial_cash,
         bars_per_year,
     );
-    summary.delay_bars = exec.delay_bars as u32;
+    summary.delay_bars = exec.delay() as u32;
     summary.fee_bps = exec.fee_rate * 10_000.0;
     summary.slippage_bps = exec.slip_rate * 10_000.0;
     summary
@@ -899,7 +973,7 @@ pub fn simulate_detailed(
         initial_cash,
         bars_per_year,
     );
-    summary.delay_bars = exec.delay_bars as u32;
+    summary.delay_bars = exec.delay() as u32;
     summary.fee_bps = exec.fee_rate * 10_000.0;
     summary.slippage_bps = exec.slip_rate * 10_000.0;
 
@@ -998,20 +1072,46 @@ mod tests {
     }
 
     #[test]
-    fn test_default_exec_matches_legacy_close_fill() {
-        // 默认口径必须与旧逻辑逐位一致: 单多信号当根收盘进、末根收盘出。
+    fn test_default_exec_fills_at_next_bar_open() {
+        // 默认口径 = delay 1 + fill bar 开盘价: bar0 信号在 bar1 开盘成交,
+        // 末根强制收盘平仓。`delay_bars` 恒 >= 1(NonZeroUsize), "当根成交"分支
+        // 已从引擎层移除, 故不存在与之逐位一致的旧口径可比。
         let close = vec![100.0, 102.0, 101.0, 105.0];
         let open = vec![99.0, 100.5, 102.5, 101.5];
         let sig = vec![Signal::Buy, Signal::Hold, Signal::Hold, Signal::Hold];
         let m = simulate(&close, &open, &sig, 1000.0, 252.0, &ExecConfig::default());
         assert_eq!(m.num_trades, 1);
-        // 固定名义 1000/100=10 股, (105-100)*10=50。
+        assert_eq!(m.delay_bars, 1);
+        // 进 open[1]=100.5, 出 close[3]=105; 名义 1000/100.5。
+        let qty = 1000.0 / 100.5;
+        let expect = (105.0 - 100.5) * qty;
         assert!(
-            (m.total_fixed_pnl - 50.0).abs() < 1e-9,
-            "{}",
+            (m.total_fixed_pnl - expect).abs() < 1e-9,
+            "{} vs {expect}",
             m.total_fixed_pnl
         );
-        assert_eq!(m.delay_bars, 0);
+    }
+
+    /// delay_bars = 0(信号当根成交, 前视乐观)已从**引擎层**彻底移除:
+    /// 字段是 `NonZeroUsize`, 类型上无法构造, 构造期校验不可能被绕过。
+    #[test]
+    fn zero_delay_is_rejected_at_every_entry_point() {
+        assert_eq!(NonZeroUsize::MIN.get(), 1, "缺省必须是 1 bar");
+        assert!(ExecConfig::default().delay() >= 1);
+        assert!(ExecConfig::try_from_bps_fill(0, 0.0, 0.0, false).is_err());
+        for (d, fee, slip, close) in [
+            (0, 0.0, 0.0, false),
+            (0, 2.0, 1.0, true),
+            (0, -1.0, 0.0, false),
+        ] {
+            assert!(
+                ExecConfig::try_from_bps_fill(d, fee, slip, close).is_err(),
+                "delay=0 必须被拒(d={d}, fee={fee}, slip={slip})"
+            );
+        }
+        // from_bps / from_bps_fill 是 try_from 的 infallible 包装, 遇 0 直接 panic。
+        let panicked = std::panic::catch_unwind(|| ExecConfig::from_bps(0, 0.0, 0.0)).is_err();
+        assert!(panicked, "from_bps(0) 应 panic");
     }
 
     #[test]
@@ -1082,13 +1182,14 @@ mod tests {
     #[test]
     fn test_fee_and_slippage_deducted_per_side() {
         // fee 10bp + slip 10bp 双边: 进出各扣一次。用 Close 离场以隔离单笔数学。
-        let close = vec![100.0, 110.0];
+        // delay 恒 >= 1: bar0 信号在 bar1 成交, bar1 的 Close 在 bar2 成交。
+        let close = vec![100.0, 100.0, 110.0];
         let open = close.clone();
-        let sig = vec![Signal::Buy, Signal::Close];
-        let exec = ExecConfig::from_bps(0, 10.0, 10.0);
+        let sig = vec![Signal::Buy, Signal::Close, Signal::Hold];
+        let exec = ExecConfig::from_bps(1, 10.0, 10.0);
         let m = simulate(&close, &open, &sig, 1000.0, 252.0, &exec);
         assert_eq!(m.num_trades, 1);
-        // 进 100*1.001=100.1, 出 110*0.999=109.89; 名义 1000/100.1;
+        // 进 open[1]*1.001 = 100.1, 出 open[2]*0.999 = 109.89; 名义 1000/100.1;
         // 毛利 (109.89-100.1)*qty - 进出佣金 (100.1+109.89)*qty*0.001。
         let qty = 1000.0 / 100.1;
         let expect = (109.89 - 100.1) * qty - (100.1 + 109.89) * qty * 0.001;
@@ -1114,11 +1215,13 @@ mod tests {
 
     #[test]
     fn test_fixed_leg_matches_hand_calc() {
-        // fixed 腿: 单多 100→110(三根bar), 名义 1000 → +100, 期望 +1000bp。
-        let close = vec![100.0, 105.0, 110.0];
+        // fixed 腿: 单多 100→110, 名义 1000 → +100, 期望 +1000bp。
+        // delay 恒 >= 1: bar0 进(填在 bar1), bar2 的 Close 填在 bar3。
+        let close = vec![100.0, 100.0, 110.0, 110.0];
         let open = close.clone();
-        let sig = vec![Signal::Buy, Signal::Hold, Signal::Close];
+        let sig = vec![Signal::Buy, Signal::Hold, Signal::Close, Signal::Hold];
         let m = simulate(&close, &open, &sig, 1000.0, 252.0, &ExecConfig::default());
+        assert_eq!(m.num_trades, 1);
         assert!(
             (m.fixed_total_return - 0.1).abs() < 1e-12,
             "{}",

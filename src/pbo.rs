@@ -5,8 +5,9 @@
 //! IO 装配见 `--pbo` (读 detail fixedcurve 文件, 按组调用本模块)。
 //!
 //! 口径说明:
-//! - Sharpe 与引擎 `curve_stats` 同式: 逐 bar 简单收益样本方差(ddof=1)×√bpy;
-//!   唯一偏离: 上一 bar 权益 ≤0 时该 bar 收益记 0(引擎无此保护, 会出 inf 污染排名)。
+//! - Sharpe 与引擎 `curve_stats` 同式: 逐 bar **对数收益**样本方差(ddof=1)×√bpy,
+//!   逐 bar 收益由 `engine::bar_log_returns` 统一提供(含权益≤0 记 0 的定义域保护),
+//!   故 CSCV 排序与引擎 `sharpe_ratio` 同源。
 //! - OOS 相对排名 ω̄ = (OOS 弱于 n* 者数 + 1)/(N+1)(原文秩, 秩首为最差):
 //!   n* OOS 居首 → ω̄=N/(N+1) → λ>0 表一致; n* OOS 垫底 → λ<0 表过拟合。
 //!   故 ω̄∈[1/(N+1), N/(N+1)], logit 有限。并列按差处理(保守: 拿不到高排名)。
@@ -57,18 +58,14 @@ fn sharpe_of(rets: &[f64], bpy: f64) -> f64 {
     }
 }
 
-/// 权益曲线 → 逐 bar 简单收益(与引擎同式; 上一 bar≤0 则记 0)。
+/// 权益曲线 → 逐 bar 收益。**必须与引擎同口径**: 复用
+/// [`crate::engine::bar_log_returns`], 否则 CSCV 的 IS/OOS 排序与引擎
+/// `sharpe_ratio` 不同源。
+///
+/// 历史差异: 本函数曾独立实现且用**简单收益** `curr/prev - 1`, 注释却声称
+/// "与引擎 curve_stats 同式"(引擎用对数收益)。已统一。
 fn to_returns(equity: &[f64]) -> Vec<f64> {
-    let mut out = Vec::with_capacity(equity.len().saturating_sub(1));
-    for w in equity.windows(2) {
-        let (prev, curr) = (w[0], w[1]);
-        if prev <= 0.0 || !prev.is_finite() || !curr.is_finite() {
-            out.push(0.0);
-        } else {
-            out.push(curr / prev - 1.0);
-        }
-    }
-    out
+    crate::engine::bar_log_returns(equity).collect()
 }
 
 /// curves[j] = 第 j 条策略的 fixed 权益曲线(等长)。bpy = 该 TF 年化 bar 数。

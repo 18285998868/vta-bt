@@ -1,3 +1,4 @@
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
 use serde::Deserialize;
@@ -133,22 +134,9 @@ impl DataSection {
 }
 
 impl Config {
+    /// 语义校验。**执行口径(资金/费率/延迟)已由 [`BacktestConfig`] 的字段类型
+    /// 在反序列化时保证**, 此处不再重复检查; 只剩数据维度与策略专属约束。
     pub fn validate(&self) -> crate::error::Result<()> {
-        if self.backtest.initial_balance <= 0.0 {
-            return Err(AppError::Msg(
-                "初始资金 backtest.initial_balance 必须大于 0".into(),
-            ));
-        }
-        if self.backtest.fee_bps < 0.0 || self.backtest.slippage_bps < 0.0 {
-            return Err(AppError::Msg(
-                "backtest.fee_bps / slippage_bps 不能为负".into(),
-            ));
-        }
-        if self.backtest.delay_bars < 1 {
-            return Err(AppError::Msg(
-                "backtest.delay_bars = 0 已删除(信号当根成交, 前视乐观); 只允许≥1(次根 fill bar 起)".into(),
-            ));
-        }
         if self.data.symbols().iter().any(|s| s.is_empty()) || self.data.symbols().is_empty() {
             return Err(AppError::Msg("data.symbol 不能为空".into()));
         }
@@ -264,29 +252,121 @@ impl Config {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+/// 初始资金: **严格正且有限**。
+///
+/// 用 newtype 而非裸 `f64` + 运行时 `if`: 后者让 `balance = 0` 成为可表示的状态,
+/// 而它在下游会触发 `qty = cash / entry_price` 与 `fixed_qty = initial_cash / entry`
+/// 的除零。现在该值**无法用非法状态表示**。
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub struct InitialBalance(f64);
+
+impl InitialBalance {
+    #[must_use]
+    pub fn get(self) -> f64 {
+        self.0
+    }
+}
+
+impl TryFrom<f64> for InitialBalance {
+    type Error = AppError;
+
+    fn try_from(v: f64) -> crate::error::Result<Self> {
+        if v > 0.0 && v.is_finite() {
+            Ok(Self(v))
+        } else {
+            Err(AppError::Msg(format!(
+                "backtest.initial_balance 必须 > 0 且为有限值, 当前为 {v}"
+            )))
+        }
+    }
+}
+
+/// 单边费率(bp): **非负且有限**。负费率(返佣)当前未被任何语义支持, 故一并拒绝。
+macro_rules! nonneg_bps {
+    ($name:ident, $label:literal) => {
+        #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+        pub struct $name(f64);
+
+        impl $name {
+            #[must_use]
+            pub fn get(self) -> f64 {
+                self.0
+            }
+        }
+
+        impl TryFrom<f64> for $name {
+            type Error = AppError;
+
+            fn try_from(v: f64) -> crate::error::Result<Self> {
+                if v >= 0.0 && v.is_finite() {
+                    Ok(Self(v))
+                } else {
+                    Err(AppError::Msg(format!(
+                        "backtest.{} 不能为负且须为有限值, 当前为 {v}",
+                        $label
+                    )))
+                }
+            }
+        }
+    };
+}
+nonneg_bps!(FeeBps, "fee_bps");
+nonneg_bps!(SlippageBps, "slippage_bps");
+
+/// 缺省延迟 1 bar (次根 fill bar 成交)。`delay_bars = 0` 由 [`NonZeroUsize`]
+/// 在构造期拒绝。
+fn default_delay_bars() -> usize {
+    1
+}
+
+/// 反序列化中间层: 全部字段为裸类型 + serde `default`。
+/// 只做**语法**解析(缺省填充), 语义合法性交给 [`TryFrom`]。
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct BacktestConfig {
-    pub initial_balance: f64,
-    /// 信号到成交的延迟(bar 数)。只允许≥1: 信号次根 fill bar 成交;
-    /// delay = 0(信号当根收盘成交, 前视乐观)已删除, 写0直接报错。
+struct RawBacktestConfig {
+    initial_balance: f64,
     #[serde(default = "default_delay_bars")]
-    pub delay_bars: usize,
-    /// 单边佣金(bp)。如 taker 2bp 填 2.0, maker 零费填 0。
+    delay_bars: usize,
     #[serde(default)]
-    pub fee_bps: f64,
-    /// 单边逆向滑点(bp)。买入抬价、卖出压价; 与 fee 叠加扣除。
+    fee_bps: f64,
     #[serde(default)]
-    pub slippage_bps: f64,
+    slippage_bps: f64,
+    #[serde(default)]
+    fill_bar_price: FillBarPrice,
+}
+
+/// 回测执行配置。**字段类型保证值合法**, 无需事后 `validate()`:
+/// `try_from` 使非法 TOML 在**反序列化时**就报错(自带行列号), 而不是在 `run()`
+/// 里被逐条 `if` 拦下。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(try_from = "RawBacktestConfig")]
+pub struct BacktestConfig {
+    pub initial_balance: InitialBalance,
+    /// 信号到成交的 bar 间隔, 恒 ≥ 1。`delay_bars = 0`(信号当根成交, 前视乐观)
+    /// 已在引擎层彻底移除, 此处类型级拒绝。
+    pub delay_bars: NonZeroUsize,
+    pub fee_bps: FeeBps,
+    pub slippage_bps: SlippageBps,
     /// fill bar 的成交价: "open"(默认, 次根开盘)或 "close"(次根收盘)。
-    /// 旧配置文件无此键时回退为 open, 历史结果不受影响。
-    #[serde(default)]
     pub fill_bar_price: FillBarPrice,
 }
 
-/// 缺省延迟 1 bar (次根 fill bar 成交); delay = 0 已删除, 见 validate。
-fn default_delay_bars() -> usize {
-    1
+impl TryFrom<RawBacktestConfig> for BacktestConfig {
+    type Error = AppError;
+
+    fn try_from(r: RawBacktestConfig) -> crate::error::Result<Self> {
+        Ok(Self {
+            initial_balance: InitialBalance::try_from(r.initial_balance)?,
+            delay_bars: NonZeroUsize::new(r.delay_bars).ok_or_else(|| {
+                AppError::Msg(
+                    "backtest.delay_bars 必须 >= 1: 信号当根成交为前视乐观口径, 已移除".to_string(),
+                )
+            })?,
+            fee_bps: FeeBps::try_from(r.fee_bps)?,
+            slippage_bps: SlippageBps::try_from(r.slippage_bps)?,
+            fill_bar_price: r.fill_bar_price,
+        })
+    }
 }
 
 /// fill bar 的成交价位 (delay恒≥1)。
@@ -579,26 +659,42 @@ mod tests {
         assert!(cfg.validate().is_ok());
     }
 
+    /// newtype 改造后: 资金/费率/延迟的非法值在**反序列化时**就被拒(自带行列号),
+    /// 不再依赖 `validate()` 的逐条 `if`。
     #[test]
-    fn validate_rejects_zero_balance() {
-        let cfg: Config = toml::from_str(&make_toml(0.0, true, true)).unwrap();
-        assert!(cfg.validate().is_err());
-    }
-
-    #[test]
-    fn validate_rejects_zero_delay_bars() {
-        let toml = make_toml(10000.0, true, true).replace(
+    fn illegal_exec_params_rejected_at_parse_time() {
+        assert!(toml::from_str::<Config>(&make_toml(0.0, true, true)).is_err());
+        assert!(toml::from_str::<Config>(&make_toml(-100.0, true, true)).is_err());
+        assert!(toml::from_str::<Config>(&make_toml(f64::INFINITY, true, true)).is_err());
+        let zero_delay = make_toml(10000.0, true, true).replace(
             "initial_balance = 10000",
             "initial_balance = 10000.0\ndelay_bars = 0",
         );
-        let cfg: Config = toml::from_str(&toml).unwrap();
-        assert!(cfg.validate().is_err());
+        assert!(toml::from_str::<Config>(&zero_delay).is_err());
+        for key in ["fee_bps", "slippage_bps"] {
+            let neg = make_toml(10000.0, true, true).replace(
+                "initial_balance = 10000",
+                &format!("initial_balance = 10000.0\n{key} = -1.0"),
+            );
+            assert!(toml::from_str::<Config>(&neg).is_err(), "{key}=-1 应被拒");
+        }
+    }
+
+    /// 类型层保证: 合法值解析出的字段使其不可能表示非法值。
+    #[test]
+    fn parsed_exec_params_valid_by_construction() {
+        let cfg: Config = toml::from_str(&make_toml(10000.0, true, true)).unwrap();
+        assert_eq!(cfg.backtest.initial_balance.get(), 10000.0);
+        assert!(cfg.backtest.delay_bars.get() >= 1);
+        assert!(cfg.backtest.fee_bps.get() >= 0.0);
+        assert!(cfg.backtest.slippage_bps.get() >= 0.0);
+        assert!(cfg.validate().is_ok());
     }
 
     #[test]
     fn missing_delay_bars_defaults_to_one() {
         let cfg: Config = toml::from_str(&make_toml(10000.0, true, true)).unwrap();
-        assert_eq!(cfg.backtest.delay_bars, 1);
+        assert_eq!(cfg.backtest.delay_bars.get(), 1);
         assert!(cfg.validate().is_ok());
     }
 

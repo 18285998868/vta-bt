@@ -56,7 +56,7 @@ fn params_fingerprint(
         h = h.wrapping_mul(0x0000_0100_0000_01b3);
     }
     // 执行口径变更必须失效旧缓存, 否则 delay/费率/fill 不同的结果会误命中。
-    for b in (exec.delay_bars as u64).to_le_bytes() {
+    for b in (exec.delay() as u64).to_le_bytes() {
         h ^= u64::from(b);
         h = h.wrapping_mul(0x0000_0100_0000_01b3);
     }
@@ -219,7 +219,7 @@ fn run_combo(
                     strategy: strategy.name().to_string(),
                     params: params.clone(),
                     metrics: summary,
-                    delay_bars: ctx.exec.delay_bars as u32,
+                    delay_bars: ctx.exec.delay() as u32,
                     fee_bps: ctx.exec.fee_rate * 10_000.0,
                     slippage_bps: ctx.exec.slip_rate * 10_000.0,
                     fill_close: ctx.exec.fill_close,
@@ -289,7 +289,7 @@ fn run_combo(
                         strategy: strategy.name().to_string(),
                         params: strategy.param_str(i),
                         metrics,
-                        delay_bars: ctx.exec.delay_bars as u32,
+                        delay_bars: ctx.exec.delay() as u32,
                         fee_bps: ctx.exec.fee_rate * 10_000.0,
                         slippage_bps: ctx.exec.slip_rate * 10_000.0,
                         fill_close: ctx.exec.fill_close,
@@ -331,7 +331,7 @@ pub fn run(config_path: &str) -> crate::error::Result<()> {
     let detail = config.output.as_ref().is_some_and(|o| o.detail);
     let fixed_curves = config.output.as_ref().is_some_and(|o| o.fixed_curves);
     let overwrite = config.output.as_ref().is_some_and(|o| o.overwrite);
-    let balance = config.backtest.initial_balance;
+    let balance = config.backtest.initial_balance.get();
     let window = format!(
         "{}~{}",
         config.data.start_date.as_deref().unwrap_or(""),
@@ -363,12 +363,12 @@ pub fn run(config_path: &str) -> crate::error::Result<()> {
         temps_dir: temps_dir.clone(),
         detail_dir: detail_dir.clone(),
         window: window.clone(),
-        exec: crate::engine::ExecConfig::from_bps_fill(
-            config.backtest.delay_bars,
-            config.backtest.fee_bps,
-            config.backtest.slippage_bps,
+        exec: crate::engine::ExecConfig::try_from_bps_fill(
+            config.backtest.delay_bars.get(),
+            config.backtest.fee_bps.get(),
+            config.backtest.slippage_bps.get(),
             config.backtest.fill_bar_price == config::FillBarPrice::Close,
-        ),
+        )?,
     };
 
     println!("\n{}", "=".repeat(70));
