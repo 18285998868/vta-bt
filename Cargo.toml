@@ -37,7 +37,7 @@ serde_json = "1"
 [workspace.dependencies]
 # 相对路径: 换机器/进 CI 无需改任何文件(此前 `vector-ta` 写死 `/home/lkf/src/VectorTA`,
 # 导致构建环境不可复现)。
-vector-ta = { path = "/home/lkf/src/VectorTA" }
+vector-ta = { path = "../libs/VectorTA" }
 kline-reader = { path = "../libs/kline-reader" }
 
 # 统一 lint 门禁: CI 与本地 `cargo clippy -- -D warnings` 行为一致。
