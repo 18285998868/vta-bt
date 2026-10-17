@@ -204,6 +204,76 @@ struct ComboCtx {
     exec: crate::engine::ExecConfig,
 }
 
+impl ComboCtx {
+    /// 构造一行 [`RunResult`]。**唯一构造点**。
+    ///
+    /// 此前 detail 与非 detail 两条分支各写一份 16 字段的字面量。两条分支的字段
+    /// 集合已经在 L5(O6/bars_used/status)改造中发生过漂移风险 —— 任何一次新增
+    /// 字段都可能只改到其中一条。这里收敛成单一来源后, 新增字段必然两分支同时生效。
+    #[allow(clippy::too_many_arguments)]
+    fn run_row(
+        &self,
+        symbol: &str,
+        tf: &str,
+        strategy: &dyn crate::strategies::Strategy,
+        params: &str,
+        metrics: engine::SummaryMetrics,
+        bars_used: usize,
+        status: RunStatus,
+        bh_pnl: f64,
+        bh_ret: f64,
+    ) -> RunResult {
+        RunResult {
+            symbol: symbol.to_string(),
+            timeframe: tf.to_string(),
+            strategy: strategy.name().to_string(),
+            params: params.to_string(),
+            strategy_params: output::strategy_params_value(params),
+            strategy_params_json: output::params_to_json(params),
+            metrics,
+            delay_bars: self.exec.delay() as u32,
+            fee_bps: self.exec.fee_rate * 10_000.0,
+            slippage_bps: self.exec.slip_rate * 10_000.0,
+            fill_close: self.exec.fill_close,
+            buy_hold_pnl: bh_pnl,
+            buy_hold_return: bh_ret,
+            bars_used: bars_used as u32,
+            status,
+        }
+    }
+}
+
+/// K 线六列必须**等长**。
+///
+/// 引擎内部多处用 `close.len().min(open.len())` 之类的截断来"保证"不越界。截断
+/// 是静默的: 若某列短了, 引擎只会少回测几根 bar, 而**指标不会报错** —— 报告里
+/// 的 bars_used 与用户预期不符, 研究结论却在无声地少算一段数据。
+/// 更坏的情形是 `time` 比价列短: `scan_trades` 的 `ts(i)` 会退化成用 bar 序号
+/// 当时间戳, detail 落盘的 `entry_time`/`exit_time` 变成假时间。
+///
+/// 因此在进入回测前一次性拒绝, 让问题在**数据加载边界**暴露。
+fn assert_columns_aligned(
+    cols: &kline_reader::KlineColumns,
+    where_: &str,
+) -> crate::error::Result<()> {
+    let lens = [
+        ("time", cols.time.len()),
+        ("open", cols.open.len()),
+        ("high", cols.high.len()),
+        ("low", cols.low.len()),
+        ("close", cols.close.len()),
+        ("volume", cols.volume.len()),
+    ];
+    let n = lens[4].1;
+    if let Some((name, len)) = lens.iter().find(|(_, l)| *l != n) {
+        return Err(crate::error::AppError::Msg(format!(
+            "{where_}: K 线列长度不一致 —— {name}={len}, close={n}; \
+             会导致引擎静默截断少算 bar 或时间戳失真。请重新下载/清洗数据"
+        )));
+    }
+    Ok(())
+}
+
 /// 执行单个 (symbol, timeframe, strategy) 组合:
 /// 1. 若 overwrite=false 且缓存文件(含参数指纹)已存在且可读, 直接返回(跳过)
 /// 2. 该策略的 n 个参数并行执行 信号生成+回测; detail 模式收集 trades/equity_curve
@@ -219,6 +289,7 @@ fn run_combo(
     bpy: f64,
     ctx: &ComboCtx,
 ) -> crate::error::Result<(PathBuf, bool)> {
+    assert_columns_aligned(cols, &format!("{symbol}/{tf}"))?;
     let n = strategy.param_count();
 
     let combo_path = combo_parquet_path(
@@ -336,23 +407,17 @@ fn run_combo(
                     equity_curve,
                     fixed_curve,
                 } = sim;
-                run_rows.push(RunResult {
-                    symbol: symbol.to_string(),
-                    timeframe: tf.to_string(),
-                    strategy: strategy.name().to_string(),
-                    params: params.clone(),
-                    metrics: summary,
-                    strategy_params: output::strategy_params_value(&params),
-                    strategy_params_json: output::params_to_json(&params),
-                    delay_bars: ctx.exec.delay() as u32,
-                    fee_bps: ctx.exec.fee_rate * 10_000.0,
-                    slippage_bps: ctx.exec.slip_rate * 10_000.0,
-                    fill_close: ctx.exec.fill_close,
-                    buy_hold_pnl: bh_pnl,
-                    buy_hold_return: bh_ret,
-                    bars_used: cols.len() as u32,
+                run_rows.push(ctx.run_row(
+                    symbol,
+                    tf,
+                    strategy,
+                    &params,
+                    summary,
+                    cols.len(),
                     status,
-                });
+                    bh_pnl,
+                    bh_ret,
+                ));
                 detail_rows.push(DetailResult {
                     symbol: symbol.to_string(),
                     timeframe: tf.to_string(),
@@ -801,5 +866,97 @@ mod tests {
             "构造 0 行缓存作为反例"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// L6: K 线六列必须等长, 否则引擎会**静默截断**少算 bar。
+    ///
+    /// 可触发场景: 某列短了 → 引擎 `close.len().min(open.len())` 少回测几根,
+    /// 指标不报错但 bars_used 与预期不符; `time` 短 → `ts(i)` 退化成用 bar 序号
+    /// 当时间戳, detail 落盘的时间字段变成假时间。
+    #[test]
+    fn uneven_kline_columns_are_rejected_before_backtest() {
+        let c = cols(10);
+        assert!(assert_columns_aligned(&c, "t").is_ok(), "等长必须通过");
+
+        for mutate in [
+            (0usize, "time"),
+            (1, "open"),
+            (2, "high"),
+            (3, "low"),
+            (4, "close"),
+            (5, "volume"),
+        ] {
+            let (idx, name) = mutate;
+            let mut bad = cols(10);
+            if idx == 0 {
+                bad.time.pop();
+            } else {
+                match idx {
+                    1 => bad.open.pop(),
+                    2 => bad.high.pop(),
+                    3 => bad.low.pop(),
+                    4 => bad.close.pop(),
+                    _ => bad.volume.pop(),
+                };
+            }
+            let e = assert_columns_aligned(&bad, "BTCUSDT/1d").expect_err("列长不一致必须被拒");
+            let m = format!("{e}");
+            assert!(m.contains(name), "错误消息应点名出问题的列 {name}: {m}");
+            assert!(m.contains("BTCUSDT/1d"), "错误消息应带上品种/周期: {m}");
+        }
+        // 空数据不算"长度不一致", 交由 is_empty 判断
+        let empty = cols(0);
+        assert!(assert_columns_aligned(&empty, "t").is_ok());
+    }
+
+    /// O9: `RunResult` 的构造必须**单一来源**, 否则两条分支的字段会漂移。
+    #[test]
+    fn run_row_is_the_single_construction_point() {
+        let s = build_strategies(&[config::StrategyConfig::Sma(config::MaGridCfg {
+            period: config::PeriodParam::Single(20),
+        })])
+        .pop()
+        .expect("sma");
+        let ctx = ComboCtx {
+            balance: 10_000.0,
+            detail: false,
+            fixed_curves: false,
+            overwrite: true,
+            temps_dir: "t".into(),
+            detail_dir: "d".into(),
+            window: "a~b".into(),
+            exec: engine::ExecConfig::try_from_bps_fill(1, 2.0, 1.0, true).unwrap(),
+        };
+        let m = engine::SummaryMetrics {
+            sharpe_ratio: 1.25,
+            ..engine::SummaryMetrics::default()
+        };
+        let r = ctx.run_row(
+            "BTCUSDT",
+            "1d",
+            &*s,
+            "period=20",
+            m,
+            300,
+            RunStatus::NoSignals,
+            123.0,
+            0.0123,
+        );
+        // 执行口径字段由 ctx 提供, 不可能与分支漂移
+        assert_eq!(r.delay_bars, 1);
+        assert!((r.fee_bps - 2.0).abs() < 1e-12);
+        assert!((r.slippage_bps - 1.0).abs() < 1e-12);
+        assert!(r.fill_close);
+        // params 派生的两列也在此处统一
+        assert_eq!(
+            r.strategy_params,
+            output::strategy_params_value("period=20")
+        );
+        assert_eq!(r.strategy_params_json, "{\"period\":\"20\"}");
+        // L5 两列
+        assert_eq!(r.bars_used, 300);
+        assert_eq!(r.status, RunStatus::NoSignals);
+        assert_eq!(r.metrics.sharpe_ratio, 1.25);
+        assert!((r.buy_hold_pnl - 123.0).abs() < 1e-12);
     }
 }
