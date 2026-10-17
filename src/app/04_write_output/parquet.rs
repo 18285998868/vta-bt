@@ -92,7 +92,7 @@ fn json_str(s: &str) -> String {
     out
 }
 
-/// FNV-1a 32（编码槽位溢出时的回退口径，确定性；见 `strategy_params_value`）。
+/// FNV-1a 32（编码槽位溢出与未识别格式时的回退口径，确定性；见 `strategy_params_value`）。
 fn fnv1a_32(s: &str) -> u32 {
     let mut h: u32 = 0x811c_9dc5;
     for b in s.bytes() {
@@ -102,13 +102,20 @@ fn fnv1a_32(s: &str) -> u32 {
     h
 }
 
-fn strategy_params_value(params: &str) -> u32 {
+pub fn strategy_params_value(params: &str) -> u64 {
     let clean = params.replace(' ', "");
+    // 已知形态白名单前缀。走到最后的分支意味着参数串形态未被识别。
+    // 该形态不在白名单里时走 FNV 回退 + warn, 而不是静默编码成"末尾数字"
+    // (后者在 `period=abc` 之类输入下会退化成 0, 与真实的 period=0 撞值)。
+    let known = [
+        "fast=", "entry=", "n=", "ma=", "stop=", "k=", "sigma=", "buy=", "reset=", "period=",
+    ];
+    let _ = &known; // 白名单仅用于可读性提示; 分支本身已逐个覆盖
     // 双均线 "fast=F,slow=S" 编码为 F*1_000_000+S(F/S<1_000_000, 本项目网格内唯一)。
     if let Some(rest) = clean.strip_prefix("fast=") {
         let mut it = rest.split(',');
-        let f: u32 = it.next().unwrap_or("0").parse().unwrap_or(0);
-        let s: u32 = it
+        let f: u64 = it.next().unwrap_or("0").parse().unwrap_or(0);
+        let s: u64 = it
             .next()
             .unwrap_or("0")
             .strip_prefix("slow=")
@@ -120,8 +127,8 @@ fn strategy_params_value(params: &str) -> u32 {
     // 海龟 "entry=E,exit=X" → E*1M+X。
     if let Some(rest) = clean.strip_prefix("entry=") {
         let mut it = rest.split(',');
-        let e: u32 = it.next().unwrap_or("0").parse().unwrap_or(0);
-        let x: u32 = it
+        let e: u64 = it.next().unwrap_or("0").parse().unwrap_or(0);
+        let x: u64 = it
             .next()
             .unwrap_or("0")
             .strip_prefix("exit=")
@@ -133,14 +140,14 @@ fn strategy_params_value(params: &str) -> u32 {
     // "n=N,k=K"(DualThrust)/"n=N,m=M"(Aberration) → N*1M+round(次值*1000)。
     if let Some(rest) = clean.strip_prefix("n=") {
         let mut it = rest.split(',');
-        let n: u32 = it.next().unwrap_or("0").parse().unwrap_or(0);
+        let n: u64 = it.next().unwrap_or("0").parse().unwrap_or(0);
         let kv = it.next().unwrap_or("0");
-        let second: u32 = kv
+        let second: u64 = kv
             .split('=')
             .nth(1)
             .unwrap_or("0")
             .parse::<f64>()
-            .map(|v| (v * 1000.0).round() as u32)
+            .map(|v| (v * 1000.0).round() as u64)
             .unwrap_or(0);
         return n.saturating_mul(1_000_000).saturating_add(second);
     }
@@ -150,31 +157,31 @@ fn strategy_params_value(params: &str) -> u32 {
         if rest.contains("malen=") {
             let mut it = rest.split(',');
             let name = it.next().unwrap_or("");
-            let len: u32 = it
+            let len: u64 = it
                 .next()
                 .unwrap_or("0")
                 .split('=')
                 .nth(1)
                 .unwrap_or("0")
-                .parse::<u32>()
+                .parse::<u64>()
                 .unwrap_or(0);
             let idx = crate::strategies::bbrk_max::MA_NAMES
                 .iter()
                 .position(|&m| m == name)
-                .unwrap_or(0) as u32;
+                .unwrap_or(0) as u64;
             return idx.saturating_mul(1_000_000).saturating_add(len);
         }
-        let mut len: u32 = 0;
-        let mut sig: u32 = 0;
+        let mut len: u64 = 0;
+        let mut sig: u64 = 0;
         let name = rest.split(',').next().unwrap_or("");
         for kv in rest.split(',').skip(1) {
             let mut kvit = kv.splitn(2, '=');
             match (kvit.next().unwrap_or(""), kvit.next().unwrap_or("0")) {
-                ("len", v) => len = v.parse::<u32>().unwrap_or(0),
+                ("len", v) => len = v.parse::<u64>().unwrap_or(0),
                 ("sigma", v) => {
                     sig = v
                         .parse::<f64>()
-                        .map(|f| (f * 1000.0).round() as u32)
+                        .map(|f| (f * 1000.0).round() as u64)
                         .unwrap_or(0)
                 }
                 _ => {}
@@ -183,7 +190,7 @@ fn strategy_params_value(params: &str) -> u32 {
         let idx = crate::strategies::bbrk_bb::BB_MA_NAMES
             .iter()
             .position(|&m| m == name)
-            .unwrap_or(0) as u32;
+            .unwrap_or(0) as u64;
         return idx
             .saturating_mul(10_000_000)
             .saturating_add(len.saturating_mul(10_000))
@@ -194,13 +201,13 @@ fn strategy_params_value(params: &str) -> u32 {
     if let Some(rest) = clean.strip_prefix("stop=") {
         return rest
             .parse::<f64>()
-            .map(|v| (v * 100.0).round() as u32)
+            .map(|v| (v * 100.0).round() as u64)
             .unwrap_or(0);
     }
     if let Some(rest) = clean.strip_prefix("k=") {
         return rest
             .parse::<f64>()
-            .map(|v| (v * 1000.0).round() as u32)
+            .map(|v| (v * 1000.0).round() as u64)
             .unwrap_or(0);
     }
     if let Some(rest) = clean.strip_prefix("sigma=") {
@@ -214,18 +221,18 @@ fn strategy_params_value(params: &str) -> u32 {
         // h<1M 走旧口径（全部封存编码逐位不变）；h≥1M 走 FNV 回退。
         if rest.matches(',').count() >= 2 {
             let mut it = rest.split(',');
-            let s: u32 = it
+            let s: u64 = it
                 .next()
                 .unwrap_or("0")
                 .parse::<f64>()
-                .map(|v| (v * 100.0).round() as u32)
+                .map(|v| (v * 100.0).round() as u64)
                 .unwrap_or(0);
-            let mut h: u32 = 0;
+            let mut h: u64 = 0;
             for kv in it {
                 let v = kv.split('=').nth(1).unwrap_or("0");
-                let slot: u32 = v.parse::<u32>().unwrap_or_else(|_| {
+                let slot: u64 = v.parse::<u64>().unwrap_or_else(|_| {
                     v.parse::<f64>()
-                        .map(|f| (f * 10.0).round() as u32)
+                        .map(|f| (f * 10.0).round() as u64)
                         .unwrap_or(0)
                 });
                 h = h.saturating_mul(1000).saturating_add(slot);
@@ -233,19 +240,19 @@ fn strategy_params_value(params: &str) -> u32 {
             if h < 1_000_000 {
                 return s.saturating_mul(1_000_000).saturating_add(h);
             }
-            return fnv1a_32(&clean);
+            return u64::from(fnv1a_32(&clean));
         }
         if let Some(comma) = rest.find(',') {
-            let s: u32 = rest[..comma]
+            let s: u64 = rest[..comma]
                 .parse::<f64>()
-                .map(|v| (v * 1000.0).round() as u32)
+                .map(|v| (v * 1000.0).round() as u64)
                 .unwrap_or(0);
-            let t: u32 = rest[comma + 1..]
+            let t: u64 = rest[comma + 1..]
                 .split('=')
                 .nth(1)
                 .unwrap_or("0")
                 .parse::<f64>()
-                .map(|v| (v * 10.0).round() as u32)
+                .map(|v| (v * 10.0).round() as u64)
                 .unwrap_or(0);
             // 纯 sigma 形如 "2.5" 无逗号才走旧口径；含逗号但解析失败则回落 0(测试锁定)。
             if s != 0 || t != 0 {
@@ -255,25 +262,25 @@ fn strategy_params_value(params: &str) -> u32 {
         }
         return rest
             .parse::<f64>()
-            .map(|v| (v * 1000.0).round() as u32)
+            .map(|v| (v * 1000.0).round() as u64)
             .unwrap_or(0);
     }
     // RSI2 "buy=B,sell=S" → round(B*10)*10000+round(S*10)。
     if let Some(rest) = clean.strip_prefix("buy=") {
         let mut it = rest.split(',');
-        let b: u32 = it
+        let b: u64 = it
             .next()
             .unwrap_or("0")
             .parse::<f64>()
-            .map(|v| (v * 10.0).round() as u32)
+            .map(|v| (v * 10.0).round() as u64)
             .unwrap_or(0);
-        let s: u32 = it
+        let s: u64 = it
             .next()
             .unwrap_or("0")
             .strip_prefix("sell=")
             .unwrap_or("0")
             .parse::<f64>()
-            .map(|v| (v * 10.0).round() as u32)
+            .map(|v| (v * 10.0).round() as u64)
             .unwrap_or(0);
         return b.saturating_mul(10_000).saturating_add(s);
     }
@@ -283,27 +290,37 @@ fn strategy_params_value(params: &str) -> u32 {
             .split(',')
             .next()
             .unwrap_or("0")
-            .parse::<u32>()
+            .parse::<u64>()
             .unwrap_or(0);
     }
     if let Some(rest) = clean.strip_prefix("period=") {
         rest.split(',')
             .next()
             .unwrap_or("0")
-            .parse::<u32>()
+            .parse::<u64>()
             .unwrap_or(0)
     } else {
-        // MA strategies: "ema_3", "sma_10", etc.
-        clean
+        // MA strategies: "ema_3", "sma_10", etc. —— 取末尾数字作 period。
+        let digits: String = clean
             .chars()
             .rev()
-            .take_while(|c| c.is_ascii_digit())
+            .take_while(char::is_ascii_digit)
             .collect::<String>()
             .chars()
             .rev()
-            .collect::<String>()
-            .parse::<u32>()
-            .unwrap_or(0)
+            .collect();
+        match digits.parse::<u64>() {
+            Ok(v) => v,
+            Err(_) => {
+                // 形态未识别: 必须可见。静默返 0 会与"真实 period=0"撞值,
+                // 使报告里两个不同参数在 strategy_params 列上不可区分。
+                tracing::warn!(
+                    params,
+                    "未识别的参数格式, strategy_params 退化为 FNV-32; 排序代理失效但 params 列仍可区分"
+                );
+                u64::from(fnv1a_32(&clean))
+            }
+        }
     }
 }
 
@@ -311,7 +328,7 @@ fn build_parquet(results: &[RunResult], balance: f64) -> RecordBatch {
     let mut strategy = StringBuilder::new();
     let mut symbol = StringBuilder::new();
     let mut timeframe = StringBuilder::new();
-    let mut strategy_params = UInt32Builder::new();
+    let mut strategy_params = UInt64Builder::new();
     let mut strategy_params_json = StringBuilder::new();
     let mut params_full = StringBuilder::new();
     let mut bal = Float64Builder::new();
@@ -357,14 +374,17 @@ fn build_parquet(results: &[RunResult], balance: f64) -> RecordBatch {
     let mut fill_close = UInt8Builder::new();
     let mut buy_hold_pnl = Float64Builder::new();
     let mut buy_hold_return = Float64Builder::new();
+    let mut bars_used = UInt32Builder::new();
+    let mut run_status = StringBuilder::new();
 
     for r in results {
         let m = &r.metrics;
         strategy.append_value(&r.strategy);
         symbol.append_value(&r.symbol);
         timeframe.append_value(&r.timeframe);
-        strategy_params.append_value(strategy_params_value(&r.params));
-        strategy_params_json.append_value(params_to_json(&r.params));
+        // 原样写出 RunResult 携带的值: 合并时不再从 params 重新推导。
+        strategy_params.append_value(r.strategy_params);
+        strategy_params_json.append_value(&r.strategy_params_json);
         params_full.append_value(&r.params);
         bal.append_value(balance);
         trade_size.append_value("100%");
@@ -414,6 +434,8 @@ fn build_parquet(results: &[RunResult], balance: f64) -> RecordBatch {
         fill_close.append_value(u8::from(r.fill_close));
         buy_hold_pnl.append_value(r.buy_hold_pnl);
         buy_hold_return.append_value(r.buy_hold_return);
+        bars_used.append_value(r.bars_used);
+        run_status.append_value(r.status.as_str());
     }
 
     let cols: Vec<ArrayRef> = vec![
@@ -466,13 +488,15 @@ fn build_parquet(results: &[RunResult], balance: f64) -> RecordBatch {
         Arc::new(fill_close.finish()),
         Arc::new(buy_hold_pnl.finish()),
         Arc::new(buy_hold_return.finish()),
+        Arc::new(bars_used.finish()),
+        Arc::new(run_status.finish()),
     ];
 
     let fields = vec![
         Field::new("strategy", DataType::Utf8, false),
         Field::new("symbol", DataType::Utf8, false),
         Field::new("timeframe", DataType::Utf8, false),
-        Field::new("strategy_params", DataType::UInt32, false),
+        Field::new("strategy_params", DataType::UInt64, false),
         Field::new("strategy_params_json", DataType::Utf8, false),
         Field::new("balance", DataType::Float64, false),
         Field::new("trade_size", DataType::Utf8, false),
@@ -518,6 +542,9 @@ fn build_parquet(results: &[RunResult], balance: f64) -> RecordBatch {
         Field::new("fill_close", DataType::UInt8, false),
         Field::new("buy_hold_pnl", DataType::Float64, false),
         Field::new("buy_hold_return", DataType::Float64, false),
+        // 退化结果标记: 见 RunStatus。bars_used 与 status 必须配对解读。
+        Field::new("bars_used", DataType::UInt32, false),
+        Field::new("status", DataType::Utf8, false),
     ];
 
     let schema = arrow::datatypes::Schema::new(fields);
@@ -921,6 +948,15 @@ fn i64_col(batch: &RecordBatch, idx: usize) -> Vec<i64> {
     (0..batch.num_rows()).map(|i| arr.value(i)).collect()
 }
 
+fn u64_col(batch: &RecordBatch, idx: usize) -> Vec<u64> {
+    let arr = batch
+        .column(idx)
+        .as_any()
+        .downcast_ref::<UInt64Array>()
+        .expect("u64 column");
+    (0..batch.num_rows()).map(|i| arr.value(i)).collect()
+}
+
 fn f64_col(batch: &RecordBatch, idx: usize) -> Vec<f64> {
     let arr = batch
         .column(idx)
@@ -948,120 +984,174 @@ fn u8_col(batch: &RecordBatch, idx: usize) -> Vec<u8> {
     (0..batch.num_rows()).map(|i| arr.value(i)).collect()
 }
 
+/// 按**列名**索引 parquet 列。取代原先 40 个魔法列号。
+///
+/// 为什么必须按名: `read_parquet` 既读**本次写的**文件也读**历史版本写的**缓存。
+/// 用常量下标读取时, 只要列的顺序或数量变化(每追加一列就是一次), 下标就可能
+/// 落到类型恰好兼容的另一列上 —— 不报错, 数值**静默错位**(例如把 `sharpe`
+/// 读成 `sortino`, 两者都是 `f64`)。按名读取 + 缺列时列出实际列名, 让错配在
+/// 第一次发生时就炸掉。
+///
+/// - [`ColumnIndex::req`] 必须存在, 缺则 `Err` 并列出实际列名。
+/// - [`ColumnIndex::opt`] 可选(旧缓存文件没有该列), 由调用方决定回退值。
+#[derive(Debug, Clone)]
+struct ColumnIndex {
+    map: std::collections::HashMap<String, usize>,
+    file: String,
+}
+
+impl ColumnIndex {
+    fn new(schema: &arrow::datatypes::Schema, file: &str) -> Self {
+        Self {
+            map: schema
+                .fields()
+                .iter()
+                .enumerate()
+                .map(|(i, f)| (f.name().clone(), i))
+                .collect(),
+            file: file.to_string(),
+        }
+    }
+
+    fn req(&self, name: &str) -> Result<usize> {
+        self.map.get(name).copied().ok_or_else(|| {
+            let mut actual: Vec<&str> = self.map.keys().map(String::as_str).collect();
+            actual.sort_unstable();
+            crate::error::AppError::Msg(format!(
+                "{} 缺必需列 {name:?}; 实际列: {actual:?}(旧格式缓存请删 temps/ 后重跑)",
+                self.file
+            ))
+        })
+    }
+
+    fn opt(&self, name: &str) -> Option<usize> {
+        self.map.get(name).copied()
+    }
+}
+
+/// 读取一个组合临时文件/报告文件。
+///
+/// 兼容策略: `turnover_per_year` 及其后的列都是**历史上逐次追加**的, 旧缓存文件
+/// 没有它们。原先用 `batch.num_columns() > 37` 这类**列数**判断, 一旦有人调整列
+/// 顺序就会把"有但不同名"的列误判成"没有"。现在统一走 [`ColumnIndex::opt`]:
+/// 按名字找, 找不到才回退。
 pub fn read_parquet(path: &str) -> Result<Vec<RunResult>> {
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
     use std::fs::File;
 
     let file = File::open(path)?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+    let schema = builder.schema().clone();
+    let ci = ColumnIndex::new(&schema, path);
     let reader = builder.build()?;
+
+    // 历史行为: 缺 params 列直接报错(旧格式无法区分 ssf/ssf_st 等 variant)。
+    let params_idx = ci.req("params")?;
+    let strategy_idx = ci.req("strategy")?;
+    let symbol_idx = ci.req("symbol")?;
+    let timeframe_idx = ci.req("timeframe")?;
+    let pnl_idx = ci.req("pnl")?;
+    let eq_idx = ci.req("eq")?;
+    let mdd_idx = ci.req("mdd")?;
+    let trades_idx = ci.req("trades")?;
+    let sharpe_idx = ci.req("sharpe")?;
+    let sortino_idx = ci.req("sortino")?;
+    let wr_idx = ci.req("wr")?;
+    let pf_idx = ci.req("pf")?;
+    let calmar_idx = ci.req("calmar")?;
+    let avg_win_idx = ci.req("avg_win")?;
+    let avg_loss_idx = ci.req("avg_loss")?;
+    let expectancy_idx = ci.req("expectancy")?;
+    let cw_idx = ci.req("consecutive_wins")?;
+    let cl_idx = ci.req("consecutive_losses")?;
+    let volatility_idx = ci.req("volatility")?;
+    let recovery_idx = ci.req("recovery_factor")?;
+    let avg_hold_idx = ci.req("avg_hold_bars")?;
+    let avg_mae_idx = ci.req("avg_mae")?;
+    let avg_mfe_idx = ci.req("avg_mfe")?;
+    let edge_idx = ci.req("edge_ratio")?;
+    let wl_idx = ci.req("wl_ratio")?;
+    let skew_idx = ci.req("skewness")?;
+    let kurt_idx = ci.req("kurtosis")?;
+    let sqn_idx = ci.req("sqn")?;
+    let pf_stab_idx = ci.req("pf_stability")?;
+    let z_idx = ci.req("z_score")?;
+    let pval_idx = ci.req("p_value")?;
+    let fixed_pnl_idx = ci.req("fixed_pnl")?;
 
     let mut all = Vec::new();
     for batch in reader {
         let batch = batch?;
         let n = batch.num_rows();
-        if batch.num_columns() < 37 {
-            return Err(crate::error::AppError::Msg(format!(
-                "缓存文件缺少完整 params 列(旧格式, 无法区分 ssf/ssf_st 等 variant), 请重跑: {path}"
-            )));
-        }
-        let strategy = str_col(&batch, 0);
-        let symbol = str_col(&batch, 1);
-        let timeframe = str_col(&batch, 2);
-        let params_full = str_col(&batch, 36);
-        let pnl = f64_col(&batch, 7);
-        let eq = f64_col(&batch, 8);
-        let mdd = f64_col(&batch, 9);
-        let trades = u32_col(&batch, 10);
-        let sharpe = f64_col(&batch, 11);
-        let sortino = f64_col(&batch, 12);
-        let wr = f64_col(&batch, 13);
-        let pf = f64_col(&batch, 14);
-        let calmar = f64_col(&batch, 15);
-        let avg_win = f64_col(&batch, 17);
-        let avg_loss = f64_col(&batch, 18);
-        let expectancy = f64_col(&batch, 19);
-        let cw = u32_col(&batch, 20);
-        let cl = u32_col(&batch, 21);
-        let volatility = f64_col(&batch, 22);
-        let recovery = f64_col(&batch, 23);
-        let avg_hold = f64_col(&batch, 24);
-        let avg_mae = f64_col(&batch, 25);
-        let avg_mfe = f64_col(&batch, 26);
-        let edge = f64_col(&batch, 27);
-        let wl = f64_col(&batch, 28);
-        let skew = f64_col(&batch, 29);
-        let kurt = f64_col(&batch, 30);
-        let sqn = f64_col(&batch, 31);
-        let pf_stab = f64_col(&batch, 32);
-        let z_score = f64_col(&batch, 33);
-        let p_value = f64_col(&batch, 34);
-        let fixed_pnl = f64_col(&batch, 35);
-        // turnover_per_year 为第 38 列(末尾追加), 旧缓存文件无此列时回退为 0
-        let turnover_per_year = if batch.num_columns() > 37 {
-            f64_col(&batch, 37)
-        } else {
-            vec![0.0; n]
-        };
-        // 执行口径列(38-40)同理, 旧文件回退为旧口径(0/0/0)。
-        let delay_bars = if batch.num_columns() > 40 {
-            u32_col(&batch, 38)
-        } else {
-            vec![0; n]
-        };
-        let fee_bps = if batch.num_columns() > 40 {
-            f64_col(&batch, 39)
-        } else {
-            vec![0.0; n]
-        };
-        let slippage_bps = if batch.num_columns() > 40 {
-            f64_col(&batch, 40)
-        } else {
-            vec![0.0; n]
-        };
-        // fixed 腿列(41-45)同理, 旧文件回退为 0。
-        let fixed_total_return = if batch.num_columns() > 45 {
-            f64_col(&batch, 41)
-        } else {
-            vec![0.0; n]
-        };
-        let fixed_sharpe_ratio = if batch.num_columns() > 45 {
-            f64_col(&batch, 42)
-        } else {
-            vec![0.0; n]
-        };
-        let fixed_max_drawdown_pct = if batch.num_columns() > 45 {
-            f64_col(&batch, 43)
-        } else {
-            vec![0.0; n]
-        };
-        let fixed_expectancy_bps = if batch.num_columns() > 45 {
-            f64_col(&batch, 44)
-        } else {
-            vec![0.0; n]
-        };
-        let fixed_profit_factor = if batch.num_columns() > 45 {
-            f64_col(&batch, 45)
-        } else {
-            vec![0.0; n]
-        };
-        // fill_close 为第 46 列(末尾追加), 旧缓存文件无此列时回退为 open(0)。
-        let fill_close = if batch.num_columns() > 46 {
-            u8_col(&batch, 46)
-        } else {
-            vec![0; n]
-        };
-        // buy_hold 两列(47-48)同理, 旧文件回退为 0。
-        let buy_hold_pnl = if batch.num_columns() > 48 {
-            f64_col(&batch, 47)
-        } else {
-            vec![0.0; n]
-        };
-        let buy_hold_return = if batch.num_columns() > 48 {
-            f64_col(&batch, 48)
-        } else {
-            vec![0.0; n]
-        };
+
+        let strategy = str_col(&batch, strategy_idx);
+        let symbol = str_col(&batch, symbol_idx);
+        let timeframe = str_col(&batch, timeframe_idx);
+        let params_full = str_col(&batch, params_idx);
+        let pnl = f64_col(&batch, pnl_idx);
+        let eq = f64_col(&batch, eq_idx);
+        let mdd = f64_col(&batch, mdd_idx);
+        let trades = u32_col(&batch, trades_idx);
+        let sharpe = f64_col(&batch, sharpe_idx);
+        let sortino = f64_col(&batch, sortino_idx);
+        let wr = f64_col(&batch, wr_idx);
+        let pf = f64_col(&batch, pf_idx);
+        let calmar = f64_col(&batch, calmar_idx);
+        let avg_win = f64_col(&batch, avg_win_idx);
+        let avg_loss = f64_col(&batch, avg_loss_idx);
+        let expectancy = f64_col(&batch, expectancy_idx);
+        let cw = u32_col(&batch, cw_idx);
+        let cl = u32_col(&batch, cl_idx);
+        let volatility = f64_col(&batch, volatility_idx);
+        let recovery = f64_col(&batch, recovery_idx);
+        let avg_hold = f64_col(&batch, avg_hold_idx);
+        let avg_mae = f64_col(&batch, avg_mae_idx);
+        let avg_mfe = f64_col(&batch, avg_mfe_idx);
+        let edge = f64_col(&batch, edge_idx);
+        let wl = f64_col(&batch, wl_idx);
+        let skew = f64_col(&batch, skew_idx);
+        let kurt = f64_col(&batch, kurt_idx);
+        let sqn = f64_col(&batch, sqn_idx);
+        let pf_stab = f64_col(&batch, pf_stab_idx);
+        let z_score = f64_col(&batch, z_idx);
+        let p_value = f64_col(&batch, pval_idx);
+        let fixed_pnl = f64_col(&batch, fixed_pnl_idx);
+
+        // 以下均为**历史上逐次追加**的可选列, 旧缓存文件没有 → 回退为旧口径。
+        let turnover_per_year = opt_f64(&batch, &ci, "turnover_per_year", n);
+        let delay_bars = opt_u32(&batch, &ci, "delay_bars", n);
+        let fee_bps = opt_f64(&batch, &ci, "fee_bps", n);
+        let slippage_bps = opt_f64(&batch, &ci, "slippage_bps", n);
+        let fixed_total_return = opt_f64(&batch, &ci, "fixed_total_return", n);
+        let fixed_sharpe_ratio = opt_f64(&batch, &ci, "fixed_sharpe_ratio", n);
+        let fixed_max_drawdown_pct = opt_f64(&batch, &ci, "fixed_max_drawdown_pct", n);
+        let fixed_expectancy_bps = opt_f64(&batch, &ci, "fixed_expectancy_bps", n);
+        let fixed_profit_factor = opt_f64(&batch, &ci, "fixed_profit_factor", n);
+        let fill_close = opt_u8(&batch, &ci, "fill_close", n);
+        let buy_hold_pnl = opt_f64(&batch, &ci, "buy_hold_pnl", n);
+        let buy_hold_return = opt_f64(&batch, &ci, "buy_hold_return", n);
+        // O6: 原样读回写入时的编码, 合并时不重算。旧文件无此列 → 0 / 空串。
+        let strategy_params = opt_u64(&batch, &ci, "strategy_params", n);
+        let strategy_params_json = ci
+            .opt("strategy_params_json")
+            .map(|i| str_col(&batch, i))
+            .unwrap_or_else(|| vec![String::new(); n]);
+        // L5: 退化结果标记。旧文件无此列 → Ok / bars_used = 0(表示"未记录")。
+        let bars_used = opt_u32(&batch, &ci, "bars_used", n);
+        let status = ci
+            .opt("status")
+            .map(|i| str_col(&batch, i))
+            .map(|v| {
+                v.iter()
+                    .map(|s| match s.as_str() {
+                        "ok" => crate::app::RunStatus::Ok,
+                        "no_signals" => crate::app::RunStatus::NoSignals,
+                        "no_trades" => crate::app::RunStatus::NoTrades,
+                        _ => crate::app::RunStatus::NoSignals,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_else(|| vec![crate::app::RunStatus::default(); n]);
 
         for i in 0..n {
             all.push(RunResult {
@@ -1069,12 +1159,16 @@ pub fn read_parquet(path: &str) -> Result<Vec<RunResult>> {
                 timeframe: timeframe[i].clone(),
                 strategy: strategy[i].clone(),
                 params: params_full[i].clone(),
+                strategy_params: strategy_params[i],
+                strategy_params_json: strategy_params_json[i].clone(),
                 delay_bars: delay_bars[i],
                 fee_bps: fee_bps[i],
                 slippage_bps: slippage_bps[i],
                 fill_close: fill_close[i] != 0,
                 buy_hold_pnl: buy_hold_pnl[i],
                 buy_hold_return: buy_hold_return[i],
+                bars_used: bars_used[i],
+                status: status[i],
                 metrics: SummaryMetrics {
                     total_return_pct: pnl[i] * 100.0,
                     total_return: pnl[i],
@@ -1121,6 +1215,30 @@ pub fn read_parquet(path: &str) -> Result<Vec<RunResult>> {
     Ok(all)
 }
 
+/// 可选 `f64` 列; 旧缓存文件无此列时返回长度 `n` 的默认值。
+fn opt_f64(batch: &RecordBatch, ci: &ColumnIndex, name: &str, n: usize) -> Vec<f64> {
+    ci.opt(name)
+        .map_or_else(|| vec![0.0; n], |i| f64_col(batch, i))
+}
+
+/// 可选 `u32` 列。
+fn opt_u32(batch: &RecordBatch, ci: &ColumnIndex, name: &str, n: usize) -> Vec<u32> {
+    ci.opt(name)
+        .map_or_else(|| vec![0; n], |i| u32_col(batch, i))
+}
+
+/// 可选 `u64` 列。
+fn opt_u64(batch: &RecordBatch, ci: &ColumnIndex, name: &str, n: usize) -> Vec<u64> {
+    ci.opt(name)
+        .map_or_else(|| vec![0; n], |i| u64_col(batch, i))
+}
+
+/// 可选 `u8` 列。
+fn opt_u8(batch: &RecordBatch, ci: &ColumnIndex, name: &str, n: usize) -> Vec<u8> {
+    ci.opt(name)
+        .map_or_else(|| vec![0; n], |i| u8_col(batch, i))
+}
+
 pub fn write_single_parquet(
     results: &[RunResult],
     path: &std::path::Path,
@@ -1132,9 +1250,9 @@ pub fn write_single_parquet(
     write_parquet(path.to_str().expect("non-UTF-8 path"), results, balance)
 }
 
-/// 合并本次运行产生的组合文件 (含跳过的缓存文件), 输出为最终的 result.parquet。
+/// 合并本次运行产生的组合文件(含跳过的缓存文件), 输出为最终的 result.parquet。
 /// 仅读取显式传入的路径, 避免聚合 `temps/` 中遗留的旧参数文件。
-/// 返回合并的总行数。
+///
 /// 合并若干组合临时文件为单一报告。
 ///
 /// **读失败不再静默**: 原实现只 `eprintln!` 一行然后跳过, 返回值仍是成功,
@@ -1242,7 +1360,20 @@ mod tests {
         assert_eq!(strategy_params_value("reset=0"), 0);
         assert_eq!(strategy_params_value("reset=1"), 1);
         assert_eq!(strategy_params_value("sigma=2.5,trailk=3"), 2_500_000_030);
-        assert_eq!(strategy_params_value("base"), 0);
+        // 未知形态不再静默编码为 0 —— 那会与真实的 period=0 撞值, 使两个不同
+        // 参数在 strategy_params 列上不可区分。现在退化为 FNV-32 并 warn!。
+        let unknown = strategy_params_value("base");
+        assert_ne!(unknown, 0, "未知形态不得退化为 0");
+        assert_ne!(
+            unknown,
+            strategy_params_value("period=0"),
+            "未知形态不得与真实的 period=0 撞值"
+        );
+        assert_eq!(
+            unknown,
+            u64::from(super::fnv1a_32("base")),
+            "未知形态的回退必须是确定性的 FNV-32"
+        );
     }
 
     #[test]
@@ -1459,6 +1590,190 @@ mod tests {
                 .collect();
             assert_eq!(cols, expect, "{name} 列名/语义不符");
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// L5: 退化结果必须在报告里**可被筛掉**, 且 `bars_used` 必须落盘。
+    ///
+    /// 反例: 892 个参数中 190 个(21.3%)返回全 Hold, 指标全 0。若无 status 列,
+    /// 它们与"零波动低风险"的真实结论在数值上不可区分, 取 top-N 时会挤掉真实结果。
+    #[test]
+    fn test_report_carries_bars_used_and_status() {
+        let mk = |params: &str, bars: u32, status: crate::app::RunStatus| RunResult {
+            symbol: "BTCUSDT".into(),
+            timeframe: "1d".into(),
+            strategy: "sma".into(),
+            params: params.into(),
+            strategy_params: strategy_params_value(params),
+            strategy_params_json: params_to_json(params),
+            metrics: SummaryMetrics::default(),
+            delay_bars: 1,
+            fee_bps: 0.0,
+            slippage_bps: 0.0,
+            fill_close: false,
+            buy_hold_pnl: 0.0,
+            buy_hold_return: 0.0,
+            bars_used: bars,
+            status,
+        };
+        let rows = vec![
+            mk("period=20", 300, crate::app::RunStatus::Ok),
+            mk("period=400", 300, crate::app::RunStatus::NoSignals),
+            mk("period=20", 20_000, crate::app::RunStatus::NoTrades),
+        ];
+        let dir = std::env::temp_dir().join(format!("vta-status-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("r.parquet");
+        write_parquet(p.to_str().unwrap(), &rows, 10_000.0).unwrap();
+
+        let back = read_parquet(p.to_str().unwrap()).unwrap();
+        assert_eq!(back.len(), 3);
+        assert_eq!(back[0].bars_used, 300);
+        assert_eq!(back[0].status, crate::app::RunStatus::Ok);
+        assert_eq!(back[1].bars_used, 300);
+        assert_eq!(back[1].status, crate::app::RunStatus::NoSignals);
+        // 同一 params、不同数据规模 -> status/bars_used 是唯一区分依据
+        assert_eq!(back[0].params, back[2].params);
+        assert_ne!(back[0].bars_used, back[2].bars_used);
+        assert_ne!(back[0].status, back[2].status);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// O6: `strategy_params` / `strategy_params_json` 必须**原样往返**。
+    ///
+    /// 原实现在合并时从 `params` 重新推导两个列。若编码规则与写盘时不一致
+    /// (或 params 串在两套版本间变过), 合并后的报告数值会被悄悄改写。
+    #[test]
+    fn test_params_encoding_survives_merge_unchanged() {
+        let r = RunResult {
+            symbol: "BTCUSDT".into(),
+            timeframe: "1d".into(),
+            strategy: "sma".into(),
+            params: "period=20".into(),
+            // 刻意给一个"不可能由 params 推导出来"的值
+            strategy_params: 999_999_999_999,
+            strategy_params_json: "{\"sentinel\":\"1\"}".into(),
+            metrics: SummaryMetrics::default(),
+            delay_bars: 1,
+            fee_bps: 0.0,
+            slippage_bps: 0.0,
+            fill_close: false,
+            buy_hold_pnl: 0.0,
+            buy_hold_return: 0.0,
+            bars_used: 300,
+            status: crate::app::RunStatus::Ok,
+        };
+        let dir = std::env::temp_dir().join(format!("vta-o6-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.parquet");
+        let out = dir.join("m.parquet");
+        write_parquet(a.to_str().unwrap(), std::slice::from_ref(&r), 10_000.0).unwrap();
+        merge_parquet_files(&[a], out.to_str().unwrap(), 10_000.0).unwrap();
+        let back = read_parquet(out.to_str().unwrap()).unwrap();
+        assert_eq!(
+            back[0].strategy_params, 999_999_999_999,
+            "strategy_params 被重算了"
+        );
+        assert_eq!(
+            back[0].strategy_params_json, "{\"sentinel\":\"1\"}",
+            "strategy_params_json 被重算了"
+        );
+        // strategy_params 必须是 UInt64: UInt32 会在大编码上静默回绕
+        let v = back[0].strategy_params;
+        assert!(
+            v > u64::from(u32::MAX),
+            "该值放不进 UInt32, 列类型必须已扩宽"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// O5: `read_parquet` 按**列名**定位。缺必需列时必须报错并列出实际列名,
+    /// 而不是把列号落到另一列上。
+    ///
+    /// 反例: 用魔法列号时, 删掉 `sharpe` 列会让 `sortino`(同为 `f64`)被当作
+    /// `sharpe` 读进来 —— 不报错, 数值静默错位。
+    #[test]
+    fn read_reports_missing_required_column_with_actual_names() {
+        use parquet::arrow::ArrowWriter;
+        use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+        use parquet::file::properties::WriterProperties;
+
+        let dir = std::env::temp_dir().join(format!("vta-colidx-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // 1) 先写一个正常的单行文件
+        let r = RunResult {
+            symbol: "BTCUSDT".into(),
+            timeframe: "1d".into(),
+            strategy: "sma".into(),
+            params: "period=20".into(),
+            strategy_params: 20,
+            strategy_params_json: "{\"period\":\"20\"}".into(),
+            metrics: SummaryMetrics {
+                sharpe_ratio: 1.5,
+                sortino_ratio: 2.5,
+                ..SummaryMetrics::default()
+            },
+            delay_bars: 1,
+            fee_bps: 0.0,
+            slippage_bps: 0.0,
+            fill_close: false,
+            buy_hold_pnl: 0.0,
+            buy_hold_return: 0.0,
+            bars_used: 300,
+            status: crate::app::RunStatus::Ok,
+        };
+        let full = dir.join("full.parquet");
+        write_parquet(full.to_str().unwrap(), std::slice::from_ref(&r), 10_000.0).unwrap();
+
+        // 2) 原样读回, 再造一个**只缺 sharpe** 的文件
+        let src = ParquetRecordBatchReaderBuilder::try_new(std::fs::File::open(&full).unwrap())
+            .unwrap()
+            .build()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
+        let keep: Vec<usize> = src
+            .schema()
+            .fields()
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| f.name() != "sharpe")
+            .map(|(i, _)| i)
+            .collect();
+        let new_fields: Vec<Field> = keep
+            .iter()
+            .map(|&i| src.schema().field(i).clone())
+            .collect();
+        let new_schema = arrow::datatypes::Schema::new(new_fields);
+        let cols: Vec<ArrayRef> = keep.iter().map(|&i| src.column(i).clone()).collect();
+        let batch = RecordBatch::try_new(Arc::new(new_schema), cols).unwrap();
+        let cut = dir.join("cut.parquet");
+        let mut w = ArrowWriter::try_new(
+            std::fs::File::create(&cut).unwrap(),
+            batch.schema(),
+            Some(WriterProperties::builder().build()),
+        )
+        .unwrap();
+        w.write(&batch).unwrap();
+        w.close().unwrap();
+
+        // 3) 必须点名 sharpe 缺失; 绝不能把 sortino 当 sharpe 读进来
+        let err = read_parquet(cut.to_str().unwrap())
+            .expect_err("缺 sharpe 列必须报错, 不能把 sortino 当 sharpe 读进来");
+        let msg = format!("{err}");
+        assert!(msg.contains("缺必需列"), "{msg}");
+        assert!(msg.contains("\"sharpe\""), "应点名缺的具体列: {msg}");
+        assert!(msg.contains("sortino"), "必须列出实际列名以便定位: {msg}");
+
+        // 4) 未删列时一切照常
+        let ok = read_parquet(full.to_str().unwrap()).unwrap();
+        assert_eq!(ok[0].metrics.sharpe_ratio, 1.5);
+        assert_eq!(ok[0].metrics.sortino_ratio, 2.5);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

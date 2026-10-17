@@ -13,6 +13,11 @@ pub struct RunResult {
     pub strategy: String,
     pub params: String,
     pub metrics: engine::SummaryMetrics,
+    /// **原样保留**写入时的数值, 合并时不重算(见 `strategy_params_value` 的文档)。
+    /// 0 表示"未记录"(旧缓存文件无此列)。
+    pub strategy_params: u64,
+    /// 同上, 人类可读的 JSON 编码原样保留。空串表示未记录。
+    pub strategy_params_json: String,
     pub delay_bars: u32,
     pub fee_bps: f64,
     pub slippage_bps: f64,
@@ -22,6 +27,67 @@ pub struct RunResult {
     pub buy_hold_pnl: f64,
     /// 被动基准总收益(=pnl/名义)。
     pub buy_hold_return: f64,
+    /// 本次求值实际喂给策略的 bar 数。
+    ///
+    /// 为什么必须有: `params` 字符串只描述**参数**, 不描述**数据规模**。
+    /// 同一 `period=400` 在 300 bar 与 20000 bar 上参数串完全相同, 但前者
+    /// 策略窗口都不够、全程 Hold、指标全 0。没有这一列, 下游无法判断某个
+    /// "全 0 结果"是真的还是数据不足导致的退化。
+    pub bars_used: u32,
+    /// 求值状态。见 [`RunStatus`]。
+    pub status: RunStatus,
+}
+
+/// 单个参数求值的**可用性状态**。写入报告的 `status` 列。
+///
+/// 存在的理由: 退化结果的指标全是 0, 与"零波动低风险"的真实结论在数值上
+/// **不可区分**。实测反例(同一 `params` 字符串 `period=400`):
+///
+/// - 1d / 300bar: `trades=0 / pnl=0 / sharpe=0`(策略窗口都不够, 全程 Hold)
+/// - 1m / 20000bar: `trades=1310 / pnl=-1.0 / sharpe=-18.04`
+///
+/// 只靠指标列无法判断前者是"数据不够, 策略根本没跑起来"还是"跑了但确实无信号"。
+/// 排序/取 top-N 时前者会挤掉真实结果且无人察觉。
+///
+/// 口径说明: `NoSignals` 同时覆盖"策略窗口 > 数据长度"与"该参数本就无信号"
+/// 两种成因 —— 两者在引擎层不可区分(都是全 Hold)。**`bars_used` 列提供了区分
+/// 所需的信息**, 两者必须配对解读。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RunStatus {
+    /// 正常: 产生了成交。
+    #[default]
+    Ok,
+    /// 全程 Hold: 没有任何非 Hold 信号, 全部指标为 0(退化结果)。
+    NoSignals,
+    /// 有非 Hold 信号但一笔未成交(如信号全落在末根, `delay >= 1` 时无未来 fill bar)。
+    NoTrades,
+}
+
+impl RunStatus {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::NoSignals => "no_signals",
+            Self::NoTrades => "no_trades",
+        }
+    }
+
+    /// 从信号序列与交易数判定状态。
+    #[must_use]
+    pub fn classify(signals: &[crate::strategies::Signal], num_trades: u32) -> Self {
+        if num_trades > 0 {
+            return Self::Ok;
+        }
+        if signals
+            .iter()
+            .any(|s| *s != crate::strategies::Signal::Hold)
+        {
+            Self::NoTrades
+        } else {
+            Self::NoSignals
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -243,7 +309,7 @@ fn run_combo(
                 start..end,
             )?;
             assert_eq!(batch.len(), end - start, "batch 信号数必须与参数区间对齐");
-            let sims: Vec<(String, crate::engine::SimResult)> = batch
+            let sims: Vec<(String, crate::engine::SimResult, RunStatus)> = batch
                 .into_par_iter()
                 .enumerate()
                 .map(|(k, signals)| {
@@ -257,12 +323,13 @@ fn run_combo(
                         bpy,
                         &ctx.exec,
                     );
-                    Ok((strategy.param_str(i), sim))
+                    let status = RunStatus::classify(&signals, sim.summary.num_trades);
+                    Ok((strategy.param_str(i), sim, status))
                 })
                 .collect::<crate::error::Result<Vec<_>>>()?;
 
             let mut detail_rows = Vec::with_capacity(end - start);
-            for (params, sim) in sims {
+            for (params, sim, status) in sims {
                 let crate::engine::SimResult {
                     summary,
                     trades,
@@ -275,12 +342,16 @@ fn run_combo(
                     strategy: strategy.name().to_string(),
                     params: params.clone(),
                     metrics: summary,
+                    strategy_params: output::strategy_params_value(&params),
+                    strategy_params_json: output::params_to_json(&params),
                     delay_bars: ctx.exec.delay() as u32,
                     fee_bps: ctx.exec.fee_rate * 10_000.0,
                     slippage_bps: ctx.exec.slip_rate * 10_000.0,
                     fill_close: ctx.exec.fill_close,
                     buy_hold_pnl: bh_pnl,
                     buy_hold_return: bh_ret,
+                    bars_used: cols.len() as u32,
+                    status,
                 });
                 detail_rows.push(DetailResult {
                     symbol: symbol.to_string(),
@@ -345,12 +416,16 @@ fn run_combo(
                         strategy: strategy.name().to_string(),
                         params: strategy.param_str(i),
                         metrics,
+                        strategy_params: output::strategy_params_value(&strategy.param_str(i)),
+                        strategy_params_json: output::params_to_json(&strategy.param_str(i)),
                         delay_bars: ctx.exec.delay() as u32,
                         fee_bps: ctx.exec.fee_rate * 10_000.0,
                         slippage_bps: ctx.exec.slip_rate * 10_000.0,
                         fill_close: ctx.exec.fill_close,
                         buy_hold_pnl: bh_pnl,
                         buy_hold_return: bh_ret,
+                        bars_used: cols.len() as u32,
+                        status: RunStatus::classify(&signals, metrics.num_trades),
                     })
                 })
                 .collect::<crate::error::Result<Vec<_>>>()?;
@@ -670,6 +745,10 @@ mod tests {
             strategy: "sma".into(),
             params: "period=20".into(),
             metrics: engine::SummaryMetrics::default(),
+            strategy_params: output::strategy_params_value("period=20"),
+            strategy_params_json: output::params_to_json("period=20"),
+            bars_used: 300,
+            status: RunStatus::Ok,
             delay_bars: 1,
             fee_bps: 0.0,
             slippage_bps: 0.0,
