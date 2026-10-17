@@ -631,7 +631,7 @@ pub fn write_detail_parquet(
                 trade_bars_held.append_value(t.bars_held);
                 trade_max_runup.append_value(t.max_runup);
                 trade_max_drawdown.append_value(t.max_drawdown);
-                trade_exit_reason.append_value(&t.exit_reason);
+                trade_exit_reason.append_value(t.exit_reason);
             }
         }
 

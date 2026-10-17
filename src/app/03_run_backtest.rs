@@ -239,7 +239,32 @@ pub struct Trade {
     pub bars_held: i64,
     pub max_runup: f64,
     pub max_drawdown: f64,
-    pub exit_reason: String,
+    /// 平仓原因。取值集合是**封闭**的(见 [`ExitReason`]), 故用 `&'static str`
+    /// 而非 `String`: 原实现每个平仓都 `format!`-出一个堆 `String`, 而参数网格
+    /// 动辄几十万笔, 这是一次纯浪费的分配 + 拷贝。
+    pub exit_reason: &'static str,
+}
+
+/// 平仓原因的封闭集合。
+///
+/// 枚举化是为了让 `exit_reason` 的取值**在编译期封闭** —— 落盘层的字典序统计
+/// 不再需要防御未知字符串。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExitReason {
+    /// 持仓被反向信号平掉。
+    Signal,
+    /// 数据末尾强制平仓。
+    EndOfData,
+}
+
+impl ExitReason {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Signal => "signal",
+            Self::EndOfData => "end_of_data",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -267,6 +292,7 @@ fn signals_to_positions(signals: &[Signal]) -> Vec<Side> {
     pos
 }
 
+#[derive(Debug, Clone, Copy)]
 struct CloseArgs {
     cur_pos: Side,
     pos_qty: f64,
@@ -280,6 +306,8 @@ struct CloseArgs {
     trade_mfe: f64,
     trade_mae: f64,
     fee_rate: f64,
+    /// 平仓原因(信号反手 / 数据末尾强制)。
+    reason: ExitReason,
 }
 
 /// 方向 side 的成交价: 买入抬价、卖出压价(逆向滑点)。
@@ -338,20 +366,54 @@ fn resolve_fill(
     Some((fb, fill_price(side, base, exec.slip_rate)))
 }
 
-fn close_position(args: CloseArgs) -> (f64, Trade) {
+/// 一笔平仓的**标量**结果。
+///
+/// 与 [`Trade`] 分离的原因: `simulate()`(非 detailed 路径)只需要标量来算统计量,
+/// 根本不需要 `Trade`。原先两者被绑在一起, 导致每个参数求值都要为每笔交易
+/// 构造一个 `Trade` —— 其中 `exit_reason: String` 是**堆分配**。参数网格是串行
+/// 外循环(策略层并行会 OOM, 见 README), 这笔开销直接乘以总交易笔数。
+#[derive(Debug, Clone, Copy)]
+struct CloseOutcome {
+    cash_delta: f64,
+    pnl: f64,
+    pnl_pct: f64,
+    fixed_pnl: f64,
+    bars_held: i64,
+    max_runup: f64,
+    max_drawdown: f64,
+}
+
+/// 已平仓交易的累计量。非 detailed 路径只需要它, 不需要保留逐笔 [`Trade`]。
+#[derive(Debug, Default)]
+struct TradeAccum {
+    num_trades: u32,
+    /// 逐笔 `pnl`: SQN / skew / kurtosis / pf-stability 的分半统计都要用它。
+    pnls: Vec<f64>,
+    /// 逐笔 `fixed_pnl`: fixed 腿的 win/loss 拆分与 expectancy。
+    fixed_pnls: Vec<f64>,
+    total_fixed_pnl: f64,
+    /// 逐笔 `pnl_pct` 之和(仅用于 avg pnl_pct; 无需保留整个序列)。
+    pnl_pct_sum: f64,
+    /// MFE / MAE / 持仓 bar 数之和。**报告列 `avg_mfe`/`avg_mae`/`avg_hold_bars`
+    /// 需要它们**, 故非 detailed 路径也必须累计(只需三个标量, 不必留逐笔 Trade)。
+    sum_mfe: f64,
+    sum_mae: f64,
+    sum_hold: f64,
+}
+
+fn close_outcome(args: CloseArgs) -> CloseOutcome {
     let CloseArgs {
         cur_pos,
         pos_qty,
         pos_entry,
-        pos_entry_time,
         pos_entry_bar,
         exit_price,
-        exit_time,
         exit_bar,
         initial_cash,
         trade_mfe,
         trade_mae,
         fee_rate,
+        ..
     } = args;
 
     // 平仓单方向与持仓反向: 多头平仓为卖, 空头平仓为买; 佣金按单边名义扣除。
@@ -380,22 +442,34 @@ fn close_position(args: CloseArgs) -> (f64, Trade) {
     } else {
         (pos_entry - exit_price) / pos_entry
     };
-    let trade = Trade {
-        entry_time: pos_entry_time,
-        exit_time,
-        side: cur_pos,
-        entry_price: pos_entry,
-        exit_price,
-        qty: pos_qty,
+    CloseOutcome {
+        cash_delta,
         pnl,
         pnl_pct,
         fixed_pnl,
         bars_held: (exit_bar as i64) - (pos_entry_bar as i64),
         max_runup: trade_mfe,
         max_drawdown: trade_mae,
-        exit_reason: "signal".to_string(),
-    };
-    (cash_delta, trade)
+    }
+}
+
+/// 由标量结果物化完整 [`Trade`]。**仅 detailed 路径调用**。
+fn materialize_trade(args: &CloseArgs, out: CloseOutcome) -> Trade {
+    Trade {
+        entry_time: args.pos_entry_time,
+        exit_time: args.exit_time,
+        side: args.cur_pos,
+        entry_price: args.pos_entry,
+        exit_price: args.exit_price,
+        qty: args.pos_qty,
+        pnl: out.pnl,
+        pnl_pct: out.pnl_pct,
+        fixed_pnl: out.fixed_pnl,
+        bars_held: out.bars_held,
+        max_runup: out.max_runup,
+        max_drawdown: out.max_drawdown,
+        exit_reason: args.reason.as_str(),
+    }
 }
 
 /// `scan_trades` 的产出。
@@ -404,7 +478,10 @@ fn close_position(args: CloseArgs) -> (f64, Trade) {
 /// 只需统计量, 传 false 即**不物化曲线**; [`simulate_detailed`] 需要落盘故传 true。
 #[derive(Debug)]
 struct ScanOut {
+    /// 仅 `collect_curves == true`(detailed)时有内容; 否则为空以省掉每笔 `Trade`。
     trades: Vec<Trade>,
+    /// 非 detailed 路径也要的标量统计源, 两条路径都有。
+    acc: TradeAccum,
     eq: CurveAccum,
     fx: CurveAccum,
     equity: Option<Vec<f64>>,
@@ -429,7 +506,16 @@ fn scan_trades(
     let mut pos_entry_time: i64 = 0;
     let mut pos_entry_bar: usize = 0;
     let mut cur_pos = Side::Flat;
-    let mut trades = Vec::with_capacity(1024);
+    let mut trades: Vec<Trade> = if collect_curves {
+        Vec::with_capacity(1024)
+    } else {
+        Vec::new()
+    };
+    let mut acc = TradeAccum {
+        pnls: Vec::with_capacity(1024),
+        fixed_pnls: Vec::with_capacity(1024),
+        ..TradeAccum::default()
+    };
     let mut eq_acc = CurveAccum::new(initial_cash);
     let mut fx_acc = CurveAccum::new(initial_cash);
     let mut equity_curve: Option<Vec<f64>> = collect_curves.then(|| Vec::with_capacity(n));
@@ -468,7 +554,7 @@ fn scan_trades(
             // 平仓 resolve 永不返回 None(尾部钳到末根), 直接解包。
             let (fb, exit_price) = resolve_fill(i, exit_side, false, close, open, n, exec)
                 .expect("close fill is clamped to last bar");
-            let (cash_delta, trade) = close_position(CloseArgs {
+            let cargs = CloseArgs {
                 cur_pos,
                 pos_qty,
                 pos_entry,
@@ -481,10 +567,15 @@ fn scan_trades(
                 trade_mfe,
                 trade_mae,
                 fee_rate: exec.fee_rate,
-            });
-            cash += cash_delta;
-            trades.push(trade);
-            fixed_realized += trades.last().expect("just pushed").fixed_pnl;
+                reason: ExitReason::Signal,
+            };
+            let out = close_outcome(cargs);
+            cash += out.cash_delta;
+            acc.push(out);
+            if collect_curves {
+                trades.push(materialize_trade(&cargs, out));
+            }
+            fixed_realized += out.fixed_pnl;
             fixed_qty = 0.0;
             cur_pos = Side::Flat;
             trade_mfe = 0.0;
@@ -540,7 +631,7 @@ fn scan_trades(
 
     if cur_pos.is_open() {
         let last_price = fill_price(cur_pos.opposite(), close[n - 1], exec.slip_rate);
-        let (cash_delta, trade) = close_position(CloseArgs {
+        let cargs = CloseArgs {
             cur_pos,
             pos_qty,
             pos_entry,
@@ -553,10 +644,15 @@ fn scan_trades(
             trade_mfe,
             trade_mae,
             fee_rate: exec.fee_rate,
-        });
-        cash += cash_delta;
-        trades.push(trade);
-        fixed_realized += trades.last().expect("just pushed").fixed_pnl;
+            reason: ExitReason::EndOfData,
+        };
+        let out = close_outcome(cargs);
+        cash += out.cash_delta;
+        acc.push(out);
+        if collect_curves {
+            trades.push(materialize_trade(&cargs, out));
+        }
+        fixed_realized += out.fixed_pnl;
         // 强制平仓: 末根权益由盯市值改写为已实现 cash(扣掉平仓费与滑点)。
         tail_eq = cash;
         tail_feq = initial_cash + fixed_realized;
@@ -575,6 +671,7 @@ fn scan_trades(
 
     ScanOut {
         trades,
+        acc,
         eq: eq_acc,
         fx: fx_acc,
         equity: equity_curve,
@@ -642,6 +739,23 @@ pub struct CurveStats {
     pub volatility: f64,
     /// 总收益率(小数, 非百分数)。
     pub total_return: f64,
+}
+
+impl TradeAccum {
+    /// 记一笔已平仓交易。
+    ///
+    /// `pnls` 必须保留: `compute_metrics` 的 SQN / skewness / kurtosis /
+    /// pf-stability 分半统计都需要逐笔 pnl。其余字段都可以从它导出, 故不重复存。
+    fn push(&mut self, o: CloseOutcome) {
+        self.num_trades += 1;
+        self.pnls.push(o.pnl);
+        self.fixed_pnls.push(o.fixed_pnl);
+        self.total_fixed_pnl += o.fixed_pnl;
+        self.pnl_pct_sum += o.pnl_pct;
+        self.sum_mfe += o.max_runup;
+        self.sum_mae += o.max_drawdown;
+        self.sum_hold += o.bars_held as f64;
+    }
 }
 
 impl CurveAccum {
@@ -833,7 +947,7 @@ fn compute_metrics(out: &ScanOut, initial_cash: f64, bars_per_year: f64) -> Summ
     let final_eq = out.eq.last();
     let total_return = st.total_return;
     let max_dd = st.max_dd;
-    let trades = &out.trades;
+    let pnls = &out.acc.pnls;
 
     let num_bars = (n - 1) as f64;
     let years = if bars_per_year > 0.0 {
@@ -864,7 +978,9 @@ fn compute_metrics(out: &ScanOut, initial_cash: f64, bars_per_year: f64) -> Summ
         0.0
     };
 
-    let num_trades = trades.len() as u32;
+    let num_trades = out.acc.num_trades;
+    // avg_mae / avg_mfe / avg_hold_bars 都进报告列, 故 TradeAccum 同时累计
+    // 这三个标量 —— 不必为它们保留整个 Vec<Trade>。
     let mut num_wins = 0u32;
     let mut num_losses = 0u32;
     let mut total_win = 0.0;
@@ -874,10 +990,6 @@ fn compute_metrics(out: &ScanOut, initial_cash: f64, bars_per_year: f64) -> Summ
     let mut max_cw = 0u32;
     let mut max_cl = 0u32;
 
-    let mut sum_mae = 0.0;
-    let mut sum_mfe = 0.0;
-    let mut sum_hold = 0.0;
-    let mut total_fixed_pnl = 0.0;
     let mut pnl_m2 = 0.0;
     let mut pnl_m3 = 0.0;
     let mut pnl_m4 = 0.0;
@@ -886,13 +998,12 @@ fn compute_metrics(out: &ScanOut, initial_cash: f64, bars_per_year: f64) -> Summ
 
     let nt = num_trades as f64;
     let pnl_mean = if nt > 0.0 {
-        trades.iter().map(|t| t.pnl).sum::<f64>() / nt
+        pnls.iter().sum::<f64>() / nt
     } else {
         0.0
     };
 
-    for t in trades {
-        let p = t.pnl;
+    for &p in pnls.iter() {
         let cur_win = p > 0.0;
         match prev_win {
             None => runs = 1,
@@ -919,11 +1030,6 @@ fn compute_metrics(out: &ScanOut, initial_cash: f64, bars_per_year: f64) -> Summ
             }
         }
 
-        sum_mae += t.max_drawdown;
-        sum_mfe += t.max_runup;
-        sum_hold += t.bars_held as f64;
-        total_fixed_pnl += t.fixed_pnl;
-
         let d = p - pnl_mean;
         let d2 = d * d;
         pnl_m2 += d2;
@@ -947,19 +1053,19 @@ fn compute_metrics(out: &ScanOut, initial_cash: f64, bars_per_year: f64) -> Summ
         total_win.max(0.0)
     };
     let expectancy = if num_trades > 0 {
-        trades.iter().map(|t| t.pnl_pct).sum::<f64>() / num_trades as f64
+        out.acc.pnl_pct_sum / f64::from(num_trades)
     } else {
         0.0
     };
 
-    let avg_mae = if nt > 0.0 { sum_mae / nt } else { 0.0 };
-    let avg_mfe = if nt > 0.0 { sum_mfe / nt } else { 0.0 };
+    let avg_mae = if nt > 0.0 { out.acc.sum_mae / nt } else { 0.0 };
+    let avg_mfe = if nt > 0.0 { out.acc.sum_mfe / nt } else { 0.0 };
     let edge_ratio = if avg_mae > 0.0 {
         avg_mfe / avg_mae
     } else {
         0.0
     };
-    let avg_hold_bars = if nt > 0.0 { sum_hold / nt } else { 0.0 };
+    let avg_hold_bars = if nt > 0.0 { out.acc.sum_hold / nt } else { 0.0 };
 
     let wl_ratio = if avg_loss > 0.0 {
         avg_win / avg_loss
@@ -1005,8 +1111,7 @@ fn compute_metrics(out: &ScanOut, initial_cash: f64, bars_per_year: f64) -> Summ
             let pf1 = {
                 let mut w = 0.0;
                 let mut l = 0.0;
-                for t in &trades[..half] {
-                    let p = t.pnl;
+                for &p in &pnls[..half] {
                     if p > 0.0 {
                         w += p;
                     } else {
@@ -1018,8 +1123,7 @@ fn compute_metrics(out: &ScanOut, initial_cash: f64, bars_per_year: f64) -> Summ
             let pf2 = {
                 let mut w = 0.0;
                 let mut l = 0.0;
-                for t in &trades[half..] {
-                    let p = t.pnl;
+                for &p in &pnls[half..] {
                     if p > 0.0 {
                         w += p;
                     } else {
@@ -1066,11 +1170,13 @@ fn compute_metrics(out: &ScanOut, initial_cash: f64, bars_per_year: f64) -> Summ
     // 研究报告统一引用 fixed_*; 无后缀的复利口径仅供容量参考。
     let mut fixed_win = 0.0;
     let mut fixed_loss = 0.0;
-    for t in &out.trades {
-        if t.fixed_pnl > 0.0 {
-            fixed_win += t.fixed_pnl;
+    // fixed 腿的 win/loss 拆分。非 detailed 路径没有 Trade, 但逐笔 fixed_pnl
+    // 可以从 acc 复原 —— 故把 fixed_pnl 一并留在 CloseOutcome 里。
+    for &f in out.acc.fixed_pnls.iter() {
+        if f > 0.0 {
+            fixed_win += f;
         } else {
-            fixed_loss += t.fixed_pnl.abs();
+            fixed_loss += f.abs();
         }
     }
     let fixed_pf = if fixed_loss > 0.0 {
@@ -1079,7 +1185,7 @@ fn compute_metrics(out: &ScanOut, initial_cash: f64, bars_per_year: f64) -> Summ
         fixed_win.max(0.0)
     };
     let fixed_expectancy_bps = if nt > 0.0 {
-        out.trades.iter().map(|t| t.fixed_pnl).sum::<f64>() / nt / initial_cash * 10_000.0
+        out.acc.total_fixed_pnl / nt / initial_cash * 10_000.0
     } else {
         0.0
     };
@@ -1117,9 +1223,9 @@ fn compute_metrics(out: &ScanOut, initial_cash: f64, bars_per_year: f64) -> Summ
         pf_stability,
         z_score,
         p_value,
-        total_fixed_pnl,
+        total_fixed_pnl: out.acc.total_fixed_pnl,
         turnover_per_year: if years > 0.0 {
-            num_trades as f64 / years
+            f64::from(num_trades) / years
         } else {
             0.0
         },
@@ -1771,6 +1877,127 @@ mod tests {
         assert!((r - 1.1f64.ln()).abs() < 1e-15);
         for &x in &[100.0, -1.0, 0.0, f64::NAN, 1e-300] {
             assert!(bar_log_returns(&[x, x]).all(|r| r.is_finite()));
+        }
+    }
+
+    /// L9: 非 detailed 路径不物化 `Vec<Trade>`, 但**指标必须逐位一致**。
+    ///
+    /// `simulate()` 与 `simulate_detailed()` 走两条不同的聚合路径:
+    /// 前者只用 `TradeAccum` 的标量, 后者还物化逐笔 `Trade`。若二者口径漂移
+    /// (例如 avg_mae 只在 detailed 侧累计), 报告里的数字就会随 `--detail` 开关
+    /// 变化 —— 这是最难发现的一类不一致。
+    #[test]
+    fn non_detailed_metrics_match_detailed_bit_for_bit() {
+        let exec = ExecConfig::try_from_bps_fill(1, 2.0, 1.0, false).unwrap();
+        for (name, close) in [
+            ("单调上涨", make_prices(300)),
+            ("锯齿", {
+                let mut c = make_prices(300);
+                for (i, v) in c.iter_mut().enumerate() {
+                    *v *= if i % 2 == 0 { 1.0 } else { 0.99 };
+                }
+                c
+            }),
+        ] {
+            let mut sig = vec![Signal::Hold; close.len()];
+            // 多空交替 -> 同时覆盖 Long / Short / 平仓三种路径
+            for i in (0..close.len()).step_by(7) {
+                sig[i] = if (i / 7) % 2 == 0 {
+                    Signal::Buy
+                } else {
+                    Signal::Sell
+                };
+            }
+            sig[2] = Signal::Close;
+            let a = simulate(&close, &close, &sig, 10_000.0, 252.0, &exec);
+            let b = simulate_detailed(&[], &close, &close, &sig, 10_000.0, 252.0, &exec);
+            assert_eq!(a.num_trades, b.summary.num_trades, "{name}: num_trades");
+            assert_eq!(b.trades.len(), a.num_trades as usize, "{name}: trades 长度");
+            for (k, x) in [
+                ("total_return", a.total_return),
+                ("sharpe", a.sharpe_ratio),
+                ("sortino", a.sortino_ratio),
+                ("max_dd", a.max_drawdown_pct),
+                ("volatility", a.volatility),
+                ("profit_factor", a.profit_factor),
+                ("win_rate", a.win_rate),
+                ("avg_mae", a.avg_mae),
+                ("avg_mfe", a.avg_mfe),
+                ("avg_hold_bars", a.avg_hold_bars),
+                ("edge_ratio", a.edge_ratio),
+                ("sqn", a.sqn),
+                ("skewness", a.skewness),
+                ("kurtosis", a.kurtosis),
+                ("pf_stability", a.pf_stability),
+                ("total_fixed_pnl", a.total_fixed_pnl),
+                ("fixed_expectancy_bps", a.fixed_expectancy_bps),
+                ("fixed_profit_factor", a.fixed_profit_factor),
+                ("fixed_sharpe", a.fixed_sharpe_ratio),
+                ("fixed_mdd", a.fixed_max_drawdown_pct),
+                ("fixed_return", a.fixed_total_return),
+            ] {
+                let y = match k {
+                    "total_return" => b.summary.total_return,
+                    "sharpe" => b.summary.sharpe_ratio,
+                    "sortino" => b.summary.sortino_ratio,
+                    "max_dd" => b.summary.max_drawdown_pct,
+                    "volatility" => b.summary.volatility,
+                    "profit_factor" => b.summary.profit_factor,
+                    "win_rate" => b.summary.win_rate,
+                    "avg_mae" => b.summary.avg_mae,
+                    "avg_mfe" => b.summary.avg_mfe,
+                    "avg_hold_bars" => b.summary.avg_hold_bars,
+                    "edge_ratio" => b.summary.edge_ratio,
+                    "sqn" => b.summary.sqn,
+                    "skewness" => b.summary.skewness,
+                    "kurtosis" => b.summary.kurtosis,
+                    "pf_stability" => b.summary.pf_stability,
+                    "total_fixed_pnl" => b.summary.total_fixed_pnl,
+                    "fixed_expectancy_bps" => b.summary.fixed_expectancy_bps,
+                    "fixed_profit_factor" => b.summary.fixed_profit_factor,
+                    "fixed_sharpe" => b.summary.fixed_sharpe_ratio,
+                    "fixed_mdd" => b.summary.fixed_max_drawdown_pct,
+                    _ => b.summary.fixed_total_return,
+                };
+                assert_eq!(
+                    x.to_bits(),
+                    y.to_bits(),
+                    "{name}: {k} 两条路径不一致 —— simulate={x}, simulate_detailed={y}"
+                );
+            }
+        }
+    }
+
+    /// `exit_reason` 的取值集合必须封闭(落盘层按它做字典序统计)。
+    #[test]
+    fn exit_reason_values_are_closed_and_wrong() {
+        assert_eq!(ExitReason::Signal.as_str(), "signal");
+        assert_eq!(ExitReason::EndOfData.as_str(), "end_of_data");
+        let n = 60;
+        let close = make_prices(n);
+        let mut sig = vec![Signal::Hold; n];
+        sig[0] = Signal::Buy;
+        // 末根仍持仓 -> 必须标 end_of_data; 中间反手 -> signal
+        sig[10] = Signal::Sell;
+        // 末根不再给平仓信号 -> 数据末尾强制平仓
+        let d = simulate_detailed(
+            &[],
+            &close,
+            &close,
+            &sig,
+            10_000.0,
+            252.0,
+            &ExecConfig::default(),
+        );
+        let reasons: Vec<&str> = d.trades.iter().map(|t| t.exit_reason).collect();
+        assert_eq!(reasons, vec!["signal", "end_of_data"]);
+        // 非 detailed 路径不得构造 Trade: exit_reason 已是 &'static str, 无堆分配
+        for t in &d.trades {
+            assert!(
+                matches!(t.exit_reason, "signal" | "end_of_data"),
+                "未知 exit_reason: {}",
+                t.exit_reason
+            );
         }
     }
 }
