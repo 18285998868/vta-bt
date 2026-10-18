@@ -49,6 +49,7 @@ use crate::strategies::edma::EdmaConfig;
 use crate::strategies::ema_cross::EmaCrossConfig;
 use crate::strategies::fiali::FialiConfig;
 use crate::strategies::keltner::KeltnerConfig;
+use crate::strategies::ma_atr::MaAtrConfig;
 use crate::strategies::mabb_long::MabbLongConfig;
 use crate::strategies::mabb_short::MabbShortConfig;
 use crate::strategies::macd::MacdConfig;
@@ -235,6 +236,7 @@ impl Config {
                 | StrategyConfig::Zlma(c) => c.validate()?,
                 StrategyConfig::MabbLong(c) => c.validate()?,
                 StrategyConfig::MabbShort(c) => c.validate()?,
+                StrategyConfig::MaAtr(c) => c.validate()?,
                 StrategyConfig::Macd(c) => c.validate()?,
                 StrategyConfig::RBreaker(c) => c.validate()?,
                 StrategyConfig::RSI2(c) => c.validate()?,
@@ -528,6 +530,7 @@ pub enum StrategyConfig {
     Vwap(VwapConfig),
     MabbLong(MabbLongConfig),
     MabbShort(MabbShortConfig),
+    MaAtr(MaAtrConfig),
     Macd(MacdConfig),
     EmaCross(EmaCrossConfig),
 }
@@ -789,6 +792,7 @@ mod tests {
             "type = \"bbrk_ttm\"\nsigma = 2.5\nkc = 1.5\nttmn = 5.0",
             "type = \"bbrk_ttm_fire\"\nsigma = 2.5\nkc = 1.5",
             "type = \"vwap_trend\"\nreset = { start = 0.0, end = 1.0, step = 1.0 }",
+            "type = \"ma_atr\"\nma = [\"sma\"]\nlen = 20.0\nmult = 2.0\natrlen = 14.0",
         ] {
             let toml = format!(
                 "[data]\ntype = \"binance\"\ndir = \"/tmp\"\nsymbol = \"BTCUSDT\"\ntimeframe = \"1d\"\n\n[backtest]\ninitial_balance = 10000.0\n\n[[strategy]]\n{st}\n"

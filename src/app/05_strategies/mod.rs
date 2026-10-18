@@ -55,6 +55,7 @@ pub mod jma;
 pub mod kama;
 pub mod keltner;
 pub mod linreg;
+pub mod ma_atr;
 pub mod mabb_long;
 pub mod mabb_short;
 pub mod macd;

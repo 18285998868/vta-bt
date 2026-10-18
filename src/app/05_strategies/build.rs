@@ -55,6 +55,7 @@ use super::jma::JmaStrategy;
 use super::kama::KamaStrategy;
 use super::keltner::KeltnerStrategy;
 use super::linreg::LinRegStrategy;
+use super::ma_atr::MaAtrStrategy;
 use super::mabb_long::MabbLongStrategy;
 use super::mabb_short::MabbShortStrategy;
 use super::macd::MacdStrategy;
@@ -145,6 +146,7 @@ macro_rules! build_ma {
             | StrategyConfig::RSI2(_)
             | StrategyConfig::MabbLong(_)
             | StrategyConfig::MabbShort(_)
+            | StrategyConfig::MaAtr(_)
             | StrategyConfig::Macd(_)
             | StrategyConfig::Vwap(_)
             | StrategyConfig::Edma(_)
@@ -262,6 +264,7 @@ pub fn build_strategies(configs: &[StrategyConfig]) -> Vec<Box<dyn Strategy>> {
                     | StrategyConfig::RSI2(_)
                     | StrategyConfig::MabbLong(_)
                     | StrategyConfig::MabbShort(_)
+                    | StrategyConfig::MaAtr(_)
                     | StrategyConfig::Macd(_)
                     | StrategyConfig::Vwap(_)
             )
@@ -471,6 +474,9 @@ pub fn build_strategies(configs: &[StrategyConfig]) -> Vec<Box<dyn Strategy>> {
             }
             StrategyConfig::MabbShort(c) => {
                 Some(Box::new(MabbShortStrategy::new(c.clone())) as Box<dyn Strategy>)
+            }
+            StrategyConfig::MaAtr(c) => {
+                Some(Box::new(MaAtrStrategy::new(c.clone())) as Box<dyn Strategy>)
             }
             StrategyConfig::Macd(c) => {
                 Some(Box::new(MacdStrategy::new(c.clone())) as Box<dyn Strategy>)
