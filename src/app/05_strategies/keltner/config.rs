@@ -13,6 +13,7 @@ pub struct KeltnerConfig {
 
 impl KeltnerConfig {
     /// 展开后的取值列表。
+    #[must_use]
     pub fn values(&self) -> Vec<f64> {
         self.mult.values()
     }
@@ -34,6 +35,7 @@ impl KeltnerConfig {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

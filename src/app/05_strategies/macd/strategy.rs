@@ -12,6 +12,7 @@ pub struct MacdStrategy {
 
 impl MacdStrategy {
     /// 由 [`MacdConfig`] 构造; 参数网格由该配置展开。
+    #[must_use]
     pub fn new(config: MacdConfig) -> Self {
         Self {
             triples: config.triples(),
@@ -87,6 +88,7 @@ impl Strategy for MacdStrategy {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

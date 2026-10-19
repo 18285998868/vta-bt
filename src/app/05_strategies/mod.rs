@@ -114,6 +114,8 @@ pub mod keltner;
 pub mod linreg;
 /// **MA ATR** 策略: 配置 [`MaAtrConfig`], 实现 [`Strategy`]。
 pub mod ma_atr;
+/// **MA SLOPE ATR GATE** 策略: 配置 [`MaSlopeAtrGateConfig`], 实现 [`MaSlopeAtrGateStrategy`]。
+pub mod ma_slope_atr_gate;
 /// **MABB LONG** 策略: 配置 [`MabbLongConfig`], 实现 [`Strategy`]。
 pub mod mabb_long;
 /// **MABB SHORT** 策略: 配置 [`MabbShortConfig`], 实现 [`MabbShortStrategy`]。
@@ -176,19 +178,23 @@ pub mod wma;
 pub mod zlema;
 
 pub use shared::{
-    CachedBands, DayBar, PoleCount, Signal, aggregate_days, bars_per_year, candle_direction_filter,
-    expand_f64_range, is_known_timeframe, money_flow_index, price_cross_signal, rolling_highest,
-    rolling_lowest, shift_right_1, supersmoother_3_pole, utc_day_index,
+    CachedBands, DayBar, MAX_GRID_PREALLOC, PoleCount, Signal, aggregate_days, bars_per_year,
+    candle_direction_filter, expand_f64_range, is_known_timeframe, money_flow_index,
+    price_cross_signal, rolling_highest, rolling_lowest, shift_right_1, supersmoother_3_pole,
+    utc_day_index,
 };
 pub use sma_cd::SmaCdStrategy;
 
 /// 策略接口。
 pub trait Strategy: Send + Sync {
     /// 策略名(报告 `strategy` 列)。
+    #[must_use]
     fn name(&self) -> &'static str;
     /// 参数网格大小。
+    #[must_use]
     fn param_count(&self) -> usize;
     /// 第 `idx` 组参数的文本形式(报告 `params` 列, 且必须网格内唯一)。
+    #[must_use]
     fn param_str(&self, idx: usize) -> String;
 
     /// 生成信号。返回 `Err` 表示该参数/数据无法计算 (例如 VWMA 缺少等长 volume),
@@ -214,7 +220,10 @@ pub trait Strategy: Send + Sync {
     /// 循环等价）；重参数策略重写本方法做 hoist。
     /// 引擎是唯一调用方（逐批调，内存预算逻辑不变）。
     ///
-    /// **契约**: 返回长度必须等于 `range` 长度, 否则 `run_combo` 会 panic。
+    /// **契约**: 返回长度必须等于 `range` 长度, 否则 `run_combo` 会**返回
+    /// [`AppError`](crate::error::AppError)** —— 契约违反是**调用方的 bug**,
+    /// 故走错误通道而非 panic(panic 会让已经跑了几小时的整轮回测在最后一个
+    /// 组合处崩溃, 且拿不到"哪个策略违反了契约"的可读信息)。
     #[allow(clippy::too_many_arguments)]
     fn generate_signals_batch(
         &self,

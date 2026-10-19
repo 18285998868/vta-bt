@@ -17,6 +17,7 @@ pub struct BbrkM2Config {
 
 impl BbrkM2Config {
     /// 展开后的取值列表。
+    #[must_use]
     pub fn values(&self) -> Vec<f64> {
         self.sigma.values()
     }
@@ -38,6 +39,7 @@ impl BbrkM2Config {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

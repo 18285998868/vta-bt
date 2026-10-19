@@ -18,6 +18,7 @@ pub struct VwapTrendStrategy {
 
 impl VwapTrendStrategy {
     /// 由 [`VwapTrendConfig`] 构造; 参数网格由该配置展开。
+    #[must_use]
     pub fn new(config: VwapTrendConfig) -> Self {
         Self {
             modes: config.modes(),
@@ -120,6 +121,7 @@ fn rolling_vwap(
 
 /// 纯决策函数(可手算单测)。`bound` 为 session 边界：
 /// sess 变化处平仓+空一根bar；active=false 的bar一律 Hold（盘外空仓）。
+#[must_use]
 pub fn vwap_trend_signals(
     close: &[f64],
     vwap: &[f64],
@@ -148,10 +150,22 @@ pub fn vwap_trend_signals(
             continue; // 盘外空仓
         }
         let (c, v) = (close[i], vwap[i]);
-        if !c.is_finite() || !v.is_finite() || c == v {
+        if !c.is_finite() || !v.is_finite() {
             continue;
         }
-        let side: i8 = if c > v { 1 } else { -1 };
+        // **显式三分支**, 而不是 `if c == v { continue }` + `if c > v {1} else {-1}`。
+        //
+        // 两者行为等价, 但后者的"相等"判定用的是**浮点相等**(`num-float-compare`):
+        // 一旦将来有人在 `else` 分支上加语义(或把 `c == v` 的判断挪到别处),
+        // "相等 → 走 `-1`(Sell)"的方向性偏差就会重新出现 —— 浮点相等不该承担
+        // 业务语义。写成三分支后, "持平不动"是一个**显式**的分支。
+        let side: i8 = if c > v {
+            1
+        } else if c < v {
+            -1
+        } else {
+            continue; // 持平: 不动
+        };
         if side != pos {
             sig[i] = if side == 1 { Signal::Buy } else { Signal::Sell };
             pos = side;
@@ -213,6 +227,7 @@ impl Strategy for VwapTrendStrategy {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -24,6 +24,7 @@ pub struct BbrkOrthStrategy {
 
 impl BbrkOrthStrategy {
     /// 由 [`BbrkOrthConfig`] 构造; 参数网格由该配置展开。
+    #[must_use]
     pub fn new(config: BbrkOrthConfig) -> Self {
         Self {
             sigmas: config.values(),
@@ -64,6 +65,7 @@ fn last_two_tags(
 }
 
 /// 纯决策函数(可手算单测)。
+#[must_use]
 pub fn bbrk_orth_signals(close: &[f64], lower: &[f64], mid: &[f64], upper: &[f64]) -> Vec<Signal> {
     let n = close.len().min(lower.len()).min(mid.len()).min(upper.len());
     let pct: Vec<f64> = (0..n)
@@ -163,6 +165,7 @@ impl BbrkOrthStrategy {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

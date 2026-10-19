@@ -27,6 +27,7 @@ pub struct BbrkMaxStrategy {
 
 impl BbrkMaxStrategy {
     /// 由 [`BbrkMaxConfig`] 构造; 参数网格由该配置展开。
+    #[must_use]
     pub fn new(config: BbrkMaxConfig) -> Self {
         Self {
             pairs: config.pairs(),
@@ -164,6 +165,7 @@ fn ma_values(name: &str, close: &[f64], period: usize) -> Option<Vec<f64>> {
 }
 
 /// 纯决策函数(与 `bbrk_hma_signals` 逐位一致，regime 线由调用方供给)。
+#[must_use]
 pub fn bbrk_max_signals(
     close: &[f64],
     lower: &[f64],
@@ -271,6 +273,7 @@ impl Strategy for BbrkMaxStrategy {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,3 +1,9 @@
+//! `vta` 的命令行入口。
+//!
+//! 职责**仅限于**装配: 初始化日志订阅器、解析 CLI、把结果交给
+//! [`vta::app::run`] 或 [`vta::pbo::run_pbo_report`]。业务逻辑全在库 crate
+//! (`vta`) 里, 这样库可以被其它程序直接复用。
+
 use tracing_subscriber::EnvFilter;
 
 use vta::app;

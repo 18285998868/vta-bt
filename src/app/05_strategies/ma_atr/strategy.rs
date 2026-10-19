@@ -12,6 +12,7 @@ pub struct MaAtrStrategy {
 
 impl MaAtrStrategy {
     /// 由 [`MaAtrConfig`] 构造; 参数网格由该配置展开。
+    #[must_use]
     pub fn new(config: MaAtrConfig) -> Self {
         Self {
             quints: config.quints(),
@@ -19,6 +20,7 @@ impl MaAtrStrategy {
     }
 }
 
+#[must_use]
 pub fn ma_atr_ma(close: &[f64], maname: &str, len: usize) -> Option<Vec<f64>> {
     if len == 0 {
         return None;
@@ -30,6 +32,7 @@ pub fn ma_atr_ma(close: &[f64], maname: &str, len: usize) -> Option<Vec<f64>> {
     Some(v)
 }
 
+#[must_use]
 pub fn ma_atr_atr(high: &[f64], low: &[f64], close: &[f64], atrlen: usize) -> Vec<f64> {
     if atrlen == 0 {
         return vec![f64::NAN; close.len()];
@@ -58,6 +61,7 @@ pub fn ma_atr_atr(high: &[f64], low: &[f64], close: &[f64], atrlen: usize) -> Ve
 /// 引擎强制平仓。价格回到中轨**不**平仓。
 ///
 /// NaN→Hold (持仓不变)。`atr` 参与上下轨, 故三者在每根都必须有限。
+#[must_use]
 pub fn ma_atr_signals(close: &[f64], ma_vals: &[f64], atr_vals: &[f64], k: f64) -> Vec<Signal> {
     let n = close.len().min(ma_vals.len()).min(atr_vals.len());
     let mut sig = vec![Signal::Hold; n];
@@ -141,40 +145,48 @@ impl Strategy for MaAtrStrategy {
         for a in &alens {
             atr_cache.insert(*a, ma_atr_atr(high, low, close, *a));
         }
+        // 分组键用 `(ma 名, len)`: 键里的 `String` 只在**建组时**克隆一次,
+        // 之后一律借用(`groups.iter()`), 不再为每个参数克隆一遍。
         let mut groups: HashMap<(String, usize), Vec<usize>> = HashMap::new();
         for &i in &idxs {
             let (m, l, _, _) = &self.quints[i];
             groups.entry((m.clone(), *l)).or_default().push(i);
         }
-        let mut keys: Vec<(String, usize)> = groups.keys().cloned().collect();
-        keys.sort();
-        let mut at: HashMap<usize, usize> = HashMap::new();
+        // 稳定顺序: 按 (ma, len) 排序, 保证 batch 与逐个调的结果顺序一致。
+        let mut keys: Vec<(&(String, usize), &Vec<usize>)> = groups.iter().collect();
+        keys.sort_by(|a, b| a.0.cmp(b.0));
+        let mut at: HashMap<usize, usize> = HashMap::with_capacity(idxs.len());
         for (p, &i) in idxs.iter().enumerate() {
             at.insert(i, p);
         }
         let mut out: Vec<Vec<Signal>> = vec![Vec::new(); idxs.len()];
-        for (m, l) in &keys {
-            let members = groups.get(&(m.clone(), *l)).cloned().unwrap_or_default();
+        for ((m, l), members) in keys {
             let mv = match ma_atr_ma(close, m, *l) {
                 Some(v) => v,
                 None => {
-                    for &i in &members {
+                    for &i in members {
                         out[at[&i]] = vec![Signal::Hold; close.len()];
                     }
                     continue;
                 }
             };
             let done: Vec<(usize, Vec<Signal>)> = members
-                .into_par_iter()
-                .map(|i| {
+                .par_iter()
+                .map(|&i| {
                     let (_, _, k, a) = &self.quints[i];
-                    let av = atr_cache
-                        .get(a)
-                        .cloned()
-                        .unwrap_or(vec![f64::NAN; close.len()]);
-                    (i, ma_atr_signals(close, &mv, &av, *k))
+                    // **借用** ATR 序列: 原实现 `.cloned().unwrap_or(vec![f64::NAN; len])`
+                    // 每次都克隆整条等长向量(参数数 × bar 数级别的拷贝),
+                    // 且 miss 时静默用 NaN 掩盖"缓存未命中"这一逻辑错误。
+                    // 现在 miss 是**硬错误**: 缓存的键集就是本批次的 atrlen 集合,
+                    // 命中不了就说明实现有 bug, 不能悄悄降级成全 NaN。
+                    let av = atr_cache.get(a).ok_or_else(|| {
+                        crate::error::AppError::Msg(format!(
+                            "MA_ATR: ATR 缓存缺失(atrlen={a}); 缓存键集与本批参数不一致"
+                        ))
+                    })?;
+                    Ok((i, ma_atr_signals(close, &mv, av.as_slice(), *k)))
                 })
-                .collect();
+                .collect::<crate::error::Result<Vec<_>>>()?;
             for (i, sig) in done {
                 out[at[&i]] = sig;
             }
@@ -183,6 +195,7 @@ impl Strategy for MaAtrStrategy {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -8,6 +8,7 @@
 //! 现在 `build_one` 是单个**穷尽 match**(无 `_` 兜底), 编译器强制覆盖。本测试
 //! 从源码侧再钉一道, 防止有人日后加回 `_ => None` 兜底。
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 /// 源码级: `build_one` 不得有 `_ => None` 兜底, 且必须穷尽。
 ///
 /// 真正的编译期保证来自穷尽 match; 这条测试的价值在于: 当有人为了"少写几个

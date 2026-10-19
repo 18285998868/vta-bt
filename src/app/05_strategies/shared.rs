@@ -52,6 +52,7 @@ impl From<PoleCount> for usize {
 }
 
 /// 价格与指标线的上/下穿越 → 信号。任一侧为 NaN 时降级为 `Hold`。
+#[must_use]
 pub fn price_cross_signal(indicator: &[f64], close: &[f64]) -> Vec<Signal> {
     let n = close.len().min(indicator.len());
     let mut sig = vec![Signal::Hold; n];
@@ -87,7 +88,11 @@ pub fn candle_direction_filter(signals: &mut [Signal], open: &[f64], close: &[f6
         let keep = match sig {
             Signal::Buy => c > o,
             Signal::Sell => c < o,
-            _ => true,
+            // **穷尽列举**, 不用 `_` 兜底: 给 `Signal` 加变体时, 这里会**编译失败**,
+            // 而不是静默沿用"保留原信号"的默认行为。原实现写 `_ => true`,
+            // 与同文件 line 80 刚用过的 `matches!(sig, Signal::Hold | Signal::Close)`
+            // 风格不一致, 且会掩盖新变体。
+            Signal::Hold | Signal::Close => true,
         };
         if !keep {
             *sig = Signal::Hold;
@@ -102,6 +107,7 @@ pub fn candle_direction_filter(signals: &mut [Signal], open: &[f64], close: &[f6
 ///
 /// 委托给 `vector-ta` 的 `supersmoother_3_pole`, 其余弦常数取 Ehlers 原式的 `1.738`。
 /// 返回 `None` 表示数据长度不足以满足 `period`。
+#[must_use]
 pub fn supersmoother_3_pole(close: &[f64], period: usize) -> Option<Vec<f64>> {
     use vector_ta::indicators::moving_averages::supersmoother_3_pole::{
         SuperSmoother3PoleInput, SuperSmoother3PoleParams, supersmoother_3_pole as ssf3,
@@ -117,39 +123,49 @@ pub fn supersmoother_3_pole(close: &[f64], period: usize) -> Option<Vec<f64>> {
     .map(|out| out.values)
 }
 
+/// 已知周期 → 年化 bar 数。**周期表与 [`bars_per_year`] 的唯一来源**。
+///
+/// 为什么要有这张表: `bars_per_year` 与 `is_known_timeframe` 原先是**两份手工
+/// 同步的清单**(`match` 表 vs `matches!` 表), 改一处忘另一处就会出现
+/// "认识的周期却按 365 年化" 的静默错误 —— Sharpe 错 100~1440 倍且无提示。
+/// 现在两张表都由本表派生。
+const TIMEFRAME_BARS_PER_YEAR: &[(&str, f64)] = &[
+    ("1m", 525_600.0),
+    ("3m", 175_200.0),
+    ("5m", 105_120.0),
+    ("15m", 35_040.0),
+    ("30m", 17_520.0),
+    ("1h", 8_760.0),
+    ("2h", 4_380.0),
+    ("4h", 2_190.0),
+    ("6h", 1_460.0),
+    ("8h", 1_095.0),
+    ("12h", 730.0),
+    ("1d", 365.0),
+    ("1w", 52.0),
+];
+
 /// 年化 bar 数。用于把逐 bar 收益换算成年化夏普/波动率。
 ///
 /// **未列出的周期会静默落到 365, 造成年化结果成倍错误**, 故调用方必须在配置校验阶段
 /// 用 [`is_known_timeframe`] 拦下未知周期。
+#[must_use]
 pub fn bars_per_year(tf: &str) -> f64 {
-    match tf {
-        "1m" => 525_600.0,
-        "3m" => 175_200.0,
-        "5m" => 105_120.0,
-        "15m" => 35_040.0,
-        "30m" => 17_520.0,
-        "1h" => 8_760.0,
-        "2h" => 4_380.0,
-        "4h" => 2_190.0,
-        "6h" => 1_460.0,
-        "8h" => 1_095.0,
-        "12h" => 730.0,
-        "1d" => 365.0,
-        "1w" => 52.0,
-        _ => 365.0,
-    }
+    TIMEFRAME_BARS_PER_YEAR
+        .iter()
+        .find(|(name, _)| *name == tf)
+        .map_or(365.0, |(_, bpy)| *bpy)
 }
 
 /// `bars_per_year` 是否认识该周期。配置校验用, 避免未知周期静默按 1d 年化。
+#[must_use]
 pub fn is_known_timeframe(tf: &str) -> bool {
-    matches!(
-        tf,
-        "1m" | "3m" | "5m" | "15m" | "30m" | "1h" | "2h" | "4h" | "6h" | "8h" | "12h" | "1d" | "1w"
-    )
+    TIMEFRAME_BARS_PER_YEAR.iter().any(|(name, _)| *name == tf)
 }
 
 /// 通道右移一根(经典 Donchian/Aberration 口径: 用**前 N 根**的极值与
 /// 当根收盘比较; 含当根的通道永远无法被穿越)。`out[0]=NaN`, 其余 `out[i]=v[i-1]`。
+#[must_use]
 pub fn shift_right_1(v: &[f64]) -> Vec<f64> {
     let mut out = vec![f64::NAN; v.len()];
     if v.len() >= 2 {
@@ -170,11 +186,13 @@ pub fn utc_day_index(ts_ms: i64) -> i64 {
 /// O(n) 滑动最高/最低。`out[i]` 为 `data[i-n+1..=i]` 的极值, `i<n-1` 处为 NaN
 /// (与 vector-ta 的 NaN 前缀惯例一致, 调用方统一按 NaN→Hold)。
 /// Donchian / Aberration 通道用, n up to 数百、T up to 数百万均可。
+#[must_use]
 pub fn rolling_highest(data: &[f64], n: usize) -> Vec<f64> {
     rolling_extreme(data, n, true)
 }
 
 /// O(n) 滑动最低。语义同 [`rolling_highest`], 取极小值。
+#[must_use]
 pub fn rolling_lowest(data: &[f64], n: usize) -> Vec<f64> {
     rolling_extreme(data, n, false)
 }
@@ -209,7 +227,13 @@ fn rolling_extreme(data: &[f64], n: usize, want_max: bool) -> Vec<f64> {
             }
         }
         if i + 1 >= n {
-            out[i] = data[*dq.front().expect("deque 非空")];
+            // 队列**必然非空**: 上面刚 `push_back(i)`, 而弹出队首的条件是
+            // `front + n <= i`, 对刚入队的 `i` 恒不成立 ⇒ `i` 不会被弹掉。
+            // 用 `if let` 表达而不是 `expect`: 万一将来改动破坏了这个不变量,
+            // 结果是这一根保持 NaN(调用方按 NaN→Hold 处理), 而不是整轮崩掉。
+            if let Some(&front) = dq.front() {
+                out[i] = data[front];
+            }
         }
     }
     out
@@ -222,6 +246,14 @@ fn rolling_extreme(data: &[f64], n: usize, want_max: bool) -> Vec<f64> {
 /// 实际只跑 10 万档, `validate_range` 仍通过)。这是"配置说的"与"跑的"不一致,
 /// 故必须显式告警。
 pub const MAX_F64_RANGE: usize = 100_000;
+
+/// 参数网格展开的**预分配上限**。
+///
+/// 笛卡尔积的规模理论上无界(每维上限 [`MAX_F64_RANGE`] = 10 万), 直接按积
+/// `Vec::with_capacity(积)` 会在病态配置下申请巨额内存并 abort。故预分配
+/// **封顶**在此值: 覆盖绝大多数实际网格(几十~几千档)而不为病态配置买单,
+/// 超出的部分仍由 `Vec` 自行扩容。
+pub const MAX_GRID_PREALLOC: usize = 65_536;
 
 /// 展开 f64 范围(6 位小数取整, 避免累加漂移)。
 ///
@@ -273,6 +305,7 @@ pub struct DayBar {
 }
 
 /// 按 UTC 自然日聚合 OHLC(日内策略用)。`DayBar` 记录当日首末 bar 下标。
+#[must_use]
 pub fn aggregate_days(
     time: &[i64],
     open: &[f64],
@@ -322,6 +355,7 @@ pub fn aggregate_days(
 /// 求和为 pos、下降根为 neg；MFI=100−100/(1+pos/neg)。
 /// 首个完整窗不足（下标 <N）、窗内任一比较无效（非有限/量能<=0）、
 /// pos==neg==0 → NaN，调用方统一按 NaN→Hold（P7）。O(n) 滑动窗。
+#[must_use]
 pub fn money_flow_index(
     high: &[f64],
     low: &[f64],
@@ -369,11 +403,14 @@ pub fn money_flow_index(
             bad += 1;
         }
         if win.len() > n {
-            let old = win.pop_front().expect("刚 push 后超窗，队非空");
-            pos_sum -= old.0;
-            neg_sum -= old.1;
-            if old.2 {
-                bad -= 1;
+            // 刚 push 过, 故队列**必然非空**; 用 `if let` 而不是 `expect`:
+            // 万一不变量被破坏, 结果是窗口统计少减一项(数值偏差), 而不是整轮崩掉。
+            if let Some(old) = win.pop_front() {
+                pos_sum -= old.0;
+                neg_sum -= old.1;
+                if old.2 {
+                    bad -= 1;
+                }
             }
         }
         if win.len() == n {
@@ -393,6 +430,7 @@ pub fn money_flow_index(
 /// 给 `generate_signals_batch` 的跨参数复用表用。
 pub type CachedBands = Option<(Vec<f64>, Vec<f64>, Vec<f64>)>;
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

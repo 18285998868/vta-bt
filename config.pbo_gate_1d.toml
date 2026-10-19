@@ -1,0 +1,46 @@
+# ========================================
+# PBO / CSCV 过拟合检验用的策略池
+#
+# 池子覆盖 v3~v6 真实考察过的三个维度（含最终选中的 100/20/120/60/0.5）：
+#   均线周期 ma    : 50/100/150/200
+#   ATR 窗口 atr_n : 14/67/120
+#   门控阈值 th    : 0.25/0.5/0.75
+# 共 4 × 3 × 3 = 36 个变体。
+#
+# PBO 回答的问题是: 在这 36 个候选里，用 IS 段挑出的"最优"，有多少概率在
+# OOS 段跑输中位数 —— 即模型选择本身是否已把样本噪声榨干。
+#
+# 跑法（两步，输出目录必须一致）:
+#   cargo run --release -- -c config.pbo_gate.toml
+#   cargo run --release -- --pbo /data/nutilustrader/outputs/reports/vta_pbo_gate
+# ========================================
+[data]
+type = "binance"
+dir = "/data/nutilustrader/data"
+symbol = "BTCUSDT"
+timeframe = "1d"
+start_date = "2021-01-01"
+end_date = "2025-12-31"
+
+[backtest]
+initial_balance = 10000.0
+delay_bars = 1
+fill_bar_price = "open"
+fee_bps = 5.0
+slippage_bps = 0.0
+
+[output]
+dir = "/data/nutilustrader/outputs/reports/vta_pbo_gate_1d"
+detail = true      # fixed_curves 依赖 detail 才会写出
+overwrite = true
+# --pbo 的 T×N 输入所需(需与 detail=true 同开)
+fixed_curves = true
+
+[[strategy]]
+type = "ma_slope_atr_gate"
+ma = { start = 50, end = 200, step = 50 }
+slope_k = 20
+atr_n = { start = 14, end = 120, step = 53 }      # 14/67/120
+z_win = 60
+th = { start = 0.25, end = 0.75, step = 0.25 }
+atr_kind = "sma"

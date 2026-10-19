@@ -17,6 +17,7 @@ pub struct BbrkEmaStrategy {
 
 impl BbrkEmaStrategy {
     /// 由 [`BbrkEmaConfig`] 构造; 参数网格由该配置展开。
+    #[must_use]
     pub fn new(config: BbrkEmaConfig) -> Self {
         Self {
             pairs: config.pairs(),
@@ -25,6 +26,7 @@ impl BbrkEmaStrategy {
 }
 
 /// 纯决策函数(可手算单测)。
+#[must_use]
 pub fn bbrk_ema_signals(
     close: &[f64],
     lower: &[f64],
@@ -140,6 +142,7 @@ impl Strategy for BbrkEmaStrategy {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -29,8 +29,18 @@ fn default_bblen() -> F64Param {
 
 impl BbrkVolConfig {
     /// 展开后的参数组合(按策略的笛卡尔积顺序)。
+    #[must_use]
     pub fn pairs(&self) -> Vec<(f64, usize, usize, f64)> {
-        let mut out = Vec::new();
+        // 网格规模 = 各维度长度之积(可预知), 一次分配到位(`mem-with-capacity`)。
+        // `saturating_mul`: 笛卡尔积理论上无界, 普通 `*` 在 debug 下会溢出 panic。
+        let cap = self
+            .sigma
+            .values()
+            .len()
+            .saturating_mul(self.bblen.values().len())
+            .saturating_mul(self.voln.values().len())
+            .saturating_mul(self.volmult.values().len());
+        let mut out = Vec::with_capacity(cap.min(crate::strategies::MAX_GRID_PREALLOC));
         for &s in &self.sigma.values() {
             for &l in &self.bblen.values() {
                 for &n in &self.voln.values() {
@@ -63,6 +73,7 @@ impl BbrkVolConfig {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

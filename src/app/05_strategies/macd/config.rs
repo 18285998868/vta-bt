@@ -12,6 +12,7 @@ pub struct MacdConfig {
 
 impl MacdConfig {
     /// 展开后的三元参数组合。
+    #[must_use]
     pub fn triples(&self) -> Vec<(usize, usize, usize)> {
         self.groups.iter().map(|g| (g[0], g[1], g[2])).collect()
     }
@@ -39,6 +40,7 @@ impl MacdConfig {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -16,12 +16,16 @@ pub struct TurtleConfig {
 
 impl TurtleConfig {
     /// 展开后的参数组合(按策略的笛卡尔积顺序)。
+    #[must_use]
     pub fn pairs(&self) -> Vec<(usize, usize)> {
         let e = self.entry.to_range();
         let x = self.exit.to_range();
         let es: Vec<usize> = (e.start..=e.end).step_by(e.step).collect();
         let xs: Vec<usize> = (x.start..=x.end).step_by(x.step).collect();
-        let mut out = Vec::new();
+        // 网格规模 = 各维度长度之积(可预知), 一次分配到位(`mem-with-capacity`)。
+        // `saturating_mul`: 笛卡尔积理论上无界, 普通 `*` 在 debug 下会溢出 panic。
+        let cap = es.len().saturating_mul(xs.len());
+        let mut out = Vec::with_capacity(cap.min(crate::strategies::MAX_GRID_PREALLOC));
         for &a in &es {
             for &b in &xs {
                 out.push((a, b));
@@ -49,6 +53,7 @@ impl TurtleConfig {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

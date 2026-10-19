@@ -72,6 +72,7 @@ pub struct SwingFractalConfig {
 
 impl SwingFractalConfig {
     /// 展开后的参数组合(按策略的笛卡尔积顺序)。
+    #[must_use]
     pub fn pairs(&self) -> Vec<(usize, usize)> {
         let ls = self.left.values();
         let rs = self.right.values();
@@ -98,6 +99,7 @@ impl SwingFractalConfig {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -179,8 +181,7 @@ mod tests {
     /// TOML 三种形态都要能反序列化: 单值 / 列表 / 表。
     #[test]
     fn toml_accepts_all_three_forms() {
-        let single: SwingFractalConfig =
-            toml::from_str("left = 10\nright = 5").expect("单值形态");
+        let single: SwingFractalConfig = toml::from_str("left = 10\nright = 5").expect("单值形态");
         assert_eq!(single.pairs(), vec![(10, 5)]);
 
         let list: SwingFractalConfig =

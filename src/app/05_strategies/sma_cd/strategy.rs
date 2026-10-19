@@ -11,6 +11,7 @@ pub struct SmaCdStrategy {
 
 impl SmaCdStrategy {
     /// 由 [`MaGridCfg`] 构造; 参数网格由该配置展开。
+    #[must_use]
     pub fn new(config: MaGridCfg) -> Self {
         let range = config.period.into_range();
         let periods: Vec<usize> = (range.start..=range.end).step_by(range.step).collect();
@@ -58,6 +59,7 @@ impl Strategy for SmaCdStrategy {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

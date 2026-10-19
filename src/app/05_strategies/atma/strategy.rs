@@ -11,6 +11,7 @@ pub struct AtmaStrategy {
 
 impl AtmaStrategy {
     /// 由 [`AtmaConfig`] 构造; 参数网格由该配置展开。
+    #[must_use]
     pub fn new(config: AtmaConfig) -> Self {
         Self {
             pairs: config.pairs(),
@@ -57,6 +58,7 @@ impl Strategy for AtmaStrategy {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

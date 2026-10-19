@@ -16,6 +16,7 @@ pub struct BbrkSmaStrategy {
 
 impl BbrkSmaStrategy {
     /// 由 [`BbrkSmaConfig`] 构造; 参数网格由该配置展开。
+    #[must_use]
     pub fn new(config: BbrkSmaConfig) -> Self {
         Self {
             pairs: config.pairs(),
@@ -24,6 +25,7 @@ impl BbrkSmaStrategy {
 }
 
 /// 纯决策函数(可手算单测)。
+#[must_use]
 pub fn bbrk_sma_signals(
     close: &[f64],
     lower: &[f64],
@@ -158,6 +160,7 @@ impl Strategy for BbrkSmaStrategy {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

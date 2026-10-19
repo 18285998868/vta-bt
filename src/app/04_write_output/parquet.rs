@@ -18,6 +18,7 @@ use crate::error::Result;
 /// 历史缺陷: 数字形态原样内插输出 `{"sigma":2.5}`, 而字符串形态(`ma=hma` /
 /// `variant=`)输出裸 token `{"ma":hma}` —— **非法 JSON 且与同列内合法值并存**,
 /// 使整列无法被 JSON 工具消费。
+#[must_use]
 pub fn params_to_json(params: &str) -> String {
     let clean = params.replace(' ', "");
     // 双均线 "fast=F,slow=S" → {"fast":"F","slow":"S"}。
@@ -146,6 +147,30 @@ fn json_str(s: &str) -> String {
     out
 }
 
+/// f64 → u64 的**显式**转换(不依赖 `as` 的饱和语义)。
+///
+/// 为什么要显式: `as` 从 f64 到 u64 是**饱和**的 —— 负数 → 0, NaN → 0。
+/// 于是 `sigma = -1.0` 会编码成 0, 与真实的 `sigma = 0` **撞值**: 报告里两个
+/// 不同参数在 `strategy_params` 列上不可区分, 排序也失去意义。
+/// 启动期的唯一性自检(`build_strategies_checked`)会把撞值变成启动错误,
+/// 但错误信息会指向"参数网格碰撞"这个**误导性**根因。
+///
+/// 这里把负数与非有限值统一编码到 `u64::MAX`(彼此仍可能撞, 但**不会**与
+/// 合法的非负参数撞), 非负值保持与原实现**逐位相同**的编码。
+///
+/// `v` 必须是**已按槽位缩放**的值(调用方传 `原始值 * 1000.0` 之类), 本函数
+/// 只做取整与范围检查, 不再二次缩放。
+fn f64_to_u64_sorted(v: f64) -> u64 {
+    if !v.is_finite() {
+        return u64::MAX;
+    }
+    let r = v.round();
+    if r < 0.0 || r >= u64::MAX as f64 {
+        return u64::MAX;
+    }
+    r as u64
+}
+
 /// FNV-1a 32（编码槽位溢出与未识别格式时的回退口径，确定性；见 `strategy_params_value`）。
 fn fnv1a_32(s: &str) -> u32 {
     let mut h: u32 = 0x811c_9dc5;
@@ -162,15 +187,12 @@ fn fnv1a_32(s: &str) -> u32 {
 /// 编码分两种 —— 已知形态按槽位打包, 未识别形态回退 FNV-32(有损)。
 /// 唯一性由 [`build_strategies_checked`](crate::strategies::build::build_strategies_checked)
 /// 在启动时自检, 碰撞即报错。
+#[must_use]
 pub fn strategy_params_value(params: &str) -> u64 {
     let clean = params.replace(' ', "");
     // 已知形态白名单前缀。走到最后的分支意味着参数串形态未被识别。
     // 该形态不在白名单里时走 FNV 回退 + warn, 而不是静默编码成"末尾数字"
     // (后者在 `period=abc` 之类输入下会退化成 0, 与真实的 period=0 撞值)。
-    let known = [
-        "fast=", "entry=", "left=", "n=", "ma=", "stop=", "k=", "sigma=", "buy=", "reset=", "period=",
-    ];
-    let _ = &known; // 白名单仅用于可读性提示; 分支本身已逐个覆盖
     // 双均线 "fast=F,slow=S" 编码为 F*1_000_000+S(F/S<1_000_000, 本项目网格内唯一)。
     if let Some(rest) = clean.strip_prefix("fast=") {
         let mut it = rest.split(',');
@@ -220,7 +242,7 @@ pub fn strategy_params_value(params: &str) -> u64 {
             .nth(1)
             .unwrap_or("0")
             .parse::<f64>()
-            .map(|v| (v * 1000.0).round() as u64)
+            .map(|v| f64_to_u64_sorted(v * 1000.0))
             .unwrap_or(0);
         return n.saturating_mul(1_000_000).saturating_add(second);
     }
@@ -254,7 +276,7 @@ pub fn strategy_params_value(params: &str) -> u64 {
                 ("sigma", v) => {
                     sig = v
                         .parse::<f64>()
-                        .map(|f| (f * 1000.0).round() as u64)
+                        .map(|f| f64_to_u64_sorted(f * 1000.0))
                         .unwrap_or(0)
                 }
                 _ => {}
@@ -274,13 +296,13 @@ pub fn strategy_params_value(params: &str) -> u64 {
     if let Some(rest) = clean.strip_prefix("stop=") {
         return rest
             .parse::<f64>()
-            .map(|v| (v * 100.0).round() as u64)
+            .map(|v| f64_to_u64_sorted(v * 100.0))
             .unwrap_or(0);
     }
     if let Some(rest) = clean.strip_prefix("k=") {
         return rest
             .parse::<f64>()
-            .map(|v| (v * 1000.0).round() as u64)
+            .map(|v| f64_to_u64_sorted(v * 1000.0))
             .unwrap_or(0);
     }
     if let Some(rest) = clean.strip_prefix("sigma=") {
@@ -298,14 +320,14 @@ pub fn strategy_params_value(params: &str) -> u64 {
                 .next()
                 .unwrap_or("0")
                 .parse::<f64>()
-                .map(|v| (v * 100.0).round() as u64)
+                .map(|v| f64_to_u64_sorted(v * 100.0))
                 .unwrap_or(0);
             let mut h: u64 = 0;
             for kv in it {
                 let v = kv.split('=').nth(1).unwrap_or("0");
                 let slot: u64 = v.parse::<u64>().unwrap_or_else(|_| {
                     v.parse::<f64>()
-                        .map(|f| (f * 10.0).round() as u64)
+                        .map(|f| f64_to_u64_sorted(f * 10.0))
                         .unwrap_or(0)
                 });
                 h = h.saturating_mul(1000).saturating_add(slot);
@@ -318,14 +340,14 @@ pub fn strategy_params_value(params: &str) -> u64 {
         if let Some(comma) = rest.find(',') {
             let s: u64 = rest[..comma]
                 .parse::<f64>()
-                .map(|v| (v * 1000.0).round() as u64)
+                .map(|v| f64_to_u64_sorted(v * 1000.0))
                 .unwrap_or(0);
             let t: u64 = rest[comma + 1..]
                 .split('=')
                 .nth(1)
                 .unwrap_or("0")
                 .parse::<f64>()
-                .map(|v| (v * 10.0).round() as u64)
+                .map(|v| f64_to_u64_sorted(v * 10.0))
                 .unwrap_or(0);
             // 纯 sigma 形如 "2.5" 无逗号才走旧口径；含逗号但解析失败则回落 0(测试锁定)。
             if s != 0 || t != 0 {
@@ -335,7 +357,7 @@ pub fn strategy_params_value(params: &str) -> u64 {
         }
         return rest
             .parse::<f64>()
-            .map(|v| (v * 1000.0).round() as u64)
+            .map(|v| f64_to_u64_sorted(v * 1000.0))
             .unwrap_or(0);
     }
     // RSI2 "buy=B,sell=S" → round(B*10)*10000+round(S*10)。
@@ -345,7 +367,7 @@ pub fn strategy_params_value(params: &str) -> u64 {
             .next()
             .unwrap_or("0")
             .parse::<f64>()
-            .map(|v| (v * 10.0).round() as u64)
+            .map(|v| f64_to_u64_sorted(v * 10.0))
             .unwrap_or(0);
         let s: u64 = it
             .next()
@@ -353,7 +375,7 @@ pub fn strategy_params_value(params: &str) -> u64 {
             .strip_prefix("sell=")
             .unwrap_or("0")
             .parse::<f64>()
-            .map(|v| (v * 10.0).round() as u64)
+            .map(|v| f64_to_u64_sorted(v * 10.0))
             .unwrap_or(0);
         return b.saturating_mul(10_000).saturating_add(s);
     }
@@ -419,7 +441,16 @@ fn single_underscore_form(s: &str) -> Option<u64> {
     tail.parse::<u64>().ok()
 }
 
-fn build_parquet(results: &[RunResult], balance: f64) -> RecordBatch {
+/// 构造结果表的 Arrow `RecordBatch`。
+///
+/// # Errors
+/// Arrow schema 与列数不匹配时返回 [`AppError`]。
+///
+/// 此前这里用 `.expect("Parquet schema/column count mismatch")` 直接 panic, 而
+/// `write_parquet` 的 `# Errors` 段却承诺"schema 与列数不匹配时返回 [`AppError`]"——
+/// **文档与实现直接矛盾**。且 `cols` 与 `fields` 是两份手工同步的平行数组
+/// (各 51 项), 加一列忘了改另一列就会在**生产路径**上崩掉整轮回测。
+fn build_parquet(results: &[RunResult], balance: f64) -> Result<RecordBatch> {
     let mut strategy = StringBuilder::new();
     let mut symbol = StringBuilder::new();
     let mut timeframe = StringBuilder::new();
@@ -644,7 +675,7 @@ fn build_parquet(results: &[RunResult], balance: f64) -> RecordBatch {
     ];
 
     let schema = arrow::datatypes::Schema::new(fields);
-    RecordBatch::try_new(Arc::new(schema), cols).expect("Parquet schema/column count mismatch")
+    Ok(RecordBatch::try_new(Arc::new(schema), cols)?)
 }
 
 /// 把结果行写成单个 Parquet 文件(父目录自动创建)。
@@ -656,7 +687,7 @@ pub fn write_parquet(path: &Path, results: &[RunResult], balance: f64) -> Result
     use parquet::file::properties::WriterProperties;
     use std::fs::File;
 
-    let batch = build_parquet(results, balance);
+    let batch = build_parquet(results, balance)?;
     let schema = batch.schema();
 
     if let Some(parent) = path.parent() {
@@ -878,10 +909,13 @@ fn write_curve_file(
     Ok(())
 }
 
-/// 按**列名**取列序号; 缺列时 panic 并列出实际列名。
+/// 按**列名**取列序号; 缺列时返回错误并列出实际列名。
 ///
 /// 优于魔法列号: 曲线文件的列顺序由 schema 决定, 用常量下标读取会在 schema
 /// 调整后**静默读错列**(类型恰好兼容时不报错, 数值静默错位)。
+///
+/// # Errors
+/// schema 中不存在 `name` 列时返回 [`AppError`], 消息里列出实际存在的列名。
 pub fn col_by_name(
     schema: &arrow::datatypes::Schema,
     name: &str,
@@ -924,6 +958,10 @@ pub struct EquityCurve {
 /// 与 [`read_fixed_curves`] 同构但**列语义不同**: 前者返回 `(time, equity)`,
 /// 后者返回 `(bar_idx, fixed_equity)`。刻意不复用同一个 reader —— 两条曲线的
 /// 索引列类型(Int64 vs UInt64)、含义(时间戳 vs 序号)都不同, 混用会静默误读。
+///
+/// # Errors
+/// 目录读取失败、文件打开/解析失败、缺列、缺分组元数据, 或列类型不符时
+/// 返回 [`AppError`]。
 pub fn read_equity_curves(dir: &Path) -> Result<Vec<EquityCurve>> {
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
     use std::fs;
@@ -966,8 +1004,8 @@ pub fn read_equity_curves(dir: &Path) -> Result<Vec<EquityCurve>> {
         let mut values = Vec::new();
         for batch in reader {
             let batch = batch?;
-            times.extend(i64_col(&batch, idx));
-            values.extend(f64_col(&batch, val));
+            times.extend(i64_col(&batch, idx, &path)?);
+            values.extend(f64_col(&batch, val, &path)?);
         }
         out.push(EquityCurve {
             symbol,
@@ -997,6 +1035,10 @@ pub struct FixedCurve {
 }
 
 /// 读取目录下全部 `*_fixedcurve.parquet`(一般为 detail/ 目录)。
+///
+/// # Errors
+/// 目录读取失败、文件打开/解析失败、缺列、缺分组元数据, 或列类型不符时
+/// 返回 [`AppError`]。
 pub fn read_fixed_curves(dir: &Path) -> Result<Vec<FixedCurve>> {
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
     use std::fs;
@@ -1039,7 +1081,7 @@ pub fn read_fixed_curves(dir: &Path) -> Result<Vec<FixedCurve>> {
         let mut values = Vec::new();
         for batch in reader {
             let batch = batch?;
-            values.extend(f64_col(&batch, val_idx));
+            values.extend(f64_col(&batch, val_idx, &path)?);
         }
         out.push(FixedCurve {
             symbol,
@@ -1052,60 +1094,83 @@ pub fn read_fixed_curves(dir: &Path) -> Result<Vec<FixedCurve>> {
     Ok(out)
 }
 
-fn str_col(batch: &RecordBatch, idx: usize) -> Vec<String> {
+/// 列类型不符时的错误消息。
+///
+/// 可触发场景: `read_parquet` 读的不只是本次写的文件, 还有**历史版本**写的缓存、
+/// 别的工具产出、或被手工改过的文件。列一旦类型不符(例如 `total_return` 是
+/// Int32 而非 Float64), 原实现直接 panic —— 整轮回测崩在**第一个组合**上,
+/// 用户只看到一句 "f64 column", 完全不知道是哪个文件、哪一列出的问题。
+fn col_type_err(file: &Path, name: &str, expect: &str, actual: &str) -> crate::error::AppError {
+    crate::error::AppError::Msg(format!(
+        "{}: 列 {name} 类型不符(期望 {expect}, 实际 {actual}); \
+         该文件可能由其它版本或工具产出, 请删掉后重跑",
+        file.display()
+    ))
+}
+
+/// 按列名取列的下标(供类型校验用)。
+fn col_name(batch: &RecordBatch, idx: usize) -> String {
+    batch
+        .schema()
+        .fields()
+        .get(idx)
+        .map_or_else(|| format!("#{idx}"), |f| f.name().clone())
+}
+
+fn str_col(batch: &RecordBatch, idx: usize, file: &Path) -> Result<Vec<String>> {
     let arr = batch
         .column(idx)
         .as_any()
         .downcast_ref::<StringArray>()
-        .expect("string column");
-    (0..batch.num_rows())
+        .ok_or_else(|| col_type_err(file, &col_name(batch, idx), "Utf8", "非字符串"))?;
+    Ok((0..batch.num_rows())
         .map(|i| arr.value(i).to_string())
-        .collect()
+        .collect())
 }
 
-fn i64_col(batch: &RecordBatch, idx: usize) -> Vec<i64> {
+fn i64_col(batch: &RecordBatch, idx: usize, file: &Path) -> Result<Vec<i64>> {
     let arr = batch
         .column(idx)
         .as_any()
         .downcast_ref::<Int64Array>()
-        .expect("i64 column");
-    (0..batch.num_rows()).map(|i| arr.value(i)).collect()
+        .ok_or_else(|| col_type_err(file, &col_name(batch, idx), "Int64", "非 Int64"))?;
+    Ok((0..batch.num_rows()).map(|i| arr.value(i)).collect())
 }
 
-fn u64_col(batch: &RecordBatch, idx: usize) -> Vec<u64> {
+fn u64_col(batch: &RecordBatch, idx: usize, file: &Path) -> Result<Vec<u64>> {
     let arr = batch
         .column(idx)
         .as_any()
         .downcast_ref::<UInt64Array>()
-        .expect("u64 column");
-    (0..batch.num_rows()).map(|i| arr.value(i)).collect()
+        .ok_or_else(|| col_type_err(file, &col_name(batch, idx), "UInt64", "非 UInt64"))?;
+    Ok((0..batch.num_rows()).map(|i| arr.value(i)).collect())
 }
 
-fn f64_col(batch: &RecordBatch, idx: usize) -> Vec<f64> {
+fn f64_col(batch: &RecordBatch, idx: usize, file: &Path) -> Result<Vec<f64>> {
     let arr = batch
         .column(idx)
         .as_any()
         .downcast_ref::<Float64Array>()
-        .expect("f64 column");
-    (0..batch.num_rows()).map(|i| arr.value(i)).collect()
+        .ok_or_else(|| col_type_err(file, &col_name(batch, idx), "Float64", "非 Float64"))?;
+    Ok((0..batch.num_rows()).map(|i| arr.value(i)).collect())
 }
 
-fn u32_col(batch: &RecordBatch, idx: usize) -> Vec<u32> {
+fn u32_col(batch: &RecordBatch, idx: usize, file: &Path) -> Result<Vec<u32>> {
     let arr = batch
         .column(idx)
         .as_any()
         .downcast_ref::<UInt32Array>()
-        .expect("u32 column");
-    (0..batch.num_rows()).map(|i| arr.value(i)).collect()
+        .ok_or_else(|| col_type_err(file, &col_name(batch, idx), "UInt32", "非 UInt32"))?;
+    Ok((0..batch.num_rows()).map(|i| arr.value(i)).collect())
 }
 
-fn u8_col(batch: &RecordBatch, idx: usize) -> Vec<u8> {
+fn u8_col(batch: &RecordBatch, idx: usize, file: &Path) -> Result<Vec<u8>> {
     let arr = batch
         .column(idx)
         .as_any()
         .downcast_ref::<UInt8Array>()
-        .expect("u8 column");
-    (0..batch.num_rows()).map(|i| arr.value(i)).collect()
+        .ok_or_else(|| col_type_err(file, &col_name(batch, idx), "UInt8", "非 UInt8"))?;
+    Ok((0..batch.num_rows()).map(|i| arr.value(i)).collect())
 }
 
 /// 报告列的**单位**。
@@ -1259,6 +1324,9 @@ impl ColumnIndex {
 /// 没有它们。原先用 `batch.num_columns() > 37` 这类**列数**判断, 一旦有人调整列
 /// 顺序就会把"有但不同名"的列误判成"没有"。现在统一走 [`ColumnIndex::opt`]:
 /// 按名字找, 找不到才回退。
+///
+/// # Errors
+/// 文件打开/解析失败、缺必需列, 或列类型不符时返回 [`AppError`]。
 pub fn read_parquet(path: &Path) -> Result<Vec<RunResult>> {
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
     use std::fs::File;
@@ -1308,74 +1376,72 @@ pub fn read_parquet(path: &Path) -> Result<Vec<RunResult>> {
         let batch = batch?;
         let n = batch.num_rows();
 
-        let strategy = str_col(&batch, strategy_idx);
-        let symbol = str_col(&batch, symbol_idx);
-        let timeframe = str_col(&batch, timeframe_idx);
-        let params_full = str_col(&batch, params_idx);
-        let pnl = f64_col(&batch, total_return_idx);
-        let eq = f64_col(&batch, final_equity_idx);
-        let mdd = f64_col(&batch, max_dd_idx);
-        let trades = u32_col(&batch, trades_idx);
-        let sharpe = f64_col(&batch, sharpe_idx);
-        let sortino = f64_col(&batch, sortino_idx);
-        let wr = f64_col(&batch, win_rate_idx);
-        let pf = f64_col(&batch, pf_idx);
-        let calmar = f64_col(&batch, calmar_idx);
-        let avg_win = f64_col(&batch, avg_win_idx);
-        let avg_loss = f64_col(&batch, avg_loss_idx);
-        let expectancy = f64_col(&batch, expectancy_idx);
-        let cw = u32_col(&batch, cw_idx);
-        let cl = u32_col(&batch, cl_idx);
-        let volatility = f64_col(&batch, volatility_idx);
-        let recovery = f64_col(&batch, recovery_idx);
-        let avg_hold = f64_col(&batch, avg_hold_idx);
-        let avg_mae = f64_col(&batch, avg_mae_idx);
-        let avg_mfe = f64_col(&batch, avg_mfe_idx);
-        let edge = f64_col(&batch, edge_idx);
-        let wl = f64_col(&batch, wl_idx);
-        let skew = f64_col(&batch, skew_idx);
-        let kurt = f64_col(&batch, kurt_idx);
-        let sqn = f64_col(&batch, sqn_idx);
-        let pf_stab = f64_col(&batch, pf_stab_idx);
-        let z_score = f64_col(&batch, z_idx);
-        let p_value = f64_col(&batch, pval_idx);
-        let fixed_pnl = f64_col(&batch, fixed_pnl_idx);
+        let strategy = str_col(&batch, strategy_idx, path)?;
+        let symbol = str_col(&batch, symbol_idx, path)?;
+        let timeframe = str_col(&batch, timeframe_idx, path)?;
+        let params_full = str_col(&batch, params_idx, path)?;
+        let pnl = f64_col(&batch, total_return_idx, path)?;
+        let eq = f64_col(&batch, final_equity_idx, path)?;
+        let mdd = f64_col(&batch, max_dd_idx, path)?;
+        let trades = u32_col(&batch, trades_idx, path)?;
+        let sharpe = f64_col(&batch, sharpe_idx, path)?;
+        let sortino = f64_col(&batch, sortino_idx, path)?;
+        let wr = f64_col(&batch, win_rate_idx, path)?;
+        let pf = f64_col(&batch, pf_idx, path)?;
+        let calmar = f64_col(&batch, calmar_idx, path)?;
+        let avg_win = f64_col(&batch, avg_win_idx, path)?;
+        let avg_loss = f64_col(&batch, avg_loss_idx, path)?;
+        let expectancy = f64_col(&batch, expectancy_idx, path)?;
+        let cw = u32_col(&batch, cw_idx, path)?;
+        let cl = u32_col(&batch, cl_idx, path)?;
+        let volatility = f64_col(&batch, volatility_idx, path)?;
+        let recovery = f64_col(&batch, recovery_idx, path)?;
+        let avg_hold = f64_col(&batch, avg_hold_idx, path)?;
+        let avg_mae = f64_col(&batch, avg_mae_idx, path)?;
+        let avg_mfe = f64_col(&batch, avg_mfe_idx, path)?;
+        let edge = f64_col(&batch, edge_idx, path)?;
+        let wl = f64_col(&batch, wl_idx, path)?;
+        let skew = f64_col(&batch, skew_idx, path)?;
+        let kurt = f64_col(&batch, kurt_idx, path)?;
+        let sqn = f64_col(&batch, sqn_idx, path)?;
+        let pf_stab = f64_col(&batch, pf_stab_idx, path)?;
+        let z_score = f64_col(&batch, z_idx, path)?;
+        let p_value = f64_col(&batch, pval_idx, path)?;
+        let fixed_pnl = f64_col(&batch, fixed_pnl_idx, path)?;
 
         // 以下均为**历史上逐次追加**的可选列, 旧缓存文件没有 → 回退为旧口径。
-        let turnover_per_year = opt_f64(&batch, &ci, "turnover_per_year", n);
-        let delay_bars = opt_u32(&batch, &ci, "delay_bars", n);
-        let fee_bps = opt_f64(&batch, &ci, "fee_bps", n);
-        let slippage_bps = opt_f64(&batch, &ci, "slippage_bps", n);
-        let fixed_total_return = opt_f64(&batch, &ci, "fixed_total_return", n);
-        let fixed_sharpe_ratio = opt_f64(&batch, &ci, "fixed_sharpe_ratio", n);
-        let fixed_max_dd = opt_f64(&batch, &ci, "fixed_max_drawdown", n);
-        let fixed_expectancy_bps = opt_f64(&batch, &ci, "fixed_expectancy_bps", n);
-        let fixed_profit_factor = opt_f64(&batch, &ci, "fixed_profit_factor", n);
-        let fill_close = opt_u8(&batch, &ci, "fill_close", n);
-        let buy_hold_pnl = opt_f64(&batch, &ci, "buy_hold_pnl", n);
-        let buy_hold_return = opt_f64(&batch, &ci, "buy_hold_return", n);
+        let turnover_per_year = opt_f64(&batch, &ci, "turnover_per_year", n, path)?;
+        let delay_bars = opt_u32(&batch, &ci, "delay_bars", n, path)?;
+        let fee_bps = opt_f64(&batch, &ci, "fee_bps", n, path)?;
+        let slippage_bps = opt_f64(&batch, &ci, "slippage_bps", n, path)?;
+        let fixed_total_return = opt_f64(&batch, &ci, "fixed_total_return", n, path)?;
+        let fixed_sharpe_ratio = opt_f64(&batch, &ci, "fixed_sharpe_ratio", n, path)?;
+        let fixed_max_dd = opt_f64(&batch, &ci, "fixed_max_drawdown", n, path)?;
+        let fixed_expectancy_bps = opt_f64(&batch, &ci, "fixed_expectancy_bps", n, path)?;
+        let fixed_profit_factor = opt_f64(&batch, &ci, "fixed_profit_factor", n, path)?;
+        let fill_close = opt_u8(&batch, &ci, "fill_close", n, path)?;
+        let buy_hold_pnl = opt_f64(&batch, &ci, "buy_hold_pnl", n, path)?;
+        let buy_hold_return = opt_f64(&batch, &ci, "buy_hold_return", n, path)?;
         // O6: 原样读回写入时的编码, 合并时不重算。旧文件无此列 → 0 / 空串。
-        let strategy_params = opt_u64(&batch, &ci, "strategy_params", n);
-        let strategy_params_json = ci
-            .opt("strategy_params_json")
-            .map(|i| str_col(&batch, i))
-            .unwrap_or_else(|| vec![String::new(); n]);
+        let strategy_params = opt_u64(&batch, &ci, "strategy_params", n, path)?;
+        let strategy_params_json = match ci.opt("strategy_params_json") {
+            Some(i) => str_col(&batch, i, path)?,
+            None => vec![String::new(); n],
+        };
         // L5: 退化结果标记。旧文件无此列 → Ok / bars_used = 0(表示"未记录")。
-        let bars_used = opt_u32(&batch, &ci, "bars_used", n);
-        let status = ci
-            .opt("status")
-            .map(|i| str_col(&batch, i))
-            .map(|v| {
-                v.iter()
-                    .map(|s| match s.as_str() {
-                        "ok" => crate::app::RunStatus::Ok,
-                        "no_signals" => crate::app::RunStatus::NoSignals,
-                        "no_trades" => crate::app::RunStatus::NoTrades,
-                        _ => crate::app::RunStatus::NoSignals,
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_else(|| vec![crate::app::RunStatus::default(); n]);
+        let bars_used = opt_u32(&batch, &ci, "bars_used", n, path)?;
+        let status = match ci.opt("status") {
+            Some(i) => str_col(&batch, i, path)?
+                .iter()
+                .map(|s| match s.as_str() {
+                    "ok" => crate::app::RunStatus::Ok,
+                    "no_signals" => crate::app::RunStatus::NoSignals,
+                    "no_trades" => crate::app::RunStatus::NoTrades,
+                    _ => crate::app::RunStatus::NoSignals,
+                })
+                .collect::<Vec<_>>(),
+            None => vec![crate::app::RunStatus::default(); n],
+        };
 
         for i in 0..n {
             all.push(RunResult {
@@ -1441,27 +1507,59 @@ pub fn read_parquet(path: &Path) -> Result<Vec<RunResult>> {
 }
 
 /// 可选 `f64` 列; 旧缓存文件无此列时返回长度 `n` 的默认值。
-fn opt_f64(batch: &RecordBatch, ci: &ColumnIndex, name: &str, n: usize) -> Vec<f64> {
-    ci.opt(name)
-        .map_or_else(|| vec![0.0; n], |i| f64_col(batch, i))
+fn opt_f64(
+    batch: &RecordBatch,
+    ci: &ColumnIndex,
+    name: &str,
+    n: usize,
+    file: &Path,
+) -> Result<Vec<f64>> {
+    match ci.opt(name) {
+        Some(i) => f64_col(batch, i, file),
+        None => Ok(vec![0.0; n]),
+    }
 }
 
 /// 可选 `u32` 列。
-fn opt_u32(batch: &RecordBatch, ci: &ColumnIndex, name: &str, n: usize) -> Vec<u32> {
-    ci.opt(name)
-        .map_or_else(|| vec![0; n], |i| u32_col(batch, i))
+fn opt_u32(
+    batch: &RecordBatch,
+    ci: &ColumnIndex,
+    name: &str,
+    n: usize,
+    file: &Path,
+) -> Result<Vec<u32>> {
+    match ci.opt(name) {
+        Some(i) => u32_col(batch, i, file),
+        None => Ok(vec![0; n]),
+    }
 }
 
 /// 可选 `u64` 列。
-fn opt_u64(batch: &RecordBatch, ci: &ColumnIndex, name: &str, n: usize) -> Vec<u64> {
-    ci.opt(name)
-        .map_or_else(|| vec![0; n], |i| u64_col(batch, i))
+fn opt_u64(
+    batch: &RecordBatch,
+    ci: &ColumnIndex,
+    name: &str,
+    n: usize,
+    file: &Path,
+) -> Result<Vec<u64>> {
+    match ci.opt(name) {
+        Some(i) => u64_col(batch, i, file),
+        None => Ok(vec![0; n]),
+    }
 }
 
 /// 可选 `u8` 列。
-fn opt_u8(batch: &RecordBatch, ci: &ColumnIndex, name: &str, n: usize) -> Vec<u8> {
-    ci.opt(name)
-        .map_or_else(|| vec![0; n], |i| u8_col(batch, i))
+fn opt_u8(
+    batch: &RecordBatch,
+    ci: &ColumnIndex,
+    name: &str,
+    n: usize,
+    file: &Path,
+) -> Result<Vec<u8>> {
+    match ci.opt(name) {
+        Some(i) => u8_col(batch, i, file),
+        None => Ok(vec![0; n]),
+    }
 }
 
 /// 把结果行写入单个组合缓存文件(父目录自动创建)。
@@ -1483,6 +1581,9 @@ pub fn write_single_parquet(results: &[RunResult], path: &Path, balance: f64) ->
 /// **读失败不再静默**: 原实现只打一行日志然后跳过, 返回值仍是成功,
 /// 调用方无从得知丢了几个组合 —— 报告里少了参数却显示"完成"。
 /// 现在返回 [`MergeStats`], 失败数进入最终摘要; 全部失败才报错。
+///
+/// # Errors
+/// 全部输入文件都读不出来, 或写出合并报告失败时返回 [`AppError`]。
 pub fn merge_parquet_files(
     paths: &[PathBuf],
     output_path: &Path,
@@ -1511,7 +1612,7 @@ pub fn merge_parquet_files(
     Ok(MergeStats {
         merged_rows: total,
         failed_files: failed,
-        total_files: paths.len() as u32,
+        total_files: u32::try_from(paths.len()).unwrap_or(u32::MAX),
     })
 }
 
@@ -1526,6 +1627,7 @@ pub struct MergeStats {
     pub total_files: u32,
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1537,6 +1639,22 @@ mod tests {
         // 旧口径回归。
         assert_eq!(strategy_params_value("period=20"), 20);
         assert_eq!(strategy_params_value("ema_10"), 10);
+    }
+
+    /// 回归: 负参数**不得**编码成 0(那会与真实的 `= 0` 撞值)。
+    ///
+    /// 可触发场景: `as` 从 f64 到 u64 是饱和的 —— 负数 → 0。于是 `sigma = -1.0`
+    /// 与 `sigma = 0.0` 在 `strategy_params` 列上**完全相同**, 报告里两个不同
+    /// 参数不可区分, 按参数排序也失去意义。现在负值统一编码到 `u64::MAX`。
+    #[test]
+    fn negative_params_do_not_collide_with_zero() {
+        let neg = strategy_params_value("k=-1.5");
+        let zero = strategy_params_value("k=0.0");
+        assert_ne!(neg, zero, "负参数与零参数必须可区分(否则报告列静默错位)");
+        assert_eq!(neg, u64::MAX, "负参数应编码到 u64::MAX 区间");
+        // 非负参数的编码保持与历史口径**逐位相同**(不能因这次整改而变)。
+        assert_eq!(strategy_params_value("k=1.5"), 1500);
+        assert_eq!(strategy_params_value("sigma=2.5"), 2500);
     }
 
     #[test]
@@ -2108,7 +2226,7 @@ mod tests {
         let batch: RecordBatch = it.next().unwrap().unwrap();
         let get = |name: &str| -> f64 {
             let i = batch.schema().index_of(name).unwrap();
-            f64_col(&batch, i)[0]
+            f64_col(&batch, i, &p).unwrap()[0]
         };
         let comp = get("max_drawdown");
         let fixed = get("fixed_max_drawdown");
@@ -2171,7 +2289,7 @@ mod tests {
         let batch: RecordBatch = it.next().unwrap().unwrap();
         let get = |name: &str| -> f64 {
             let i = batch.schema().index_of(name).unwrap();
-            f64_col(&batch, i)[0]
+            f64_col(&batch, i, &p).unwrap()[0]
         };
         assert!(
             (get("volatility_pct") - 42.0).abs() < 1e-12,

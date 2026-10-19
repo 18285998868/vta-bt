@@ -10,6 +10,7 @@ pub struct SsfStStrategy {
 
 impl SsfStStrategy {
     /// 由 [`SsfStConfig`] 构造; 参数网格由该配置展开。
+    #[must_use]
     pub fn new(config: SsfStConfig) -> Self {
         let range = config.period.into_range();
         let periods: Vec<usize> = (range.start..=range.end).step_by(range.step).collect();
@@ -81,6 +82,7 @@ impl Strategy for SsfStStrategy {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

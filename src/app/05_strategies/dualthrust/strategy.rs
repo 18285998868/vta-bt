@@ -11,6 +11,7 @@ pub struct DualThrustStrategy {
 
 impl DualThrustStrategy {
     /// 由 [`DualThrustConfig`] 构造; 参数网格由该配置展开。
+    #[must_use]
     pub fn new(config: DualThrustConfig) -> Self {
         Self {
             pairs: config.pairs(),
@@ -20,6 +21,7 @@ impl DualThrustStrategy {
 
 /// 纯决策函数(可手算单测): 日线 + 当日逐 bar 收盘 + 当日开 + 起止下标。
 #[allow(clippy::too_many_arguments)]
+#[must_use]
 pub fn dualthrust_signals(days: &[DayBar], close: &[f64], n: usize, k: f64) -> Vec<Signal> {
     let mut sig = vec![Signal::Hold; close.len()];
     let mut pos: i8 = 0;
@@ -126,6 +128,7 @@ impl Strategy for DualThrustStrategy {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

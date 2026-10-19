@@ -11,6 +11,7 @@
 //! 注意第 2 项: `param_str` 字符串在两个参数组之间是**不同**的, 塌陷发生在压缩层。
 //! 这正是只查字符串唯一会漏掉的场景。
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use vta::config::{Config, F64Param, StrategyConfig};
 use vta::strategies::build::build_strategies_checked;
 

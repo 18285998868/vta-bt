@@ -13,6 +13,7 @@ pub struct RBreakerStrategy {
 
 impl RBreakerStrategy {
     /// 由 [`RBreakerConfig`] 构造; 参数网格由该配置展开。
+    #[must_use]
     pub fn new(config: RBreakerConfig) -> Self {
         Self {
             stops: config.values(),
@@ -36,6 +37,7 @@ pub struct Levels {
     pub s_break: f64,
 }
 
+#[must_use]
 pub fn six_levels(h: f64, l: f64, c: f64) -> Option<Levels> {
     if ![h, l, c].iter().all(|v| v.is_finite()) || h < l {
         return None;
@@ -52,6 +54,7 @@ pub fn six_levels(h: f64, l: f64, c: f64) -> Option<Levels> {
 }
 
 /// 纯决策函数(可手算单测)。
+#[must_use]
 pub fn rbreaker_signals(days: &[DayBar], close: &[f64], stop_pct: f64) -> Vec<Signal> {
     let mut sig = vec![Signal::Hold; close.len()];
     let mut pos: i8 = 0;
@@ -167,6 +170,7 @@ impl Strategy for RBreakerStrategy {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

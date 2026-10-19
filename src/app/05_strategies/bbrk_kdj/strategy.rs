@@ -26,6 +26,7 @@ pub struct BbrkKdjStrategy {
 
 impl BbrkKdjStrategy {
     /// 由 [`BbrkKdjConfig`] 构造; 参数网格由该配置展开。
+    #[must_use]
     pub fn new(config: BbrkKdjConfig) -> Self {
         Self {
             sigmas: config.values(),
@@ -36,6 +37,7 @@ impl BbrkKdjStrategy {
 /// 纯决策函数(可手算单测；open/high/low/close + 上下轨 + K + squeeze_on)。
 /// 单状态机（pos 0/±1，与 BBRK 同形，不存在双腿持仓冲突）。
 #[allow(clippy::too_many_arguments)]
+#[must_use]
 pub fn bbrk_kdj_signals(
     open: &[f64],
     high: &[f64],
@@ -242,6 +244,7 @@ impl Strategy for BbrkKdjStrategy {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

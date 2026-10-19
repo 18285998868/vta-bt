@@ -17,6 +17,7 @@ pub struct EdmaConfig {
 
 impl EdmaConfig {
     /// 展开后的参数组合(按策略的笛卡尔积顺序)。
+    #[must_use]
     pub fn pairs(&self) -> Vec<(usize, usize)> {
         let pr = self.period.to_range();
         let periods: Vec<usize> = (pr.start..=pr.end).step_by(pr.step).collect();
@@ -27,7 +28,10 @@ impl EdmaConfig {
                 (r.start..=r.end).step_by(r.step).collect()
             }
         };
-        let mut out = Vec::new();
+        // 网格规模 = 各维度长度之积(可预知), 一次分配到位(`mem-with-capacity`)。
+        // `saturating_mul`: 笛卡尔积理论上无界, 普通 `*` 在 debug 下会溢出 panic。
+        let cap = periods.len().saturating_mul(offsets.len());
+        let mut out = Vec::with_capacity(cap.min(crate::strategies::MAX_GRID_PREALLOC));
         for &p in &periods {
             for &o in &offsets {
                 out.push((p, o));
@@ -38,18 +42,28 @@ impl EdmaConfig {
 }
 
 impl EdmaConfig {
-    /// 语义校验(原集中在 `config.rs::Config::validate` 的 match 中,
-    /// 已下沉到本类型; 分派处只保留一行调用)。
     /// 语义校验: 范围、步长与网格非空性。
     ///
     /// # Errors
     /// 任一参数越界或展开为空时返回 [`AppError`](crate::error::AppError)。
+    ///
+    /// `offset` **必须**一并校验: 它是 `Option<PeriodParam>`, 原实现只校验了
+    /// `period`, 于是 `offset = { start = 0, end = 2, step = 0 }` 能通过校验,
+    /// 却在 `pairs()` 里触发 `Range::step_by(0)` 的 **panic** ——
+    /// 用户 TOML 可直接触发的运行时崩溃。
+    ///
+    /// 注意 `offset` 的合法下界是 **0**(不偏移是合法配置), 故不能用
+    /// `PeriodParam::validate()`(它要求 >= 1), 只能用具名版本。
     pub fn validate(&self) -> crate::error::Result<()> {
         self.period.validate()?;
+        if let Some(o) = &self.offset {
+            o.validate_named("edma.offset", 0)?;
+        }
         Ok(())
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -70,5 +84,36 @@ mod tests {
             })),
         };
         assert_eq!(c.pairs(), vec![(5, 0), (5, 2), (10, 0), (10, 2)]);
+    }
+
+    /// 回归: `offset.step = 0` 必须在**校验期**被拒。
+    ///
+    /// 可触发场景: 原实现只校验 `period`, `offset` 完全逃过检查, 于是
+    /// `pairs()` 里的 `.step_by(0)` panic("assertion failed: step != 0")。
+    #[test]
+    fn zero_step_in_offset_is_rejected_before_panicking() {
+        let c = EdmaConfig {
+            period: PeriodParam::Single(10),
+            offset: Some(PeriodParam::Range(RangeParam {
+                start: 0,
+                end: 2,
+                step: 0,
+            })),
+        };
+        let e = c.validate().expect_err("step=0 必须被拒");
+        assert!(
+            format!("{e}").contains("edma.offset"),
+            "错误消息应指明是哪个参数: {e}"
+        );
+    }
+
+    /// 回归: `offset = 0` 是**合法**配置, 不得被 `period` 的下界规则误拒。
+    #[test]
+    fn zero_offset_is_valid() {
+        let c = EdmaConfig {
+            period: PeriodParam::Single(10),
+            offset: Some(PeriodParam::Single(0)),
+        };
+        assert!(c.validate().is_ok());
     }
 }

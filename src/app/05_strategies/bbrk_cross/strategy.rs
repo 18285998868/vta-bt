@@ -17,6 +17,7 @@ pub struct BbrkCrossStrategy {
 
 impl BbrkCrossStrategy {
     /// 由 [`BbrkCrossConfig`] 构造; 参数网格由该配置展开。
+    #[must_use]
     pub fn new(config: BbrkCrossConfig) -> Self {
         Self {
             sigmas: config.values(),
@@ -25,6 +26,7 @@ impl BbrkCrossStrategy {
 }
 
 /// 纯决策函数(可手算单测；与 `bbrk_signals` 同形，仅多前根确认)。
+#[must_use]
 pub fn bbrk_cross_signals(close: &[f64], lower: &[f64], mid: &[f64], upper: &[f64]) -> Vec<Signal> {
     let n = close.len().min(lower.len()).min(mid.len()).min(upper.len());
     let mut sig = vec![Signal::Hold; n];
@@ -125,6 +127,7 @@ impl BbrkCrossStrategy {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,0 +1,45 @@
+# ========================================
+# 因子研究验证配置：均线斜率 / ATR 波动尺度 门控策略
+#
+# 量化规则（只做多，不持空）:
+#   ma_t    = SMA(close, ma)
+#   slope_t = ma_t / ma_{t-slope_k} - 1
+#   f_t     = slope_t / (atr_t / close_t)          # 趋势强度 / 波动尺度
+#   z_t     = (f_t - rolling_mean(f, z_win)) / rolling_std(f, z_win)
+#   持多 <=> close_t > ma_t AND z_t > th, 否则空仓
+#
+# 参数取自研究侧已验证的最优组合（因子研究/README.md v4~v6）:
+#   ma=100, slope_k=20, atr_n=120, z_win=60, th=0.5
+# ========================================
+[data]
+type = "binance"
+dir = "/data/nutilustrader/data"
+symbol = "BTCUSDT"
+timeframe = "1d"
+start_date = "2021-01-01"
+end_date = "2025-12-31"
+
+[backtest]
+initial_balance = 10000.0
+# 信号次根成交, 与研究侧 position.shift(1) 口径一致
+delay_bars = 1
+# 次根开盘成交(vta 默认)。BTC 24h 连续交易, 次根开盘 ≈ 当根收盘,
+# 故与研究侧 position.shift(1)(当根收盘成交) 基本等价, 差异仅隔夜跳空。
+fill_bar_price = "open"
+# 与研究侧一致的单边手续费
+fee_bps = 5.0
+slippage_bps = 0.0
+
+[output]
+dir = "/data/nutilustrader/outputs/reports/vta_gate_sma"
+detail = true
+overwrite = true
+
+[[strategy]]
+type = "ma_slope_atr_gate"
+ma = 100
+slope_k = 20
+atr_n = 120
+z_win = 60
+th = 0.5
+atr_kind = "sma"

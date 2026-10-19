@@ -17,6 +17,7 @@ pub struct BbrkHmaEmaStrategy {
 
 impl BbrkHmaEmaStrategy {
     /// 由 [`BbrkHmaEmaConfig`] 构造; 参数网格由该配置展开。
+    #[must_use]
     pub fn new(config: BbrkHmaEmaConfig) -> Self {
         Self {
             pairs: config.pairs(),
@@ -25,6 +26,7 @@ impl BbrkHmaEmaStrategy {
 }
 
 /// 纯决策函数(可手算单测；与 `bbrk_sma_signals` 同形，regime 线换成 HMA)。
+#[must_use]
 pub fn bbrk_hma_ema_signals(
     close: &[f64],
     lower: &[f64],
@@ -135,6 +137,7 @@ impl Strategy for BbrkHmaEmaStrategy {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

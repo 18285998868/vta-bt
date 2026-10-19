@@ -19,10 +19,14 @@ pub struct BbrkPctbConfig {
 
 impl BbrkPctbConfig {
     /// 展开后的参数组合(按策略的笛卡尔积顺序)。
+    #[must_use]
     pub fn pairs(&self) -> Vec<(f64, f64)> {
         let ss = self.sigma.values();
         let bs = self.exitb.values();
-        let mut out = Vec::new();
+        // 网格规模 = 各维度长度之积(可预知), 一次分配到位(`mem-with-capacity`)。
+        // `saturating_mul`: 笛卡尔积理论上无界, 普通 `*` 在 debug 下会溢出 panic。
+        let cap = ss.len().saturating_mul(bs.len());
+        let mut out = Vec::with_capacity(cap.min(crate::strategies::MAX_GRID_PREALLOC));
         for &s in &ss {
             for &b in &bs {
                 out.push((s, b));
@@ -49,6 +53,7 @@ impl BbrkPctbConfig {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

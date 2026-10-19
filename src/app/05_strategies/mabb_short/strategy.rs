@@ -15,6 +15,7 @@ pub struct MabbShortStrategy {
 
 impl MabbShortStrategy {
     /// 由 [`MabbShortConfig`] 构造; 参数网格由该配置展开。
+    #[must_use]
     pub fn new(config: MabbShortConfig) -> Self {
         Self {
             quints: config.quints(),
@@ -24,6 +25,7 @@ impl MabbShortStrategy {
 
 /// 纯决策函数(可手算单测)。
 #[allow(clippy::too_many_arguments)]
+#[must_use]
 pub fn mabb_short_signals(
     close: &[f64],
     high: &[f64],
@@ -87,6 +89,7 @@ pub fn mabb_short_signals(
 }
 
 /// 中轨＋波动率：mid＝MA(maname,len)，sd＝std(close,len,nbdev=1)，轨＝mid±σ·sd。
+#[must_use]
 pub fn mabb_bands_short(
     close: &[f64],
     maname: &str,
@@ -137,6 +140,7 @@ fn mabb_core_short(close: &[f64], maname: &str, len: usize) -> Option<(Vec<f64>,
     Some((mid, sd))
 }
 
+#[must_use]
 pub fn mabb_atr_short(high: &[f64], low: &[f64], close: &[f64], atrlen: usize) -> Vec<f64> {
     if atrlen == 0 {
         return vec![f64::NAN; close.len()];
@@ -225,32 +229,34 @@ impl Strategy for MabbShortStrategy {
         for a in &alens {
             atr_cache.insert(*a, mabb_atr_short(high, low, close, *a));
         }
+        // 分组键用 `(ma 名, len)`: 键里的 `String` 只在**建组时**克隆一次,
+        // 之后一律借用(`groups.iter()`), 不再为每个参数克隆一遍。
         let mut groups: HashMap<(String, usize), Vec<usize>> = HashMap::new();
         for &i in &idxs {
             let (m, l, _, _, _) = &self.quints[i];
             groups.entry((m.clone(), *l)).or_default().push(i);
         }
-        let mut keys: Vec<(String, usize)> = groups.keys().cloned().collect();
-        keys.sort();
-        let mut at: HashMap<usize, usize> = HashMap::new();
+        // 稳定顺序: 按 (ma, len) 排序, 保证 batch 与逐个调的结果顺序一致。
+        let mut keys: Vec<(&(String, usize), &Vec<usize>)> = groups.iter().collect();
+        keys.sort_by(|a, b| a.0.cmp(b.0));
+        let mut at: HashMap<usize, usize> = HashMap::with_capacity(idxs.len());
         for (p, &i) in idxs.iter().enumerate() {
             at.insert(i, p);
         }
         let mut out: Vec<Vec<Signal>> = vec![Vec::new(); idxs.len()];
-        for (m, l) in &keys {
-            let members = groups.get(&(m.clone(), *l)).cloned().unwrap_or_default();
+        for ((m, l), members) in keys {
             let (mi, sd) = match mabb_core_short(close, m, *l) {
                 Some(v) => v,
                 None => {
-                    for &i in &members {
+                    for &i in members {
                         out[at[&i]] = vec![Signal::Hold; close.len()];
                     }
                     continue;
                 }
             };
             let done: Vec<(usize, Vec<Signal>)> = members
-                .into_par_iter()
-                .map(|i| {
+                .par_iter()
+                .map(|&i| {
                     let (_, _, s, k, a) = &self.quints[i];
                     let lower: Vec<f64> = mi
                         .iter()
@@ -262,17 +268,32 @@ impl Strategy for MabbShortStrategy {
                         .zip(sd.iter())
                         .map(|(mm, ss)| mm + s * ss)
                         .collect();
-                    let av = atr_cache
-                        .get(a)
-                        .cloned()
-                        .unwrap_or(vec![f64::NAN; close.len()]);
+                    // **借用** ATR 序列: 原实现 `.cloned().unwrap_or(vec![f64::NAN; len])`
+                    // 每次都克隆整条等长向量(参数数 × bar 数级别的拷贝),
+                    // 且 miss 时静默用 NaN 掩盖"缓存未命中"这一逻辑错误。
+                    // 现在 miss 是**硬错误**: 缓存的键集就是本批次的 atrlen 集合,
+                    // 命中不了就说明实现有 bug, 不能悄悄降级成全 NaN。
+                    let av = atr_cache.get(a).ok_or_else(|| {
+                        crate::error::AppError::Msg(format!(
+                            "MABB_SHORT: ATR 缓存缺失(atrlen={a}); 缓存键集与本批参数不一致"
+                        ))
+                    })?;
                     let _ = (open, volume, time);
-                    (
+                    Ok((
                         i,
-                        mabb_short_signals(close, high, low, &lower, &mi, &upper, &av, *k),
-                    )
+                        mabb_short_signals(
+                            close,
+                            high,
+                            low,
+                            &lower,
+                            &mi,
+                            &upper,
+                            av.as_slice(),
+                            *k,
+                        ),
+                    ))
                 })
-                .collect();
+                .collect::<crate::error::Result<Vec<_>>>()?;
             for (i, sig) in done {
                 out[at[&i]] = sig;
             }
@@ -281,6 +302,7 @@ impl Strategy for MabbShortStrategy {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

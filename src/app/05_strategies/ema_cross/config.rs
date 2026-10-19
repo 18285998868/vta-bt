@@ -16,12 +16,16 @@ pub struct EmaCrossConfig {
 
 impl EmaCrossConfig {
     /// 有效参数对(至少 1 对, 否则配置无意义)。
+    #[must_use]
     pub fn pairs(&self) -> Vec<(usize, usize)> {
         let fasts = self.fast.to_range();
         let slows = self.slow.to_range();
         let f: Vec<usize> = (fasts.start..=fasts.end).step_by(fasts.step).collect();
         let s: Vec<usize> = (slows.start..=slows.end).step_by(slows.step).collect();
-        let mut out = Vec::new();
+        // 网格规模 = 各维度长度之积(可预知), 一次分配到位(`mem-with-capacity`)。
+        // `saturating_mul`: 笛卡尔积理论上无界, 普通 `*` 在 debug 下会溢出 panic。
+        let cap = f.len().saturating_mul(s.len());
+        let mut out = Vec::with_capacity(cap.min(crate::strategies::MAX_GRID_PREALLOC));
         for &ff in &f {
             for &ss in &s {
                 if ff < ss {
@@ -50,6 +54,7 @@ impl EmaCrossConfig {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

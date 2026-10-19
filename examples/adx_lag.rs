@@ -1,8 +1,8 @@
-// adx_lag: BB突破 vs BB+ADX 进场滞后重放 (研究轨机制证据, 非引擎改动).
-// 复用引擎信号: BbrkBbStrategy(基线) + BbrkAdxStrategy(过滤), 同 len/sigma.
-// 对每个基线进场 i(方向d, 离场 e): 在 [i..e] 内找首个同向过滤进场 j.
-// lag=j-i; 错过=窗内无同向过滤进场; slip=进场价差(bps, 以基线进场收盘为基准).
-// 假设: 窗内首个同向过滤信号即对应进场 (双序列同离场规则, 重叠为二阶, 仅计数).
+//! `adx_lag`: BB 突破 vs BB+ADX 进场滞后重放(研究轨机制证据, 非引擎改动)。
+//!
+//! 复用引擎信号: `BbrkBbStrategy`(基线) + `BbrkAdxStrategy`(过滤), 同 len/sigma。
+//! 对每个基线进场 i(方向 d, 离场 e): 在 `[i..e]` 内找首个同向过滤进场 j。
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use kline_reader::{DataConfig, DataSource, load_columns};
 use vta::config::F64Param;
 use vta::strategies::Signal;
@@ -40,9 +40,13 @@ fn median_f(mut v: Vec<f64>) -> f64 {
 }
 
 fn run_pair(symbol: &str, timeframe: &str, len: usize, sigma: f64, adxlen: usize, thr: f64) {
+    // 数据根目录: 优先取环境变量, 否则回落到本机的默认数据目录。
+    // 硬编码绝对路径会让 example 换台机器就失效。
+    let data_dir =
+        std::env::var("VTA_DATA_DIR").unwrap_or_else(|_| "/data/nutilustrader/data".to_string());
     let cfg = DataConfig::new(
         DataSource::Binance,
-        "/data/nutilustrader/data",
+        &data_dir,
         symbol,
         timeframe,
         Some("2020-09-15"),

@@ -15,6 +15,7 @@ pub struct RBreakerConfig {
 
 impl RBreakerConfig {
     /// 展开后的取值列表。
+    #[must_use]
     pub fn values(&self) -> Vec<f64> {
         self.stop_pct.values()
     }
@@ -37,6 +38,7 @@ impl RBreakerConfig {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

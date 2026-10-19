@@ -17,6 +17,7 @@ pub struct VwapTrendConfig {
 
 impl VwapTrendConfig {
     /// 展开后的模式列表。
+    #[must_use]
     pub fn modes(&self) -> Vec<u8> {
         self.reset
             .values()
@@ -42,6 +43,7 @@ impl VwapTrendConfig {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -81,6 +81,7 @@ fn swing_low_flags(low: &[f64], left: usize, right: usize) -> Vec<bool> {
 ///
 /// NaN 语义(P7): 摆动点未就绪(`nH` 或 `nL` 任一为 NaN)、输入 NaN 时一律 `Hold`,
 /// 不产生任何隐含降级。
+#[must_use]
 pub fn swing_fractal_signals(
     high: &[f64],
     low: &[f64],
@@ -157,6 +158,7 @@ pub struct SwingFractalStrategy {
 
 impl SwingFractalStrategy {
     /// 由 [`SwingFractalConfig`] 构造; 参数网格由该配置展开。
+    #[must_use]
     pub fn new(config: SwingFractalConfig) -> Self {
         Self {
             pairs: config.pairs(),
@@ -193,6 +195,7 @@ impl Strategy for SwingFractalStrategy {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -278,10 +281,16 @@ mod tests {
     #[test]
     fn test_short_stop_anchors_at_swing_high_and_follows_down() {
         // 复用触发路径: i=9 平多开空(stop = nH = 14), i=10 出现更低的摆动高 12。
-        let high = vec![11.0, 13.0, 12.0, 14.0, 13.0, 12.0, 14.0, 13.0, 12.0, 13.0, 12.0];
-        let low = vec![9.0, 11.0, 10.0, 12.0, 11.0, 10.0, 13.0, 12.0, 9.0, 10.0, 11.0];
+        let high = vec![
+            11.0, 13.0, 12.0, 14.0, 13.0, 12.0, 14.0, 13.0, 12.0, 13.0, 12.0,
+        ];
+        let low = vec![
+            9.0, 11.0, 10.0, 12.0, 11.0, 10.0, 13.0, 12.0, 9.0, 10.0, 11.0,
+        ];
         // i=10: j=9, high[9]=13 > high[8]=12 ✓ 但 13 > high[10]=12 ✓ → 摆动高 13 于 i=10 确认。
-        let close = vec![11.0, 12.0, 11.0, 15.0, 13.0, 12.0, 14.0, 13.0, 12.0, 8.5, 13.0];
+        let close = vec![
+            11.0, 12.0, 11.0, 15.0, 13.0, 12.0, 14.0, 13.0, 12.0, 8.5, 13.0,
+        ];
         let sig = swing_fractal_signals(&high, &low, &close, 1, 1);
         assert_eq!(sig[9], Signal::Sell, "平多开空, 止损锚 nH=14");
         assert_eq!(sig[10], Signal::Hold, "13 <= nH=13, 未反手");
@@ -308,9 +317,15 @@ mod tests {
     #[test]
     fn test_short_break_above_swing_high_flips_long() {
         // i=9 平多开空(stop=nH=14), i=10 收盘 15 > nH=14 → 平空开多。
-        let high = vec![11.0, 13.0, 12.0, 14.0, 13.0, 12.0, 14.0, 13.0, 12.0, 13.0, 14.0];
-        let low = vec![9.0, 11.0, 10.0, 12.0, 11.0, 10.0, 13.0, 12.0, 9.0, 10.0, 11.0];
-        let close = vec![11.0, 12.0, 11.0, 15.0, 13.0, 12.0, 14.0, 13.0, 12.0, 8.5, 15.0];
+        let high = vec![
+            11.0, 13.0, 12.0, 14.0, 13.0, 12.0, 14.0, 13.0, 12.0, 13.0, 14.0,
+        ];
+        let low = vec![
+            9.0, 11.0, 10.0, 12.0, 11.0, 10.0, 13.0, 12.0, 9.0, 10.0, 11.0,
+        ];
+        let close = vec![
+            11.0, 12.0, 11.0, 15.0, 13.0, 12.0, 14.0, 13.0, 12.0, 8.5, 15.0,
+        ];
         let sig = swing_fractal_signals(&high, &low, &close, 1, 1);
         assert_eq!(sig[9], Signal::Sell);
         assert_eq!(sig[10], Signal::Buy, "close=15 > nH=14 → 平空开多");
@@ -360,11 +375,17 @@ mod tests {
         let (high, low, mut close) = trigger_case();
         // 前提: 收盘价落在两条线之间 → Close 分支独占。
         assert!(low[8] < close[9] && close[9] < 10.0, "Close 分支前提失效");
-        assert_eq!(swing_fractal_signals(&high, &low, &close, 1, 1)[9], Signal::Close);
+        assert_eq!(
+            swing_fractal_signals(&high, &low, &close, 1, 1)[9],
+            Signal::Close
+        );
 
         // 跌破 nL → Sell 分支独占, 且此处 stop(10) 也被击穿, 证明两分支互斥。
         close[9] = 8.5;
         assert!(close[9] < low[8], "Sell 分支前提失效");
-        assert_eq!(swing_fractal_signals(&high, &low, &close, 1, 1)[9], Signal::Sell);
+        assert_eq!(
+            swing_fractal_signals(&high, &low, &close, 1, 1)[9],
+            Signal::Sell
+        );
     }
 }

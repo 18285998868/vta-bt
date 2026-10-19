@@ -1,14 +1,23 @@
-// P2 实测: params_fingerprint 里的 param_str 分配成本占比。
-// 用法: cargo run --release --example p2_bench
+//! `p2_bench`: 实测 `params_fingerprint` 里的 `param_str` 分配成本占比。
+//!
+//! 用法: `cargo run --release --example p2_bench`
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use std::time::Instant;
 use vta::config::Config;
-use vta::strategies::build::build_strategies;
+use vta::strategies::build::build_strategies_checked;
 
 fn bench() {
-    let root = std::path::Path::new("/data/nutilustrader/creats/vector-ta");
+    // 仓库根目录: 优先取环境变量, 否则用编译期已知的 `CARGO_MANIFEST_DIR`。
+    // 硬编码绝对路径会让 example 换台机器就失效。
+    let root: std::path::PathBuf = match std::env::var("VTA_REPO_ROOT") {
+        Ok(dir) => dir.into(),
+        Err(_) => env!("CARGO_MANIFEST_DIR").into(),
+    };
     let text = std::fs::read_to_string(root.join("config.ma_all_1h.toml")).unwrap();
     let cfg: Config = toml::from_str(&text).unwrap();
-    let sts = build_strategies(&cfg.strategy);
+    // 用**带唯一性自检**的构建器: 与生产路径 `app::run` 同源,
+    // 免得 benchmark 测的是一个生产永远不会跑的网格。
+    let sts = build_strategies_checked(&cfg.strategy).unwrap();
 
     let total_params: usize = sts.iter().map(|s| s.param_count()).sum();
     println!("策略数={} 参数总档数={}", sts.len(), total_params);
@@ -61,7 +70,10 @@ fn bench() {
 
     println!();
     println!("=== 结论 ===");
-    println!("param_str(A) ≈ simulate(C) 的 {:.1}%", a.as_secs_f64() / c.as_secs_f64() * 100.0);
+    println!(
+        "param_str(A) ≈ simulate(C) 的 {:.1}%",
+        a.as_secs_f64() / c.as_secs_f64() * 100.0
+    );
     println!(
         "若一个组合要跑 C 次 simulate, param_str(A) 占该组合的 {:.2}%",
         a.as_secs_f64() / (c.as_secs_f64() * 20.0) * 100.0

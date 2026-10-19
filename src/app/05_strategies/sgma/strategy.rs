@@ -11,6 +11,7 @@ pub struct SgmaStrategy {
 
 impl SgmaStrategy {
     /// 由 [`SgmaConfig`] 构造; 参数网格由该配置展开。
+    #[must_use]
     pub fn new(config: SgmaConfig) -> Self {
         Self {
             pairs: config.pairs(),
@@ -57,6 +58,7 @@ impl Strategy for SgmaStrategy {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

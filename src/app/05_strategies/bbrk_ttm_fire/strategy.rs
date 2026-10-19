@@ -25,6 +25,7 @@ pub struct BbrkTtmFireStrategy {
 
 impl BbrkTtmFireStrategy {
     /// 由 [`BbrkTtmFireConfig`] 构造; 参数网格由该配置展开。
+    #[must_use]
     pub fn new(config: BbrkTtmFireConfig) -> Self {
         Self {
             pairs: config.pairs(),
@@ -33,6 +34,7 @@ impl BbrkTtmFireStrategy {
 }
 
 /// 纯决策函数(可手算单测；`sqz`为当根squeeze_on，`hist`为动量柱)。
+#[must_use]
 pub fn bbrk_ttm_fire_signals(
     close: &[f64],
     mid: &[f64],
@@ -284,6 +286,7 @@ impl Strategy for BbrkTtmFireStrategy {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

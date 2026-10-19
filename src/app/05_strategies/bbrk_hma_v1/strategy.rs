@@ -14,6 +14,7 @@ pub struct BbrkHmaV1Strategy {
 
 impl BbrkHmaV1Strategy {
     /// 由 [`BbrkHmaV1Config`] 构造; 参数网格由该配置展开。
+    #[must_use]
     pub fn new(config: BbrkHmaV1Config) -> Self {
         Self {
             triples: config.triples(),
@@ -22,6 +23,7 @@ impl BbrkHmaV1Strategy {
 }
 
 /// 纯决策函数(可手算单测)。
+#[must_use]
 pub fn bbrk_hma_v1_signals(
     close: &[f64],
     lower: &[f64],
@@ -145,6 +147,7 @@ impl Strategy for BbrkHmaV1Strategy {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -15,6 +15,7 @@ pub struct BbrkDonStrategy {
 
 impl BbrkDonStrategy {
     /// 由 [`BbrkDonConfig`] 构造; 参数网格由该配置展开。
+    #[must_use]
     pub fn new(config: BbrkDonConfig) -> Self {
         Self {
             pairs: config.pairs(),
@@ -24,6 +25,7 @@ impl BbrkDonStrategy {
 
 /// 纯决策函数(可手算单测)。`don_low/don_high` 为调用方算好的逐 bar
 /// 过去N根最低low / 最高high（不含当根）。
+#[must_use]
 pub fn bbrk_don_signals(
     close: &[f64],
     lower: &[f64],
@@ -133,6 +135,7 @@ impl Strategy for BbrkDonStrategy {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

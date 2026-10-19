@@ -1,3 +1,9 @@
+//! 端到端集成测试: 引擎成交模拟、执行口径与策略信号的核心不变量。
+//!
+//! 覆盖: `delay_bars` 的前视防护、成交价与费用口径、信号 → 持仓方向的映射,
+//! 以及策略层的"无信号即全 Hold"契约。
+
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use vta::config::{PeriodParam, RangeParam};
 use vta::engine;
 use vta::engine::ExecConfig;

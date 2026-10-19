@@ -159,6 +159,12 @@ impl ExecConfig {
     ///
     /// # Panics
     /// `delay_bars == 0` 时 panic(前视乐观口径已移除)。
+    ///
+    /// 这个 `expect` 是**故意的"bug 探测器"**(`err-expect-bugs-only`):
+    /// `delay_bars == 0` 不是用户输入错误 —— 配置路径在**反序列化期**就把它
+    /// 拒了(`BacktestConfig::try_from`), 能走到这里的 `0` 一定是代码写错了,
+    /// 应当立刻炸掉而不是返回一个"前视乐观"的执行口径。
+    #[allow(clippy::expect_used)]
     #[must_use]
     pub fn from_bps_fill(
         delay_bars: usize,
@@ -183,6 +189,16 @@ impl ExecConfig {
     #[must_use]
     pub fn delay(&self) -> usize {
         self.delay_bars.get()
+    }
+
+    /// 信号到成交的 bar 间隔, 收窄为报告列用的 `u32`。
+    ///
+    /// **不静默截断**: `usize → u32` 的 `as` 转换在 `delay > u32::MAX` 时会截成 0,
+    /// 而 0 恰是本项目明令禁止的"前视乐观"标记值 —— 报告口径会与执行口径**静默
+    /// 不一致**。这里改为饱和到 `u32::MAX`, 宁可报一个明显偏大的数, 也不报 0。
+    #[must_use]
+    pub fn delay_u32(&self) -> u32 {
+        u32::try_from(self.delay_bars.get()).unwrap_or(u32::MAX)
     }
 }
 
@@ -336,20 +352,22 @@ pub struct SimResult {
     pub fixed_curve: Vec<f64>,
 }
 
-fn signals_to_positions(signals: &[Signal]) -> Vec<Side> {
-    let n = signals.len();
-    let mut pos = vec![Side::Flat; n];
-    let mut cur = Side::Flat;
-    for (i, s) in signals.iter().enumerate() {
-        match s {
-            Signal::Buy => cur = Side::Long,
-            Signal::Sell => cur = Side::Short,
-            Signal::Close => cur = Side::Flat,
-            Signal::Hold => {}
-        }
-        pos[i] = cur;
+/// 信号 → **目标持仓方向** 的单步状态机。
+///
+/// 为什么不是一个数组: 原实现先物化一份 O(T) 的 `Vec<Side>`, 而 `scan_trades`
+/// 只在**当前 bar** 用到 `positions[i]`。物化版本的代价是每次参数求值多分配
+/// 一条与 bar 数等长的向量(T=1M 时 1 MB/档), 参数网格动辄 10 万档 ⇒ 百 GB 级
+/// 的额外分配流量, 与本仓库"内存是第一约束"的设计前提直接冲突。
+///
+/// 状态机是**前缀累积**的, 故逐 bar 增量维护与先物化再索引**逐位等价**。
+#[inline]
+fn next_target(prev: Side, sig: Signal) -> Side {
+    match sig {
+        Signal::Buy => Side::Long,
+        Signal::Sell => Side::Short,
+        Signal::Close => Side::Flat,
+        Signal::Hold => prev,
     }
-    pos
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -395,16 +413,29 @@ pub fn buy_hold_pnl(close: &[f64], nominal: f64) -> (f64, f64) {
     (ret * nominal, ret)
 }
 
-/// 信号 bar `i`、订单方向 `side` 的成交位置与价格。
+/// 成交价是否**可用**: 有限且为正。
+///
+/// 成交价是整条成交链的除数: `qty = cash / price`、`pnl_pct = (exit - entry) / entry`。
+/// 价格为 0 ⇒ `qty = inf` ⇒ 权益变 NaN ⇒ **全部指标被污染**; 且 NaN 比 0 更危险 ——
+/// 0 会被读成"零波动低风险", NaN 才会暴露。价格非有限(NaN/Inf)同理。
+///
+/// 数据层的非法价格在**加载边界**被拒(见 `app::validate_columns`); 此处是引擎
+/// 侧的兜底, 保证引擎被单独调用(库用户)时也不会产出 NaN 指标。
+#[inline]
+fn valid_fill_price(p: f64) -> bool {
+    p.is_finite() && p > 0.0
+}
+
+/// 信号 bar `i`、订单方向 `side` 的**开仓**成交位置与价格。
+///
 /// `delay_bars` 恒 ≥ 1(`NonZeroUsize` 保证), 故成交只可能落在 fill bar
 /// `i + delay_bars`, 无"当根成交"分支:
 /// - fill bar 的开盘(`fill_close=false`, 默认)或收盘(`fill_close=true`);
-///   开仓 fill bar 超出数据返回 `None`(放弃, 无未来可成交),
-///   平仓钳到末根收盘(与旧口径的末根离场一致)。
-fn resolve_fill(
+/// - 开仓 fill bar 超出数据 → `None`(放弃, 无未来可成交);
+/// - 成交价非有限或非正 → `None`(数据异常, 不成交)。
+fn resolve_open_fill(
     i: usize,
     side: Side,
-    is_open: bool,
     close: &[f64],
     open: &[f64],
     n: usize,
@@ -412,18 +443,52 @@ fn resolve_fill(
 ) -> Option<(usize, f64)> {
     let fb = i + exec.delay();
     if fb >= n {
-        if is_open {
-            return None;
-        }
-        let last = n - 1;
-        return Some((last, fill_price(side, close[last], exec.slip_rate)));
+        return None;
     }
     let base = if exec.fill_close {
         close[fb]
     } else {
         open.get(fb).copied().unwrap_or(close[fb])
     };
-    Some((fb, fill_price(side, base, exec.slip_rate)))
+    let price = fill_price(side, base, exec.slip_rate);
+    if !valid_fill_price(price) {
+        return None;
+    }
+    Some((fb, price))
+}
+
+/// 信号 bar `i`、订单方向 `side` 的**平仓**成交位置与价格。
+///
+/// 与 [`resolve_open_fill`] 的差别: 平仓永远发生在数据末端之内, 故 fill bar
+/// 超出范围时**钳到末根**(与旧口径的末根离场一致), 不返回 `None`。
+///
+/// 成交价非有限或非正时同样返回 `None` —— 调用方据此**放弃本次平仓**(持仓延续
+/// 到下一根), 而不是拿一个会污染全部指标的 NaN/0 价格去结算。
+fn resolve_close_fill(
+    i: usize,
+    side: Side,
+    close: &[f64],
+    open: &[f64],
+    n: usize,
+    exec: &ExecConfig,
+) -> Option<(usize, f64)> {
+    let fb = i + exec.delay();
+    let (base_bar, base) = if fb >= n {
+        let last = n - 1;
+        (last, close[last])
+    } else {
+        let base = if exec.fill_close {
+            close[fb]
+        } else {
+            open.get(fb).copied().unwrap_or(close[fb])
+        };
+        (fb, base)
+    };
+    let price = fill_price(side, base, exec.slip_rate);
+    if !valid_fill_price(price) {
+        return None;
+    }
+    Some((base_bar, price))
 }
 
 /// 一笔平仓的**标量**结果。
@@ -551,7 +616,7 @@ struct MetricsSource {
 ///
 /// 为空表示 `collect_curves == false`([`simulate`]); [`simulate_detailed`] 传
 /// true 时填充。这些字段**不参与**任何指标计算 —— 指标只读 [`MetricsSource`]。
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct DetailArtifacts {
     trades: Vec<Trade>,
     equity: Vec<f64>,
@@ -563,21 +628,24 @@ struct DetailArtifacts {
 struct ScanOut {
     /// 两条路径都有, 且填充方式完全一致。
     metrics: MetricsSource,
-    /// 仅 `collect_curves == true` 时为 `Some`, 以省掉每笔 `Trade` 与两条曲线。
-    detail: Option<DetailArtifacts>,
+    /// 仅 `collect_curves == true` 时有内容; 否则三个字段全空。
+    detail: DetailArtifacts,
+    /// 是否物化了落盘产物。**不**用 `Option` 表达, 免得调用方为了取产物
+    /// 而不得不写一个 `expect()`(那正是 `err-no-unwrap-prod` 反对的东西)。
+    collect_curves: bool,
 }
 
 /// `collect_curves`: 是否物化两条权益曲线。false = O(1) 内存(见 [`CurveAccum`])。
 fn scan_trades(
     close: &[f64],
     open: &[f64],
-    positions: &[Side],
+    signals: &[Signal],
     time: &[i64],
     initial_cash: f64,
     exec: &ExecConfig,
     collect_curves: bool,
 ) -> ScanOut {
-    let n = close.len().min(positions.len()).min(open.len());
+    let n = close.len().min(signals.len()).min(open.len());
     let ts = |i: usize| if i < time.len() { time[i] } else { i as i64 };
     let mut cash = initial_cash;
     let mut pos_qty = 0.0;
@@ -585,6 +653,9 @@ fn scan_trades(
     let mut pos_entry_time: i64 = 0;
     let mut pos_entry_bar: usize = 0;
     let mut cur_pos = Side::Flat;
+    // 目标持仓方向: 由信号序列前缀累积而来(见 [`next_target`])。
+    // 增量维护, 不物化 O(T) 的 `Vec<Side>`。
+    let mut target = Side::Flat;
     let mut trades: Vec<Trade> = if collect_curves {
         Vec::with_capacity(1024)
     } else {
@@ -597,9 +668,15 @@ fn scan_trades(
     };
     let mut eq_acc = CurveAccum::new(initial_cash);
     let mut fx_acc = CurveAccum::new(initial_cash);
-    let mut equity_curve: Option<Vec<f64>> = collect_curves.then(|| Vec::with_capacity(n));
+    // 曲线容器: 不收集时保持为空(Vec::new() 不分配), 收集时一次预分配到位。
+    // 刻意**不用** `Option<Vec<f64>>`: 那会让调用方为了取产物而写 `expect()`。
+    let mut equity_curve: Vec<f64> = Vec::new();
     // fixed 腿: 每笔按 initial/entry 固定张数, 逐 bar 盯市, 跨笔不复利。
-    let mut fixed_curve: Option<Vec<f64>> = collect_curves.then(|| Vec::with_capacity(n));
+    let mut fixed_curve: Vec<f64> = Vec::new();
+    if collect_curves {
+        equity_curve.reserve(n);
+        fixed_curve.reserve(n);
+    }
     // 末根权益暂存: 强制平仓会把它从"盯市值"改写为"已实现 cash", 而在线累加器
     // 无法撤回已消费的点, 故末根**推迟**到平仓之后再入累加器/曲线。
     let mut tail_eq = initial_cash;
@@ -612,6 +689,9 @@ fn scan_trades(
     let mut trade_mae: f64 = 0.0;
 
     for i in 0..n {
+        // 目标持仓方向(信号前缀累积): 与"先物化 positions 再索引"逐位等价。
+        target = next_target(target, signals[i]);
+
         // 浮动盈亏只统计已成交持仓(fill bar 之后), fill 前的漂移不计入 MFE/MAE。
         if cur_pos.is_open() && i >= pos_entry_bar {
             let favor = if cur_pos == Side::Long {
@@ -628,42 +708,44 @@ fn scan_trades(
             }
         }
 
-        if cur_pos.is_open() && cur_pos != positions[i] {
+        if cur_pos.is_open() && cur_pos != target {
             let exit_side = cur_pos.opposite();
-            // 平仓 resolve 永不返回 None(尾部钳到末根), 直接解包。
-            let (fb, exit_price) = resolve_fill(i, exit_side, false, close, open, n, exec)
-                .expect("close fill is clamped to last bar");
-            let cargs = CloseArgs {
-                cur_pos,
-                pos_qty,
-                pos_entry,
-                pos_entry_time,
-                pos_entry_bar,
-                exit_price,
-                exit_time: ts(fb),
-                exit_bar: fb,
-                initial_cash,
-                trade_mfe,
-                trade_mae,
-                fee_rate: exec.fee_rate,
-                reason: ExitReason::Signal,
-            };
-            let out = close_outcome(cargs);
-            cash += out.cash_delta;
-            acc.push(out);
-            if collect_curves {
-                trades.push(materialize_trade(&cargs, out));
+            // 平仓 fill 落在数据末端之内(尾部钳到末根); 成交价非法(非有限/非正)时
+            // 返回 None —— 此时**放弃本次平仓**(持仓延续到下一根), 而不是用会
+            // 污染全部指标的 NaN/0 价格结算。
+            if let Some((fb, exit_price)) = resolve_close_fill(i, exit_side, close, open, n, exec) {
+                let cargs = CloseArgs {
+                    cur_pos,
+                    pos_qty,
+                    pos_entry,
+                    pos_entry_time,
+                    pos_entry_bar,
+                    exit_price,
+                    exit_time: ts(fb),
+                    exit_bar: fb,
+                    initial_cash,
+                    trade_mfe,
+                    trade_mae,
+                    fee_rate: exec.fee_rate,
+                    reason: ExitReason::Signal,
+                };
+                let out = close_outcome(cargs);
+                cash += out.cash_delta;
+                acc.push(out);
+                if collect_curves {
+                    trades.push(materialize_trade(&cargs, out));
+                }
+                fixed_realized += out.fixed_pnl;
+                fixed_qty = 0.0;
+                cur_pos = Side::Flat;
+                trade_mfe = 0.0;
+                trade_mae = 0.0;
             }
-            fixed_realized += out.fixed_pnl;
-            fixed_qty = 0.0;
-            cur_pos = Side::Flat;
-            trade_mfe = 0.0;
-            trade_mae = 0.0;
         }
 
-        if !cur_pos.is_open() && positions[i].is_open() {
-            let side = positions[i];
-            if let Some((fb, entry_price)) = resolve_fill(i, side, true, close, open, n, exec) {
+        if !cur_pos.is_open() && target.is_open() {
+            let side = target;
+            if let Some((fb, entry_price)) = resolve_open_fill(i, side, close, open, n, exec) {
                 let qty = cash / entry_price;
                 let fee = entry_price * qty * exec.fee_rate;
                 pos_entry = entry_price;
@@ -696,11 +778,9 @@ fn scan_trades(
         if i + 1 < n {
             eq_acc.push(eq);
             fx_acc.push(feq);
-            if let Some(v) = equity_curve.as_mut() {
-                v.push(eq);
-            }
-            if let Some(v) = fixed_curve.as_mut() {
-                v.push(feq);
+            if collect_curves {
+                equity_curve.push(eq);
+                fixed_curve.push(feq);
             }
         } else {
             tail_eq = eq;
@@ -709,42 +789,44 @@ fn scan_trades(
     }
 
     if cur_pos.is_open() {
+        // 末根强制平仓。成交价非法(非有限/非正)时不强行结算 —— 宁可留一笔未平仓
+        // 持仓(末根权益按盯市值计), 也不用 NaN 污染全部指标。
         let last_price = fill_price(cur_pos.opposite(), close[n - 1], exec.slip_rate);
-        let cargs = CloseArgs {
-            cur_pos,
-            pos_qty,
-            pos_entry,
-            pos_entry_time,
-            pos_entry_bar,
-            exit_price: last_price,
-            exit_time: ts(n - 1),
-            exit_bar: n - 1,
-            initial_cash,
-            trade_mfe,
-            trade_mae,
-            fee_rate: exec.fee_rate,
-            reason: ExitReason::EndOfData,
-        };
-        let out = close_outcome(cargs);
-        cash += out.cash_delta;
-        acc.push(out);
-        if collect_curves {
-            trades.push(materialize_trade(&cargs, out));
+        if valid_fill_price(last_price) {
+            let cargs = CloseArgs {
+                cur_pos,
+                pos_qty,
+                pos_entry,
+                pos_entry_time,
+                pos_entry_bar,
+                exit_price: last_price,
+                exit_time: ts(n - 1),
+                exit_bar: n - 1,
+                initial_cash,
+                trade_mfe,
+                trade_mae,
+                fee_rate: exec.fee_rate,
+                reason: ExitReason::EndOfData,
+            };
+            let out = close_outcome(cargs);
+            cash += out.cash_delta;
+            acc.push(out);
+            if collect_curves {
+                trades.push(materialize_trade(&cargs, out));
+            }
+            fixed_realized += out.fixed_pnl;
+            // 强制平仓: 末根权益由盯市值改写为已实现 cash(扣掉平仓费与滑点)。
+            tail_eq = cash;
+            tail_feq = initial_cash + fixed_realized;
         }
-        fixed_realized += out.fixed_pnl;
-        // 强制平仓: 末根权益由盯市值改写为已实现 cash(扣掉平仓费与滑点)。
-        tail_eq = cash;
-        tail_feq = initial_cash + fixed_realized;
     }
 
     if n > 0 {
         eq_acc.push(tail_eq);
         fx_acc.push(tail_feq);
-        if let Some(v) = equity_curve.as_mut() {
-            v.push(tail_eq);
-        }
-        if let Some(v) = fixed_curve.as_mut() {
-            v.push(tail_feq);
+        if collect_curves {
+            equity_curve.push(tail_eq);
+            fixed_curve.push(tail_feq);
         }
     }
 
@@ -754,12 +836,12 @@ fn scan_trades(
             eq: eq_acc,
             fx: fx_acc,
         },
-        detail: collect_curves.then(|| DetailArtifacts {
+        detail: DetailArtifacts {
             trades,
-            // 两处 `push` 都以 `collect_curves` 为前提, 故此处必为 Some。
-            equity: equity_curve.expect("collect_curves 时已物化权益曲线"),
-            fixed: fixed_curve.expect("collect_curves 时已物化 fixed 曲线"),
-        }),
+            equity: equity_curve,
+            fixed: fixed_curve,
+        },
+        collect_curves,
     }
 }
 
@@ -784,7 +866,10 @@ fn log_ret(prev: f64, curr: f64) -> f64 {
 
 /// 权益曲线 → 逐 bar 对数收益。引擎全部夏普口径的唯一来源; `pbo.rs::to_returns`
 /// 也必须调用本函数, 否则 CSCV 的 IS/OOS 排序与引擎排名不同源。
-pub fn bar_log_returns(curve: &[f64]) -> impl ExactSizeIterator<Item = f64> + '_ {
+///
+/// 额外暴露 `Clone` 边界: 调用方需要在**不物化**收益数组的前提下做两遍统计
+/// (先求均值、再求离差平方和), 逐位等价于「物化后单遍遍历」, 但省掉 O(T) 内存。
+pub fn bar_log_returns(curve: &[f64]) -> impl ExactSizeIterator<Item = f64> + Clone + '_ {
     curve.windows(2).map(|w| log_ret(w[0], w[1]))
 }
 
@@ -1359,6 +1444,7 @@ fn erf(x: f64) -> f64 {
 ///
 /// **不物化权益曲线**(内存 O(1) 而非 O(T))。`--detail` 开关不影响任何指标数值,
 /// 详见 [`crate::lib`] 的不变量 2。
+#[must_use]
 pub fn simulate(
     close: &[f64],
     open: &[f64],
@@ -1371,12 +1457,14 @@ pub fn simulate(
     if n < 2 {
         return SummaryMetrics::default();
     }
-    let positions = signals_to_positions(signals);
     // collect_curves = false: 不物化曲线与逐笔 Trade, 统计量在线累计(内存 O(1))。
-    let out = scan_trades(close, open, &positions, &[], initial_cash, exec, false);
-    debug_assert!(out.detail.is_none(), "simulate 不得物化落盘产物");
+    let out = scan_trades(close, open, signals, &[], initial_cash, exec, false);
+    debug_assert!(
+        !out.collect_curves && out.detail.trades.is_empty(),
+        "simulate 不得物化落盘产物"
+    );
     let mut summary = compute_metrics(&out.metrics, initial_cash, bars_per_year);
-    summary.delay_bars = exec.delay() as u32;
+    summary.delay_bars = exec.delay_u32();
     summary.fee_bps = exec.fee_rate * 10_000.0;
     summary.slippage_bps = exec.slip_rate * 10_000.0;
     summary
@@ -1385,6 +1473,7 @@ pub fn simulate(
 /// 执行一次回测并额外产出逐笔交易与两条曲线。
 ///
 /// 指标经与 [`simulate`] **同一条**路径计算, 二者逐位一致。
+#[must_use]
 pub fn simulate_detailed(
     time: &[i64],
     close: &[f64],
@@ -1403,18 +1492,15 @@ pub fn simulate_detailed(
             fixed_curve: Vec::new(),
         };
     }
-    let positions = signals_to_positions(signals);
     // detailed 路径要落盘, 故额外物化逐笔 Trade 与两条曲线。
     // 注意指标仍只经 `out.metrics` 计算 —— 与 `simulate` 完全同源。
-    let out = scan_trades(close, open, &positions, time, initial_cash, exec, true);
+    let out = scan_trades(close, open, signals, time, initial_cash, exec, true);
     let mut summary = compute_metrics(&out.metrics, initial_cash, bars_per_year);
-    summary.delay_bars = exec.delay() as u32;
+    summary.delay_bars = exec.delay_u32();
     summary.fee_bps = exec.fee_rate * 10_000.0;
     summary.slippage_bps = exec.slip_rate * 10_000.0;
 
-    let detail = out
-        .detail
-        .expect("scan_trades(collect_curves = true) 必然产出落盘产物");
+    let detail = out.detail;
     let equity_curve: Vec<(f64, f64)> = detail
         .equity
         .into_iter()
@@ -1438,6 +1524,7 @@ pub fn simulate_detailed(
 }
 
 /// 批量回测(rayon 并行)。返回顺序与 `signal_batch` 一一对应。
+#[must_use]
 pub fn simulate_batch(
     close: &[f64],
     open: &[f64],
@@ -1453,6 +1540,7 @@ pub fn simulate_batch(
 }
 
 /// 批量详细回测(rayon 并行)。返回顺序与 `signal_batch` 一一对应。
+#[must_use]
 pub fn simulate_batch_detailed(
     time: &[i64],
     close: &[f64],
@@ -1478,6 +1566,7 @@ pub fn simulate_batch_detailed(
         .collect()
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1849,16 +1938,11 @@ mod tests {
         // Q2 结构性保证: `scan_trades` 在 collect_curves=false 时不得产出任何
         // DetailArtifacts(逐笔 Trade + 两条曲线)。类型上由 Option 表达, 此处
         // 在 debug 构建下由 debug_assert! 复核。
-        let out = scan_trades(
-            &close,
-            &close,
-            &signals_to_positions(&sig),
-            &[],
-            10_000.0,
-            &exec,
-            false,
+        let out = scan_trades(&close, &close, &sig, &[], 10_000.0, &exec, false);
+        assert!(
+            !out.collect_curves && out.detail.trades.is_empty(),
+            "非 detailed 路径不得物化落盘产物"
         );
-        assert!(out.detail.is_none(), "非 detailed 路径不得物化落盘产物");
         for f in [
             m.sharpe_ratio,
             m.sortino_ratio,

@@ -29,6 +29,7 @@ pub struct BbrkM2Strategy {
 
 impl BbrkM2Strategy {
     /// 由 [`BbrkM2Config`] 构造; 参数网格由该配置展开。
+    #[must_use]
     pub fn new(config: BbrkM2Config) -> Self {
         Self {
             sigmas: config.values(),
@@ -48,6 +49,7 @@ fn pct_b(close: f64, lower: f64, upper: f64) -> f64 {
 }
 
 /// 纯决策函数(可手算单测；mfi 由调用方按官方口径供给）。
+#[must_use]
 pub fn bbrk_m2_signals(
     close: &[f64],
     lower: &[f64],
@@ -153,6 +155,7 @@ impl BbrkM2Strategy {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

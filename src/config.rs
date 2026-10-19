@@ -50,6 +50,7 @@ use crate::strategies::ema_cross::EmaCrossConfig;
 use crate::strategies::fiali::FialiConfig;
 use crate::strategies::keltner::KeltnerConfig;
 use crate::strategies::ma_atr::MaAtrConfig;
+use crate::strategies::ma_slope_atr_gate::MaSlopeAtrGateConfig;
 use crate::strategies::mabb_long::MabbLongConfig;
 use crate::strategies::mabb_short::MabbShortConfig;
 use crate::strategies::macd::MacdConfig;
@@ -92,12 +93,16 @@ pub enum OneOrMany {
 }
 
 impl OneOrMany {
-    /// 归一化为 `Vec<String>`。
+    /// 归一化后的品种/周期列表(**借用**)。
+    ///
+    /// 收 `&self` 返回 `&[String]` 而不是克隆一份 `Vec<String>`: 调用方
+    /// (`Config::validate` / `app::run`) 每次都要用这个列表, 而克隆会让
+    /// 每次调用多分配一条与列表等长的向量。
     #[must_use]
-    pub fn items(&self) -> Vec<String> {
+    pub fn items(&self) -> &[String] {
         match self {
-            OneOrMany::One(s) => vec![s.clone()],
-            OneOrMany::Many(v) => v.clone(),
+            OneOrMany::One(s) => std::slice::from_ref(s),
+            OneOrMany::Many(v) => v.as_slice(),
         }
     }
 }
@@ -127,18 +132,22 @@ pub struct DataSection {
 impl DataSection {
     /// 品种列表。
     #[must_use]
-    pub fn symbols(&self) -> Vec<String> {
+    pub fn symbols(&self) -> &[String] {
         self.symbol.items()
     }
 
     /// 周期列表。
     #[must_use]
-    pub fn timeframes(&self) -> Vec<String> {
+    pub fn timeframes(&self) -> &[String] {
         self.timeframe.items()
     }
 
     /// 取出一组 (symbol, timeframe) 对应的单值配置, 供 `kline_reader::load_columns` 使用。
     /// 已验证构造：非法 symbol/timeframe 即 `Err`，调用方按跳过处理（不 `unwrap`）。
+    ///
+    /// # Errors
+    /// `symbol` / `timeframe` 不合法时返回
+    /// [`kline_reader::ReaderError`]; 调用方按"跳过该 (品种, 周期) 对"处理。
     pub fn for_pair(
         &self,
         symbol: &str,
@@ -163,14 +172,15 @@ impl Config {
     /// # Errors
     /// 品种/周期为空、周期未知或策略参数非法时返回 [`AppError`]。
     pub fn validate(&self) -> crate::error::Result<()> {
-        if self.data.symbols().iter().any(|s| s.is_empty()) || self.data.symbols().is_empty() {
+        let syms = self.data.symbols();
+        if syms.is_empty() || syms.iter().any(String::is_empty) {
             return Err(AppError::Msg("data.symbol 不能为空".into()));
         }
         let tfs = self.data.timeframes();
-        if tfs.is_empty() || tfs.iter().any(|s| s.is_empty()) {
+        if tfs.is_empty() || tfs.iter().any(String::is_empty) {
             return Err(AppError::Msg("data.timeframe 不能为空".into()));
         }
-        for tf in &tfs {
+        for tf in tfs {
             if !crate::strategies::is_known_timeframe(tf) {
                 return Err(AppError::Msg(format!(
                     "未知周期 data.timeframe = {tf:?}; 已知: 1m/3m/5m/15m/30m/1h/2h/4h/6h/8h/12h/1d/1w"
@@ -262,6 +272,7 @@ impl Config {
                 StrategyConfig::MabbLong(c) => c.validate()?,
                 StrategyConfig::MabbShort(c) => c.validate()?,
                 StrategyConfig::MaAtr(c) => c.validate()?,
+                StrategyConfig::MaSlopeAtrGate(c) => c.validate()?,
                 StrategyConfig::Macd(c) => c.validate()?,
                 StrategyConfig::RBreaker(c) => c.validate()?,
                 StrategyConfig::RSI2(c) => c.validate()?,
@@ -454,6 +465,10 @@ impl MaGridCfg {
 
 impl SsfStConfig {
     /// 语义校验: 单周期策略只需校验 `period` 的区间与方向。
+    ///
+    /// # Errors
+    /// `period` 越界(`start < 1` / `start > end` / `step == 0`)时返回
+    /// [`AppError`]。
     pub fn validate(&self) -> crate::error::Result<()> {
         self.period.validate()
     }
@@ -461,6 +476,10 @@ impl SsfStConfig {
 
 impl SsfStCdConfig {
     /// 语义校验: 单周期策略只需校验 `period` 的区间与方向。
+    ///
+    /// # Errors
+    /// `period` 越界(`start < 1` / `start > end` / `step == 0`)时返回
+    /// [`AppError`]。
     pub fn validate(&self) -> crate::error::Result<()> {
         self.period.validate()
     }
@@ -468,6 +487,10 @@ impl SsfStCdConfig {
 
 impl SsfCdConfig {
     /// 语义校验: 单周期策略只需校验 `period` 的区间与方向。
+    ///
+    /// # Errors
+    /// `period` 越界(`start < 1` / `start > end` / `step == 0`)时返回
+    /// [`AppError`]。
     pub fn validate(&self) -> crate::error::Result<()> {
         self.period.validate()
     }
@@ -475,6 +498,10 @@ impl SsfCdConfig {
 
 impl SsfConfig {
     /// 语义校验: 单周期策略只需校验 `period` 的区间与方向。
+    ///
+    /// # Errors
+    /// `period` 越界(`start < 1` / `start > end` / `step == 0`)时返回
+    /// [`AppError`]。
     pub fn validate(&self) -> crate::error::Result<()> {
         self.period.validate()
     }
@@ -657,6 +684,8 @@ pub enum StrategyConfig {
     MabbShort(MabbShortConfig),
     /// **MaAtr** 策略: 配置 [`MaAtrConfig`]。
     MaAtr(MaAtrConfig),
+    /// **MaSlopeAtrGate** 策略: 配置 [`MaSlopeAtrGateConfig`]。
+    MaSlopeAtrGate(MaSlopeAtrGateConfig),
     /// **Macd** 策略: 配置 [`MacdConfig`]。
     Macd(MacdConfig),
     /// **EmaCross** 策略: 配置 [`EmaCrossConfig`]。
@@ -679,28 +708,42 @@ impl PeriodParam {
     /// # Errors
     /// 任一约束不满足时返回 [`AppError`]。
     pub fn validate(&self) -> crate::error::Result<()> {
+        self.validate_named("period", 1)
+    }
+
+    /// 语义校验, **参数名可定制**且允许非 1 的下界。
+    ///
+    /// 为什么需要它: 策略配置里除 `period` 外还有"步长型"整型参数
+    /// (`sgma.poly_order` 多项式阶数、`edma.offset` 偏移量), 它们的合法下界
+    /// 与字段名都和 `period` 不同。用 `validate()` 一刀切会误拒合法值
+    /// (例如 `offset = 0`), 而**不校验**又会漏掉 `step = 0` ——
+    /// 后者会在展开网格时触发 `Range::step_by(0)` 的 panic。
+    ///
+    /// # Errors
+    /// 任一约束不满足时返回 [`AppError`], 消息里带 `label` 便于定位。
+    pub fn validate_named(&self, label: &str, min: usize) -> crate::error::Result<()> {
         match self {
             PeriodParam::Single(v) => {
-                if *v < 1 {
-                    return Err(AppError::Msg(format!("period 必须 >= 1, 当前为 {v}")));
+                if *v < min {
+                    return Err(AppError::Msg(format!("{label} 必须 >= {min}, 当前为 {v}")));
                 }
             }
             PeriodParam::Range(r) => {
-                if r.start < 1 {
+                if r.start < min {
                     return Err(AppError::Msg(format!(
-                        "period 必须 >= 1, 当前 start = {}",
+                        "{label} 必须 >= {min}, 当前 start = {}",
                         r.start
                     )));
                 }
                 if r.start > r.end {
                     return Err(AppError::Msg(format!(
-                        "period 起点 {} 不能大于终点 {}",
+                        "{label} 起点 {} 不能大于终点 {}",
                         r.start, r.end
                     )));
                 }
                 if r.step == 0 {
                     return Err(AppError::Msg(format!(
-                        "period.step 必须 > 0, 当前为 {}",
+                        "{label}.step 必须 > 0, 当前为 {}",
                         r.step
                     )));
                 }
@@ -791,12 +834,16 @@ impl F64Param {
 /// # Errors
 /// 文件读取失败, 或 TOML 结构非法(含未知字段 / 类型不匹配)时返回
 /// [`AppError`]。
-pub fn load_config(path: &str) -> crate::error::Result<Config> {
+///
+/// 收 [`Path`] 而非 `&str`: 配置路径来自 CLI, 非 UTF-8 路径在 `&str` 边界上
+/// 会被迫 `to_str().expect(..)` —— 那是把用户输入的问题变成一次 panic。
+pub fn load_config(path: &std::path::Path) -> crate::error::Result<Config> {
     let content = std::fs::read_to_string(path)?;
     let config: Config = toml::from_str(&content)?;
     Ok(config)
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -968,8 +1015,8 @@ mod tests {
     #[test]
     fn single_string_symbol_normalizes_to_one_element_list() {
         let cfg: Config = toml::from_str(&make_scan_toml("\"BTCUSDT\"", "\"15m\"")).unwrap();
-        assert_eq!(cfg.data.symbols(), vec!["BTCUSDT".to_string()]);
-        assert_eq!(cfg.data.timeframes(), vec!["15m".to_string()]);
+        assert_eq!(cfg.data.symbols(), ["BTCUSDT".to_string()]);
+        assert_eq!(cfg.data.timeframes(), ["15m".to_string()]);
         assert!(cfg.validate().is_ok());
     }
 

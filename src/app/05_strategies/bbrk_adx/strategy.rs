@@ -17,6 +17,7 @@ pub struct BbrkAdxStrategy {
 
 impl BbrkAdxStrategy {
     /// 由 [`BbrkAdxConfig`] 构造; 参数网格由该配置展开。
+    #[must_use]
     pub fn new(config: BbrkAdxConfig) -> Self {
         Self {
             pairs: config.pairs(),
@@ -25,6 +26,7 @@ impl BbrkAdxStrategy {
 }
 
 /// 纯决策函数(可手算单测)。
+#[must_use]
 pub fn bbrk_adx_signals(
     close: &[f64],
     lower: &[f64],
@@ -151,6 +153,7 @@ impl Strategy for BbrkAdxStrategy {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

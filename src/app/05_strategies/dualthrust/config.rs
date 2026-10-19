@@ -17,11 +17,15 @@ pub struct DualThrustConfig {
 
 impl DualThrustConfig {
     /// 展开后的参数组合(按策略的笛卡尔积顺序)。
+    #[must_use]
     pub fn pairs(&self) -> Vec<(usize, f64)> {
         let r = self.n.to_range();
         let ns: Vec<usize> = (r.start..=r.end).step_by(r.step).collect();
         let ks = self.k.values();
-        let mut out = Vec::new();
+        // 网格规模 = 各维度长度之积(可预知), 一次分配到位(`mem-with-capacity`)。
+        // `saturating_mul`: 笛卡尔积理论上无界, 普通 `*` 在 debug 下会溢出 panic。
+        let cap = ns.len().saturating_mul(ks.len());
+        let mut out = Vec::with_capacity(cap.min(crate::strategies::MAX_GRID_PREALLOC));
         for &a in &ns {
             for &b in &ks {
                 out.push((a, b));
@@ -48,6 +52,7 @@ impl DualThrustConfig {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

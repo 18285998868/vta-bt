@@ -12,6 +12,7 @@ pub struct EdmaStrategy {
 
 impl EdmaStrategy {
     /// 由 [`EdmaConfig`] 构造; 参数网格由该配置展开。
+    #[must_use]
     pub fn new(config: EdmaConfig) -> Self {
         Self {
             pairs: config.pairs(),
@@ -58,6 +59,7 @@ impl Strategy for EdmaStrategy {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

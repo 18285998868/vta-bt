@@ -14,6 +14,7 @@ pub struct AberrationStrategy {
 
 impl AberrationStrategy {
     /// 由 [`AberrationConfig`] 构造; 参数网格由该配置展开。
+    #[must_use]
     pub fn new(config: AberrationConfig) -> Self {
         Self {
             pairs: config.pairs(),
@@ -107,6 +108,7 @@ impl AberrationStrategy {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

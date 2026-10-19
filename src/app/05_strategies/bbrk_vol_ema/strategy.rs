@@ -16,6 +16,7 @@ pub struct BbrkVolEmaStrategy {
 
 impl BbrkVolEmaStrategy {
     /// 由 [`BbrkVolEmaConfig`] 构造; 参数网格由该配置展开。
+    #[must_use]
     pub fn new(config: BbrkVolEmaConfig) -> Self {
         Self {
             pairs: config.pairs(),
@@ -25,6 +26,7 @@ impl BbrkVolEmaStrategy {
 
 /// 纯决策函数(可手算单测)。
 #[allow(clippy::too_many_arguments)]
+#[must_use]
 pub fn bbrk_vol_ema_signals(
     open: &[f64],
     close: &[f64],
@@ -174,6 +176,7 @@ impl Strategy for BbrkVolEmaStrategy {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -15,7 +15,7 @@
 - edition = "2024"
 - 指标计算：`vector-ta`（**workspace path 依赖**，不是 crates.io —— 换 patch 版本会改变 NaN 前缀长度，进而改变全部历史回测结果）
 - 数据读取：自研 `kline-reader`（workspace path 依赖）
-- MSRV：`rust-version = "1.97"`（`pbo.rs` 的 Gosper hack 用到 1.97 稳定的 `isolate_lowest_one`）
+- Rust 版本：**始终使用最新 stable**（`rust-toolchain.toml` 的 `channel = "stable"`，无需人工跟进版本号；刻意不声明 `rust-version` 下限，以免 `clippy::incompatible_msrv` 拦下新 API）
 - 并行：rayon（参数索引 `into_par_iter`）
 - 输出：arrow 60 + parquet 60
 - 配置：clap 4（derive）+ toml 1.1 + serde（derive）

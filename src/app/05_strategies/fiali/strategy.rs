@@ -9,12 +9,14 @@ pub struct FialiStrategy;
 
 impl FialiStrategy {
     /// 由 [`FialiConfig`] 构造; 参数网格由该配置展开。
+    #[must_use]
     pub fn new(_config: FialiConfig) -> Self {
         Self
     }
 }
 
 /// 纯决策函数(可手算单测)。
+#[must_use]
 pub fn fiali_signals(days: &[DayBar], open: &[f64], close: &[f64]) -> Vec<Signal> {
     let n = close.len().min(open.len());
     let mut sig = vec![Signal::Hold; n];
@@ -104,6 +106,7 @@ impl Strategy for FialiStrategy {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -14,6 +14,7 @@ pub struct BbrkBbStrategy {
 
 impl BbrkBbStrategy {
     /// 由 [`BbrkBbConfig`] 构造; 参数网格由该配置展开。
+    #[must_use]
     pub fn new(config: BbrkBbConfig) -> Self {
         Self {
             triples: config.triples(),
@@ -22,6 +23,7 @@ impl BbrkBbStrategy {
 }
 
 /// 纯决策函数（与 BBRK 同形，BB 由调用方供给）。
+#[must_use]
 pub fn bbrk_bb_signals(close: &[f64], lower: &[f64], mid: &[f64], upper: &[f64]) -> Vec<Signal> {
     let n = close.len().min(lower.len()).min(mid.len()).min(upper.len());
     let mut sig = vec![Signal::Hold; n];
@@ -103,6 +105,7 @@ impl Strategy for BbrkBbStrategy {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

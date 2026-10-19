@@ -29,9 +29,9 @@
 //! ```no_run
 //! # fn main() -> vta::error::Result<()> {
 //! // 跑一轮回测
-//! vta::app::run("config.toml")?;
+//! vta::app::run(std::path::Path::new("config.toml"))?;
 //! // 或实算 PBO
-//! vta::pbo::run_pbo_report("reports")?;
+//! vta::pbo::run_pbo_report(std::path::Path::new("reports"))?;
 //! # Ok(())
 //! # }
 //! ```

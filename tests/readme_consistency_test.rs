@@ -7,6 +7,7 @@
 //! 本测试把 README 里每个 `toml` 代码块都真跑一遍 `Config` 反序列化 + `validate`，
 //! 使文档腐化在 `cargo test` 阶段就暴露, 而不是等到使用者踩坑。
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use vta::config::Config;
 
 /// 取出 README 中所有 ```toml 代码块。

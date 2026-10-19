@@ -21,8 +21,16 @@ pub struct BbrkBbConfig {
 
 impl BbrkBbConfig {
     /// 展开后的三元参数组合。
+    #[must_use]
     pub fn triples(&self) -> Vec<(String, usize, f64)> {
-        let mut out = Vec::new();
+        // 网格规模 = 各维度长度之积(可预知), 一次分配到位(`mem-with-capacity`)。
+        // `saturating_mul`: 笛卡尔积理论上无界, 普通 `*` 在 debug 下会溢出 panic。
+        let cap = self
+            .ma
+            .len()
+            .saturating_mul(self.bblen.values().len())
+            .saturating_mul(self.sigma.values().len());
+        let mut out = Vec::with_capacity(cap.min(crate::strategies::MAX_GRID_PREALLOC));
         for name in &self.ma {
             for &l in &self.bblen.values() {
                 for &s in &self.sigma.values() {
@@ -56,6 +64,7 @@ impl BbrkBbConfig {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -56,6 +56,7 @@ use super::kama::KamaStrategy;
 use super::keltner::KeltnerStrategy;
 use super::linreg::LinRegStrategy;
 use super::ma_atr::MaAtrStrategy;
+use super::ma_slope_atr_gate::MaSlopeAtrGateStrategy;
 use super::mabb_long::MabbLongStrategy;
 use super::mabb_short::MabbShortStrategy;
 use super::macd::MacdStrategy;
@@ -253,6 +254,7 @@ fn build_one(sc: &StrategyConfig) -> Option<Box<dyn Strategy>> {
         StrategyConfig::MabbLong(c) => Some(Box::new(MabbLongStrategy::new(c.clone()))),
         StrategyConfig::MabbShort(c) => Some(Box::new(MabbShortStrategy::new(c.clone()))),
         StrategyConfig::MaAtr(c) => Some(Box::new(MaAtrStrategy::new(c.clone()))),
+        StrategyConfig::MaSlopeAtrGate(c) => Some(Box::new(MaSlopeAtrGateStrategy::new(c.clone()))),
         StrategyConfig::Macd(c) => Some(Box::new(MacdStrategy::new(c.clone()))),
         StrategyConfig::Vwap(c) => Some(Box::new(VwapStrategy::new(c.clone()))),
     }

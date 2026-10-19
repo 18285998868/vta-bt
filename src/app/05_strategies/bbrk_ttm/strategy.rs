@@ -21,6 +21,7 @@ pub struct BbrkTtmStrategy {
 
 impl BbrkTtmStrategy {
     /// 由 [`BbrkTtmConfig`] 构造; 参数网格由该配置展开。
+    #[must_use]
     pub fn new(config: BbrkTtmConfig) -> Self {
         Self {
             pairs: config.pairs(),
@@ -29,6 +30,7 @@ impl BbrkTtmStrategy {
 }
 
 /// 纯决策函数(可手算单测)。`sqz[i]` 为调用方算好的当根 squeeze_on。
+#[must_use]
 pub fn bbrk_ttm_signals(
     close: &[f64],
     lower: &[f64],
@@ -183,6 +185,7 @@ impl Strategy for BbrkTtmStrategy {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

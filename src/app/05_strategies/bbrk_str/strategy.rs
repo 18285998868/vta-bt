@@ -18,6 +18,7 @@ pub struct BbrkStrStrategy {
 
 impl BbrkStrStrategy {
     /// 由 [`BbrkStrConfig`] 构造; 参数网格由该配置展开。
+    #[must_use]
     pub fn new(config: BbrkStrConfig) -> Self {
         Self {
             pairs: config.pairs(),
@@ -27,6 +28,7 @@ impl BbrkStrStrategy {
 
 /// 纯决策函数(可手算单测；7参为OHLC+三轨+阈值的最小完备集)。
 #[allow(clippy::too_many_arguments)]
+#[must_use]
 pub fn bbrk_str_signals(
     open: &[f64],
     high: &[f64],
@@ -148,6 +150,7 @@ impl Strategy for BbrkStrStrategy {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -17,6 +17,7 @@ pub struct BBRKStrategy {
 
 impl BBRKStrategy {
     /// 由 [`BBRKConfig`] 构造; 参数网格由该配置展开。
+    #[must_use]
     pub fn new(config: BBRKConfig) -> Self {
         Self {
             sigmas: config.values(),
@@ -25,6 +26,7 @@ impl BBRKStrategy {
 }
 
 /// 纯决策函数(可手算单测)。
+#[must_use]
 pub fn bbrk_signals(close: &[f64], lower: &[f64], mid: &[f64], upper: &[f64]) -> Vec<Signal> {
     let n = close.len().min(lower.len()).min(mid.len()).min(upper.len());
     let mut sig = vec![Signal::Hold; n];
@@ -106,6 +108,7 @@ impl BBRKStrategy {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

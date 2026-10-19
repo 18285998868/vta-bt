@@ -24,8 +24,18 @@ pub struct MabbLongConfig {
 
 impl MabbLongConfig {
     /// 展开后的五元参数组合。
+    #[must_use]
     pub fn quints(&self) -> Vec<(String, usize, f64, f64, usize)> {
-        let mut out = Vec::new();
+        // 网格规模 = 各维度长度之积(可预知), 一次分配到位(`mem-with-capacity`)。
+        // `saturating_mul`: 笛卡尔积理论上无界, 普通 `*` 在 debug 下会溢出 panic。
+        let cap = self
+            .ma
+            .len()
+            .saturating_mul(self.bblen.values().len())
+            .saturating_mul(self.sigma.values().len())
+            .saturating_mul(self.stopk.values().len())
+            .saturating_mul(self.atrlen.values().len());
+        let mut out = Vec::with_capacity(cap.min(crate::strategies::MAX_GRID_PREALLOC));
         for name in &self.ma {
             for &l in &self.bblen.values() {
                 for &s in &self.sigma.values() {
@@ -75,6 +85,7 @@ impl MabbLongConfig {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -13,6 +13,7 @@ pub struct KeltnerStrategy {
 
 impl KeltnerStrategy {
     /// 由 [`KeltnerConfig`] 构造; 参数网格由该配置展开。
+    #[must_use]
     pub fn new(config: KeltnerConfig) -> Self {
         Self {
             mults: config.values(),
@@ -86,6 +87,7 @@ impl Strategy for KeltnerStrategy {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

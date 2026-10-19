@@ -57,6 +57,11 @@ pub fn pick_s(t_bars: usize) -> Option<usize> {
     }
 }
 
+/// 两遍法 Sharpe 的**参照实现**(先物化收益数组, 再单遍统计)。
+///
+/// 仅测试用: 它是 [`sharpe_of_curve`] 的正确性基准 —— 刻意用与后者**不同**的写法
+/// (物化 `Vec` 后再索引), 使"两者同时写错同一处"不可能发生。
+#[cfg(test)]
 fn sharpe_of(rets: &[f64], bpy: f64) -> f64 {
     let n = rets.len();
     if n < 2 {
@@ -71,38 +76,64 @@ fn sharpe_of(rets: &[f64], bpy: f64) -> f64 {
     }
 }
 
-/// 权益曲线 → 逐 bar 收益。**必须与引擎同口径**: 复用
-/// [`crate::engine::bar_log_returns`], 否则 CSCV 的 IS/OOS 排序与引擎
-/// `sharpe_ratio` 不同源。
+/// 曲线 → 全样本 Sharpe。**不物化收益数组**, 但与「物化后两遍统计」逐位一致。
 ///
-/// 历史差异: 本函数曾独立实现且用**简单收益** `curr/prev - 1`, 注释却声称
-/// "与引擎 curve_stats 同式"(引擎用对数收益)。已统一。
-fn to_returns(equity: &[f64]) -> Vec<f64> {
-    crate::engine::bar_log_returns(equity).collect()
+/// 口径与 [`sharpe_of`] 完全相同(两遍法: 先均值、再离差平方和), 只是收益序列
+/// 由 [`crate::engine::bar_log_returns`] 惰性产出而非落成 `Vec`。
+///
+/// 为什么要这样: CSCV 的输入是 T×N 的曲线矩阵(1m 周期 × 500 组 ≈ 24 GB),
+/// 再物化一份等大的收益数组就把峰值内存翻倍。逐位一致性由
+/// `sharpe_of_curve_matches_materialized_reference` 锁定。
+fn sharpe_of_curve(curve: &[f64], bpy: f64) -> f64 {
+    let rets = crate::engine::bar_log_returns(curve);
+    let n = rets.len();
+    if n < 2 {
+        return 0.0;
+    }
+    let mean = rets.clone().sum::<f64>() / n as f64;
+    let var = rets.map(|r| (r - mean) * (r - mean)).sum::<f64>() / (n as f64 - 1.0);
+    if var <= 0.0 {
+        0.0
+    } else {
+        mean / var.sqrt() * bpy.sqrt()
+    }
 }
 
 /// curves[j] = 第 j 条策略的 fixed 权益曲线(等长)。bpy = 该 TF 年化 bar 数。
 /// S 必须为偶数且 T 可被 S 整除(尾部余 bar 丢弃, 与原文按行等切一致)。
-#[must_use]
-pub fn cscv(curves: &[Vec<f64>], s: usize, bpy: f64) -> PboResult {
-    assert!(
-        s >= 2 && s.is_multiple_of(2) && s <= 16,
-        "S 必须为 2..=16 的偶数"
-    );
+///
+/// # Errors
+/// `s` 不是 `2..=16` 的偶数、策略数 N < 2、或可用 bar 数 T < S 时返回
+/// [`AppError`](crate::error::AppError) —— 这三种都是**调用方的口径错误**,
+/// 不该让整轮 PBO 实算崩在一条 assert 上。
+pub fn cscv(curves: &[impl AsRef<[f64]>], s: usize, bpy: f64) -> crate::error::Result<PboResult> {
+    if !(2..=16).contains(&s) || !s.is_multiple_of(2) {
+        return Err(crate::error::AppError::Msg(format!(
+            "S 必须为 2..=16 的偶数, 当前为 {s}"
+        )));
+    }
     let n = curves.len();
-    assert!(n > 1, "策略数 N 必须 >1");
-    let t = curves.iter().map(Vec::len).min().unwrap_or(0);
-    assert!(t >= s, "T 必须 ≥S");
+    if n <= 1 {
+        return Err(crate::error::AppError::Msg(format!(
+            "策略数 N 必须 > 1, 当前为 {n}"
+        )));
+    }
+    let t = curves.iter().map(|c| c.as_ref().len()).min().unwrap_or(0);
+    if t < s {
+        return Err(crate::error::AppError::Msg(format!(
+            "T = {t} 必须 >= S = {s}"
+        )));
+    }
     let t = t - (t % s);
-    let block = t / s;
-    let _ = block;
 
     // 每(策略,块): 收益和/平方和/笔数。Sharpe 只需这两矩, 组合枚举时 O(1) 聚合。
-    let rets: Vec<Vec<f64>> = curves.iter().map(|c| to_returns(&c[..t])).collect();
+    //
+    // 收益**不物化**: 逐点经 `bar_log_returns` 惰性产出并直接累加到分块矩里。
+    // 原实现先落一份 T×N 的 `Vec<Vec<f64>>` 再累加, 在 1m×500 规模上多占 4 GB。
     let mut sums = vec![vec![0.0; s]; n];
     let mut sqs = vec![vec![0.0; s]; n];
-    for (j, r) in rets.iter().enumerate() {
-        for (i, &v) in r.iter().enumerate().take(t - 1) {
+    for (j, c) in curves.iter().enumerate() {
+        for (i, v) in crate::engine::bar_log_returns(&c.as_ref()[..t]).enumerate() {
             let b = (i * s / (t - 1)).min(s - 1);
             sums[j][b] += v;
             sqs[j][b] += v * v;
@@ -140,7 +171,9 @@ pub fn cscv(curves: &[Vec<f64>], s: usize, bpy: f64) -> PboResult {
     };
 
     // 全样本最优(报告用)。
-    let full: Vec<f64> = (0..n).map(|j| sharpe_of(&rets[j], bpy)).collect();
+    let full: Vec<f64> = (0..n)
+        .map(|j| sharpe_of_curve(&curves[j].as_ref()[..t], bpy))
+        .collect();
     // `total_cmp` 而非 `partial_cmp().unwrap()`: 后者在任一 Sharpe 为 NaN 时 panic。
     // NaN 不是理论风险 —— 方差计算里任何一次溢出/Inf 都会传染到 mean 与 sqrt。
     // `total_cmp` 给出全序且对 NaN 无害(NaN 排在 +∞ 之后), 故取不到最优时只会
@@ -195,7 +228,7 @@ pub fn cscv(curves: &[Vec<f64>], s: usize, bpy: f64) -> PboResult {
         mask = (((r ^ mask) >> 2) / c) | r;
     }
 
-    PboResult {
+    Ok(PboResult {
         n_strategies: n,
         t_bars: t,
         s_blocks: s,
@@ -204,7 +237,7 @@ pub fn cscv(curves: &[Vec<f64>], s: usize, bpy: f64) -> PboResult {
         full_sample_best_idx: is_best_idx,
         full_sample_best_sharpe: full[is_best_idx],
         degradation: deg_sum / total.max(1) as f64,
-    }
+    })
 }
 
 /// (币,周期,策略) → [(params, fixed 曲线)]。
@@ -213,14 +246,18 @@ type PboGroups = std::collections::BTreeMap<(String, String, String), Vec<(Strin
 /// `--pbo` 装配: 读报告目录(detail/ 优先, 回退目录本身)的 fixed 曲线,
 /// 按(币,周期,策略)分组实算 CSCV 并印表。T×N 常驻内存, 1m×500 级约 24GB,
 /// PBO 建议 TF≥30m 或 N≤500(见手册 Step5)。
-pub fn run_pbo_report(dir: &str) -> crate::error::Result<()> {
+///
+/// # Errors
+/// 目录读取失败、未找到 `*_fixedcurve.parquet`、或某组的 CSCV 口径非法
+/// (`S` 非偶数 / N 不足 / T 不足)时返回 [`AppError`](crate::error::AppError)。
+pub fn run_pbo_report(dir: &std::path::Path) -> crate::error::Result<()> {
     use std::collections::BTreeMap;
 
-    let detail = std::path::Path::new(dir).join("detail");
+    let detail = dir.join("detail");
     let src = if detail.is_dir() {
-        detail.clone()
+        detail
     } else {
-        std::path::PathBuf::from(dir)
+        dir.to_path_buf()
     };
     let curves = crate::output::read_fixed_curves(&src)?;
     if curves.is_empty() {
@@ -244,7 +281,7 @@ pub fn run_pbo_report(dir: &str) -> crate::error::Result<()> {
     for ((sym, tf, strat), mut members) in groups {
         members.sort_by(|a, b| a.0.cmp(&b.0));
         if members.len() < 10 {
-            println!(
+            tracing::warn!(
                 "{sym}/{tf}/{strat}: N={} <10, 跳过(名义N过小)",
                 members.len()
             );
@@ -252,13 +289,23 @@ pub fn run_pbo_report(dir: &str) -> crate::error::Result<()> {
         }
         let t = members.iter().map(|(_, v)| v.len()).min().unwrap_or(0);
         let Some(s) = pick_s(t) else {
-            println!("{sym}/{tf}/{strat}: T={t} <32, 跳过(块长不足)");
+            tracing::warn!("{sym}/{tf}/{strat}: T={t} <32, 跳过(块长不足)");
             continue;
         };
-        let t_use = t - (t % s);
-        let mat: Vec<Vec<f64>> = members.iter().map(|(_, v)| v[..t_use].to_vec()).collect();
+        // 年化口径必须可靠: `bars_per_year` 对未知周期会**静默回退 365**,
+        // 而这里的 `tf` 来自 Parquet metadata(不经过 `Config::validate`),
+        // 故必须显式拦下未知周期 —— 否则 Sharpe 年化可错 100~1440 倍,
+        // φ 与 degradation 被静默算错且无任何提示。
+        if !crate::strategies::is_known_timeframe(&tf) {
+            tracing::warn!("[跳过] {sym}/{tf}/{strat}: 未知周期, 年化口径不可靠");
+            continue;
+        }
+        // **零拷贝**: 直接借用各曲线切片, 不再克隆一份 T×N 矩阵
+        // (1m×500 规模下那一份就是 4 GB)。`cscv` 内部会按 `S` 自行截齐
+        // (`t - t % s`), 与原先在此处截齐后克隆的结果逐位相同。
+        let mat: Vec<&[f64]> = members.iter().map(|(_, v)| v.as_slice()).collect();
         let bpy = crate::strategies::bars_per_year(&tf);
-        let r = cscv(&mat, s, bpy);
+        let r = cscv(&mat, s, bpy)?;
         let verdict = if r.pbo < 0.05 { "通过" } else { "拒绝" };
         println!(
             "{:<28} {:>6} {:>8} {:>3} {:>7} {:>7.4} {:<6} {:>13.3} {:>+10.3}",
@@ -273,13 +320,14 @@ pub fn run_pbo_report(dir: &str) -> crate::error::Result<()> {
             r.degradation
         );
         if r.n_logits < 70 {
-            println!("  注: logits<70, λ 分布稀疏, φ 估计误差大");
+            tracing::warn!("{sym}/{tf}/{strat}: logits<70, λ 分布稀疏, φ 估计误差大");
         }
     }
     println!("\n判据: φ>0.05 按 Neyman-Pearson 惯例拒绝该模型(C3)。");
     println!("* 全样本最优SR 是**拿全样本挑出来的乐观值**, 不是业绩证据; 真实证据是 φ。");
     Ok(())
 }
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -325,7 +373,7 @@ mod tests {
     fn test_pure_noise_pbo_high() {
         // 纯噪声 N=30: IS 最优大概率 OOS 跑输中位数 → φ 显著 >0.05。
         let curves = noise_curves(30, 400, 7);
-        let r = cscv(&curves, 4, 252.0);
+        let r = cscv(&curves, 4, 252.0).expect("合法口径的 CSCV 必须成功");
         assert_eq!(r.n_logits, 6); // C(4,2)
         assert!(r.pbo > 0.05, "noise φ={}", r.pbo);
     }
@@ -343,7 +391,7 @@ mod tests {
             c.push(eq);
         }
         curves[0] = c;
-        let r = cscv(&curves, 4, 252.0);
+        let r = cscv(&curves, 4, 252.0).expect("合法口径的 CSCV 必须成功");
         assert_eq!(
             r.full_sample_best_idx, 0,
             "全样本最优应是那条植入漂移的曲线"
@@ -379,7 +427,7 @@ mod tests {
             }
             curves.push(c);
         }
-        let r = cscv(&curves, s_blocks, bpy);
+        let r = cscv(&curves, s_blocks, bpy).expect("合法口径的 CSCV 必须成功");
 
         // 独立重算全样本 Sharpe(argmax 用稳定规则: 取最大值的首个下标)
         let full: Vec<f64> = curves
@@ -456,7 +504,7 @@ mod tests {
     /// 非有限输入**不得**让 CSCV panic, 且返回值必须可读。
     ///
     /// 说明(重要): 本用例注入 `NaN` / `Inf` 曲线, 但 NaN 实际**不会**传播到
-    /// Sharpe —— `to_returns` 复用 `engine::bar_log_returns`, 该函数对两侧非有限值
+    /// Sharpe —— `bar_log_returns` 复用 `engine::bar_log_returns`, 该函数对两侧非有限值
     /// 一律记 0。因此这里真正锁定的是"退化输入下 cscv 稳定返回", 而非"NaN 被隔离"。
     /// 换成 `partial_cmp().unwrap()` 时, 若未来 `sharpe_of` 的守卫被放宽, 本用例
     /// 才会真正覆盖到 panic 路径。
@@ -467,10 +515,77 @@ mod tests {
         let mut curves = noise_curves(10, t, 5);
         curves[3] = vec![f64::NAN; t];
         curves[7] = vec![f64::INFINITY; t];
-        let r = cscv(&curves, s, 252.0);
+        let r = cscv(&curves, s, 252.0).expect("合法口径的 CSCV 必须成功");
         assert!(r.pbo.is_finite(), "pbo 必须有限: {}", r.pbo);
         assert!((0.0..=1.0).contains(&r.pbo));
         assert!(r.degradation.is_finite(), "decay: {}", r.degradation);
         assert_eq!(r.n_strategies, 10);
+    }
+
+    /// `cscv` 的非法口径必须**返回 Err**, 而不是 panic。
+    ///
+    /// 可触发场景: `cscv` 原先用三条 `assert!` 兜底, 而它是 crate 的**公共 API**
+    /// (`vta::pbo::cscv`) —— 下游传 `s = 0` / `s = 3` / 单条曲线即崩, 且
+    /// 文档里既无 `# Panics` 也无 `# Errors`, 调用方无从预知失败契约。
+    #[test]
+    fn cscv_rejects_invalid_arguments_instead_of_panicking() {
+        let curves = noise_curves(4, 64, 3);
+
+        // S 非法: 0 / 1 / 奇数 / 超过 16。
+        for s in [0usize, 1, 3, 17, 100] {
+            let e = cscv(&curves, s, 252.0).expect_err(&format!("S={s} 必须被拒, 而不是 panic"));
+            assert!(
+                format!("{e}").contains("S 必须"),
+                "错误消息应说明是 S 的问题: {e}"
+            );
+        }
+
+        // N 不足: 只有一条曲线无法做 CSCV(需要至少 2 条做相对排名)。
+        let one = noise_curves(1, 64, 3);
+        let e = cscv(&one, 4, 252.0).expect_err("N=1 必须被拒");
+        assert!(format!("{e}").contains("N 必须"), "{e}");
+
+        // T 不足: 曲线长度 < S。
+        let short = noise_curves(4, 3, 3);
+        let e = cscv(&short, 8, 252.0).expect_err("T<S 必须被拒");
+        assert!(format!("{e}").contains("T ="), "{e}");
+    }
+
+    /// `sharpe_of_curve`(不物化收益数组)必须与「物化后两遍统计」**逐位一致**。
+    ///
+    /// 这是"省掉 T×N 收益矩阵"这一优化的**安全网**: 口径一变(例如改成
+    /// `sum(x^2) - n·mean^2` 的单遍形式), 数值就会漂, φ 与 degradation 随之漂。
+    #[test]
+    fn sharpe_of_curve_matches_materialized_reference() {
+        let bpy = 252.0;
+        for c in noise_curves(6, 128, 11) {
+            let rets: Vec<f64> = crate::engine::bar_log_returns(&c).collect();
+            let expected = sharpe_of(&rets, bpy);
+            let got = sharpe_of_curve(&c, bpy);
+            assert_eq!(
+                got.to_bits(),
+                expected.to_bits(),
+                "不物化版本必须与物化版本逐位一致: {got} vs {expected}"
+            );
+        }
+    }
+
+    /// `cscv` 接受**借用**的曲线切片, 且结果与传 `Vec` 完全一致。
+    ///
+    /// 这条锁定的是 API 形状: `run_pbo_report` 现在零拷贝地把 `Vec<f64>` 借成
+    /// `&[f64]` 传进来, 省掉一整份 T×N 克隆(1m×500 规模 ≈ 4 GB)。
+    #[test]
+    fn cscv_accepts_borrowed_slices_with_identical_result() {
+        let owned = noise_curves(12, 256, 77);
+        let borrowed: Vec<&[f64]> = owned.iter().map(Vec::as_slice).collect();
+        let a = cscv(&owned, 4, 252.0).expect("owned 应成功");
+        let b = cscv(&borrowed, 4, 252.0).expect("borrowed 应成功");
+        assert_eq!(a.pbo.to_bits(), b.pbo.to_bits());
+        assert_eq!(a.degradation.to_bits(), b.degradation.to_bits());
+        assert_eq!(a.full_sample_best_idx, b.full_sample_best_idx);
+        assert_eq!(
+            a.full_sample_best_sharpe.to_bits(),
+            b.full_sample_best_sharpe.to_bits()
+        );
     }
 }

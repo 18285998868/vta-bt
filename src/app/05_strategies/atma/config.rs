@@ -14,12 +14,16 @@ pub struct AtmaConfig {
 
 impl AtmaConfig {
     /// 展开后的参数组合(按策略的笛卡尔积顺序)。
+    #[must_use]
     pub fn pairs(&self) -> Vec<(usize, usize)> {
         let ru = self.up.to_range();
         let rd = self.down.to_range();
         let ups: Vec<usize> = (ru.start..=ru.end).step_by(ru.step).collect();
         let downs: Vec<usize> = (rd.start..=rd.end).step_by(rd.step).collect();
-        let mut out = Vec::new();
+        // 网格规模 = 各维度长度之积(可预知), 一次分配到位(`mem-with-capacity`)。
+        // `saturating_mul`: 笛卡尔积理论上无界, 普通 `*` 在 debug 下会溢出 panic。
+        let cap = ups.len().saturating_mul(downs.len());
+        let mut out = Vec::with_capacity(cap.min(crate::strategies::MAX_GRID_PREALLOC));
         for &u in &ups {
             for &d in &downs {
                 out.push((u, d));
@@ -43,6 +47,7 @@ impl AtmaConfig {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

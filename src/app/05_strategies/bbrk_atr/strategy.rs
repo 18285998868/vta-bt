@@ -16,6 +16,7 @@ pub struct BbrkAtrStrategy {
 
 impl BbrkAtrStrategy {
     /// 由 [`BbrkAtrConfig`] 构造; 参数网格由该配置展开。
+    #[must_use]
     pub fn new(config: BbrkAtrConfig) -> Self {
         Self {
             pairs: config.pairs(),
@@ -25,6 +26,7 @@ impl BbrkAtrStrategy {
 
 /// 纯决策函数(可手算单测；8参为OHLC+三轨+双ATR+阈值的最小完备集)。
 #[allow(clippy::too_many_arguments)]
+#[must_use]
 pub fn bbrk_atr_signals(
     open: &[f64],
     close: &[f64],
@@ -247,6 +249,7 @@ impl Strategy for BbrkAtrStrategy {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

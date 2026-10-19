@@ -16,6 +16,7 @@ pub struct BbrkPctbStrategy {
 
 impl BbrkPctbStrategy {
     /// 由 [`BbrkPctbConfig`] 构造; 参数网格由该配置展开。
+    #[must_use]
     pub fn new(config: BbrkPctbConfig) -> Self {
         Self {
             pairs: config.pairs(),
@@ -24,6 +25,7 @@ impl BbrkPctbStrategy {
 }
 
 /// 纯决策函数(可手算单测)。
+#[must_use]
 pub fn bbrk_pctb_signals(
     close: &[f64],
     lower: &[f64],
@@ -118,6 +120,7 @@ impl Strategy for BbrkPctbStrategy {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -16,6 +16,7 @@ pub struct BbrkVolStrategy {
 
 impl BbrkVolStrategy {
     /// 由 [`BbrkVolConfig`] 构造; 参数网格由该配置展开。
+    #[must_use]
     pub fn new(config: BbrkVolConfig) -> Self {
         Self {
             pairs: config.pairs(),
@@ -25,6 +26,7 @@ impl BbrkVolStrategy {
 
 /// 纯决策函数(可手算单测)。
 #[allow(clippy::too_many_arguments)]
+#[must_use]
 pub fn bbrk_vol_signals(
     open: &[f64],
     close: &[f64],
@@ -224,6 +226,7 @@ impl Strategy for BbrkVolStrategy {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

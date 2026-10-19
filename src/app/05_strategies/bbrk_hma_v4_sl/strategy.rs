@@ -16,6 +16,7 @@ pub struct BbrkHmaV4SlStrategy {
 
 impl BbrkHmaV4SlStrategy {
     /// 由 [`BbrkHmaV4SlConfig`] 构造; 参数网格由该配置展开。
+    #[must_use]
     pub fn new(config: BbrkHmaV4SlConfig) -> Self {
         Self {
             quads: config.quads(),
@@ -25,6 +26,7 @@ impl BbrkHmaV4SlStrategy {
 
 /// 纯决策函数(可手算单测)。pos：-1顺势空，-2逆势空（闩锁+止损）。
 #[allow(clippy::too_many_arguments)]
+#[must_use]
 pub fn bbrk_hma_v4_sl_signals(
     close: &[f64],
     high: &[f64],
@@ -172,6 +174,7 @@ impl Strategy for BbrkHmaV4SlStrategy {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

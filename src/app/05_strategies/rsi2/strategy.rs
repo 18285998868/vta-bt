@@ -13,6 +13,7 @@ pub struct RSI2Strategy {
 
 impl RSI2Strategy {
     /// 由 [`RSI2Config`] 构造; 参数网格由该配置展开。
+    #[must_use]
     pub fn new(config: RSI2Config) -> Self {
         Self {
             pairs: config.pairs(),
@@ -21,6 +22,7 @@ impl RSI2Strategy {
 }
 
 /// 纯决策函数(可手算单测)。
+#[must_use]
 pub fn rsi2_signals(close: &[f64], rsi_vals: &[f64], buy_thr: f64, sell_thr: f64) -> Vec<Signal> {
     let n = close.len().min(rsi_vals.len());
     let mut sig = vec![Signal::Hold; n];
@@ -83,6 +85,7 @@ impl Strategy for RSI2Strategy {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

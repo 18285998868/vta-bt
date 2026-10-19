@@ -260,19 +260,19 @@ impl ComboCtx {
             strategy_params: output::strategy_params_value(params),
             strategy_params_json: output::params_to_json(params),
             metrics,
-            delay_bars: self.exec.delay() as u32,
+            delay_bars: self.exec.delay_u32(),
             fee_bps: self.exec.fee_rate * 10_000.0,
             slippage_bps: self.exec.slip_rate * 10_000.0,
             fill_close: self.exec.fill_close,
             buy_hold_pnl: bh_pnl,
             buy_hold_return: bh_ret,
-            bars_used: bars_used as u32,
+            bars_used: u32::try_from(bars_used).unwrap_or(u32::MAX),
             status,
         }
     }
 }
 
-/// K 线六列必须**等长**。
+/// K 线六列必须**等长**, 且价格列必须**有限且为正**。
 ///
 /// 引擎内部多处用 `close.len().min(open.len())` 之类的截断来"保证"不越界。截断
 /// 是静默的: 若某列短了, 引擎只会少回测几根 bar, 而**指标不会报错** —— 报告里
@@ -280,16 +280,17 @@ impl ComboCtx {
 /// 更坏的情形是 `time` 比价列短: `scan_trades` 的 `ts(i)` 会退化成用 bar 序号
 /// 当时间戳, detail 落盘的 `entry_time`/`exit_time` 变成假时间。
 ///
+/// 价格列的合法性是**另一条**独立的红线: 成交价是整条成交链的除数
+/// (`qty = cash / price`、`pnl_pct = (exit - entry) / entry`)。价格为 0 ⇒
+/// `qty = inf` ⇒ 权益变 NaN ⇒ **全部指标被污染**; 而 NaN 比 0 更危险 ——
+/// 0 会被读成"零波动低风险", NaN 才会暴露。
+///
 /// 因此在进入回测前一次性拒绝, 让问题在**数据加载边界**暴露。
 ///
 /// 注意(2026-10): `KlineColumns` 私有化字段后, 不等长已**无法构造** ——
-/// `new()` 返回 `Err`, `From<Vec<Record>>` 六列同步 push。故本函数在当前实现下
-/// 不可达, 属兜底防御; 若日后 `kline-reader` 新增不做校验的构造路径, 它才会生效。
-/// 保留而非删除: 校验成本可忽略, 而失效的正是"静默少算 bar"这类难查问题。
-fn assert_columns_aligned(
-    cols: &kline_reader::KlineColumns,
-    where_: &str,
-) -> crate::error::Result<()> {
+/// `new()` 返回 `Err`, `From<Vec<Record>>` 六列同步 push。价格列则**没有**这层
+/// 保证, 故这条校验是可达的、也是必要的。
+fn validate_columns(cols: &kline_reader::KlineColumns, where_: &str) -> crate::error::Result<()> {
     let lens = [
         ("time", cols.time().len()),
         ("open", cols.open().len()),
@@ -303,6 +304,40 @@ fn assert_columns_aligned(
         return Err(crate::error::AppError::Msg(format!(
             "{where_}: K 线列长度不一致 —— {name}={len}, close={n}; \
              会导致引擎静默截断少算 bar 或时间戳失真。请重新下载/清洗数据"
+        )));
+    }
+    // 价格列: 必须是有限正数。逐列扫描, 报告首个非法下标以便定位。
+    for (name, col) in [
+        ("open", cols.open()),
+        ("high", cols.high()),
+        ("low", cols.low()),
+        ("close", cols.close()),
+    ] {
+        if let Some(i) = col.iter().position(|p| !p.is_finite() || *p <= 0.0) {
+            return Err(crate::error::AppError::Msg(format!(
+                "{where_}: 价格列 {name} 第 {i} 根非法(须为有限正数, 实际 {}) —— \
+                 该值会成为成交数量的除数, 0 或 NaN 会让全部指标变成 NaN。\
+                 请重新下载/清洗数据",
+                col[i]
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// 策略批量信号的长度必须与参数区间一致。
+///
+/// 契约由 [`crate::strategies::Strategy::generate_signals_batch`] 声明, 但
+/// 实现方是**插件式的**(任何 `Strategy` 实现都可能写错), 且违反后果很重:
+/// 信号与参数错位 ⇒ 报告里 `params` 列与实际跑的参数对不上 ⇒ 结论完全不可信。
+///
+/// 原实现用 `assert_eq!` 直接 panic —— 而此时整轮回测可能已经跑了几小时,
+/// 崩溃会让此前所有已算结果白费(虽有 temps/ 缓存, 但用户拿到的是"进程被杀"
+/// 而不是"哪个策略违反了契约")。这里改成**返回 Err**, 把问题变成一条可读的错误。
+fn check_batch_len(name: &str, got: usize, want: usize) -> crate::error::Result<()> {
+    if got != want {
+        return Err(crate::error::AppError::Msg(format!(
+            "[{name}] batch 信号数 {got} != 参数区间长度 {want}(策略实现违反契约)"
         )));
     }
     Ok(())
@@ -326,7 +361,7 @@ fn run_combo(
     data_fp: u64,
     ctx: &ComboCtx,
 ) -> crate::error::Result<(PathBuf, bool)> {
-    assert_columns_aligned(cols, &format!("{symbol}/{tf}"))?;
+    validate_columns(cols, &format!("{symbol}/{tf}"))?;
     let n = strategy.param_count();
 
     let combo_path = combo_parquet_path(
@@ -409,7 +444,7 @@ fn run_combo(
                 cols.time(),
                 start..end,
             )?;
-            assert_eq!(batch.len(), end - start, "batch 信号数必须与参数区间对齐");
+            check_batch_len(strategy.name(), batch.len(), end - start)?;
             let sims: Vec<(String, crate::engine::SimResult, RunStatus)> = batch
                 .into_par_iter()
                 .enumerate()
@@ -491,7 +526,7 @@ fn run_combo(
                 cols.time(),
                 start..end,
             )?;
-            assert_eq!(batch.len(), end - start, "batch 信号数必须与参数区间对齐");
+            check_batch_len(strategy.name(), batch.len(), end - start)?;
             let mut rows: Vec<RunResult> = batch
                 .into_par_iter()
                 .enumerate()
@@ -549,7 +584,11 @@ fn run_combo(
 ///
 /// 单个 (symbol, timeframe) 数据加载失败时跳过该对并继续, 不中断整体扫描;
 /// 全部组合都失败才返回错误。
-pub fn run(config_path: &str) -> crate::error::Result<()> {
+///
+/// # Errors
+/// 配置加载/校验失败、参数网格自检失败、数据列非法、策略批量信号长度违反契约,
+/// 或报告合并阶段完全失败时返回 [`crate::error::AppError`]。
+pub fn run(config_path: &std::path::Path) -> crate::error::Result<()> {
     let config = config::load_config(config_path)?;
     config.validate()?;
     // 必须走 `build_strategies_checked`: 它在构建后对展开网格做 `param_str` 唯一性
@@ -610,8 +649,8 @@ pub fn run(config_path: &str) -> crate::error::Result<()> {
     tracing::info!("{}", "=".repeat(70));
 
     let mut pair_idx = 0usize;
-    for symbol in &symbols {
-        for tf in &timeframes {
+    for symbol in symbols {
+        for tf in timeframes {
             pair_idx += 1;
             tracing::info!("\n[{pair_idx}/{pairs_total}] {symbol} / {tf}");
 
@@ -688,6 +727,7 @@ pub fn run(config_path: &str) -> crate::error::Result<()> {
     Ok(())
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -927,16 +967,50 @@ mod tests {
     #[test]
     fn equal_length_columns_pass_alignment_check() {
         let c = cols(10);
-        assert!(assert_columns_aligned(&c, "t").is_ok(), "等长必须通过");
+        assert!(validate_columns(&c, "t").is_ok(), "等长必须通过");
         // 空数据不算"长度不一致", 交由 is_empty 判断
         let empty = cols(0);
-        assert!(assert_columns_aligned(&empty, "t").is_ok());
+        assert!(validate_columns(&empty, "t").is_ok());
+    }
+
+    /// 回归: 价格列必须是**有限正数**, 否则整轮指标会被 NaN 污染。
+    ///
+    /// 可触发场景: 某根 bar 的 close = 0 ⇒ 成交数量 `qty = cash / price` 变 `inf`
+    /// ⇒ 权益变 NaN ⇒ sharpe / drawdown / pnl **全部**变 NaN。而 NaN 比 0 更危险:
+    /// 0 会被读成"零波动低风险", NaN 才会暴露; 且下游的排序/取 top-N 会静默丢行。
+    /// 校验必须发生在**数据加载边界**, 而不是等到出报告才发现。
+    #[test]
+    fn non_positive_or_non_finite_prices_are_rejected_at_the_data_boundary() {
+        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let c = kline_reader::KlineColumns::new(
+                vec![1, 2, 3],
+                vec![4.0, 5.0, 6.0],
+                vec![7.0, 8.0, 9.0],
+                vec![10.0, 11.0, 12.0],
+                vec![13.0, 14.0, bad],
+                vec![16.0, 17.0, 18.0],
+            )
+            .expect("等长列必须可构造");
+            let e = validate_columns(&c, "t")
+                .expect_err(&format!("close={bad} 必须被拒, 否则整轮指标变 NaN"));
+            assert!(
+                format!("{e}").contains("close"),
+                "错误消息应指明是哪一列: {e}"
+            );
+        }
+    }
+
+    /// 回归: 合法价格列必须通过校验(不得误杀)。
+    #[test]
+    fn valid_prices_pass_the_boundary_check() {
+        let c = cols(20);
+        assert!(validate_columns(&c, "t").is_ok());
     }
 
     /// 列长相等现由 `KlineColumns` 的**构造**保证, 而非本模块事后校验:
     /// `new()` 直接返回 `Err`, `From<Vec<Record>>` 对每条记录向六列各 push 一个值,
     /// 两条路径都不可能产出不等长实例。故"列长不一致"必须在构造点被拒, 测试随之
-    /// 移到这里 —— 本函数(`assert_columns_aligned`)退化为不可达的兜底。
+    /// 移到这里 —— 本函数(`validate_columns`)的等长分支退化为不可达的兜底。
     #[test]
     fn uneven_columns_are_rejected_at_construction() {
         let uneven = kline_reader::KlineColumns::new(

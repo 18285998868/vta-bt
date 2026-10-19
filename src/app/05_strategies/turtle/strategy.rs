@@ -11,6 +11,7 @@ pub struct TurtleStrategy {
 
 impl TurtleStrategy {
     /// 由 [`TurtleConfig`] 构造; 参数网格由该配置展开。
+    #[must_use]
     pub fn new(config: TurtleConfig) -> Self {
         Self {
             pairs: config.pairs(),
@@ -19,6 +20,7 @@ impl TurtleStrategy {
 }
 
 /// 纯决策函数(可手算单测): 入场高低轨 + 出场高低轨。
+#[must_use]
 pub fn turtle_signals(
     close: &[f64],
     entry_hi: &[f64],
@@ -113,6 +115,7 @@ impl Strategy for TurtleStrategy {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;
