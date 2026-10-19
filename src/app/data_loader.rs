@@ -220,17 +220,17 @@ impl DataLoader {
         let mut klines = Vec::with_capacity(cols.len());
         for i in 0..cols.len() {
             let (o, h, l, c, v) = (
-                cols.open[i],
-                cols.high[i],
-                cols.low[i],
-                cols.close[i],
-                cols.volume[i],
+                cols.open()[i],
+                cols.high()[i],
+                cols.low()[i],
+                cols.close()[i],
+                cols.volume()[i],
             );
             if o.is_nan() || h.is_nan() || l.is_nan() || c.is_nan() || v.is_nan() {
                 continue;
             }
             klines.push(Kline {
-                time: cols.time[i],
+                time: cols.time()[i],
                 open: o,
                 high: h,
                 low: l,
