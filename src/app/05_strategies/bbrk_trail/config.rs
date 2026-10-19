@@ -11,13 +11,17 @@ use crate::config::F64Param;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BbrkTrailConfig {
+    /// 布林带标准差倍数(通道宽度)。
     pub sigma: F64Param,
     /// BB周期（缺省20＝旧串语义）。
     #[serde(default = "default_bblen")]
+    /// 布林带周期。
     pub bblen: F64Param,
     /// ATR周期（缺省14＝旧串语义）。
     #[serde(default = "default_atrlen")]
+    /// ATR 周期。
     pub atrlen: F64Param,
+    /// 跟踪止损 ATR 倍数。
     pub trailk: F64Param,
 }
 
@@ -30,6 +34,7 @@ fn default_atrlen() -> F64Param {
 }
 
 impl BbrkTrailConfig {
+    /// 展开后的参数组合(按策略的笛卡尔积顺序)。
     pub fn pairs(&self) -> Vec<(f64, usize, usize, f64)> {
         let ss = self.sigma.values();
         let bs = self.bblen.values();
@@ -52,6 +57,10 @@ impl BbrkTrailConfig {
 impl BbrkTrailConfig {
     /// 语义校验(原集中在 `config.rs::Config::validate` 的 match 中,
     /// 已下沉到本类型; 分派处只保留一行调用)。
+    /// 语义校验: 范围、步长与网格非空性。
+    ///
+    /// # Errors
+    /// 任一参数越界或展开为空时返回 [`AppError`](crate::error::AppError)。
     pub fn validate(&self) -> crate::error::Result<()> {
         self.sigma.validate_range("bbrk_trail.sigma", 0.1, 10.0)?;
         self.bblen.validate_range("bbrk_trail.bblen", 2.0, 2000.0)?;

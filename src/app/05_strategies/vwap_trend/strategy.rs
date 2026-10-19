@@ -17,6 +17,7 @@ pub struct VwapTrendStrategy {
 }
 
 impl VwapTrendStrategy {
+    /// 由 [`VwapTrendConfig`] 构造; 参数网格由该配置展开。
     pub fn new(config: VwapTrendConfig) -> Self {
         Self {
             modes: config.modes(),

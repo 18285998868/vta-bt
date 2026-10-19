@@ -5,11 +5,13 @@ use crate::strategies::{Signal, Strategy};
 
 use super::config::MaAtrConfig;
 
+/// 均线 + ATR 通道策略。
 pub struct MaAtrStrategy {
     quints: Vec<(String, usize, f64, usize)>,
 }
 
 impl MaAtrStrategy {
+    /// 由 [`MaAtrConfig`] 构造; 参数网格由该配置展开。
     pub fn new(config: MaAtrConfig) -> Self {
         Self {
             quints: config.quints(),
@@ -45,43 +47,33 @@ pub fn ma_atr_atr(high: &[f64], low: &[f64], close: &[f64], atrlen: usize) -> Ve
     }
 }
 
+/// Flip 出场: 上轨之上持多、下轨之下持空, 反向穿越轨道即反手。
+///
+/// 引擎的 `signals_to_positions` 把信号映射为**目标持仓状态** (`Buy`→Long /
+/// `Sell`→Short), 执行循环也只在 `cur_pos != positions[i]` 时平仓、仅在
+/// `!cur_pos.is_open()` 时开仓 —— 故同向重复信号是 no-op, 无需在此维护 `pos`
+/// 状态; 上轨/下轨信号配对即构成反手 (Lu 2022 的 Keltner 规则)。
+///
+/// 代价: 一旦入场就不再回到空仓 (无 `Signal::Close`), 离场只发生在数据末尾
+/// 引擎强制平仓。价格回到中轨**不**平仓。
+///
+/// NaN→Hold (持仓不变)。`atr` 参与上下轨, 故三者在每根都必须有限。
 pub fn ma_atr_signals(close: &[f64], ma_vals: &[f64], atr_vals: &[f64], k: f64) -> Vec<Signal> {
     let n = close.len().min(ma_vals.len()).min(atr_vals.len());
     let mut sig = vec![Signal::Hold; n];
-    let mut pos: i8 = 0;
     for i in 0..n {
-        if pos == 0 {
-            if ![close[i], ma_vals[i], atr_vals[i]]
-                .iter()
-                .all(|v| v.is_finite())
-            {
-                continue;
-            }
-            let upper = ma_vals[i] + k * atr_vals[i];
-            let lower = ma_vals[i] - k * atr_vals[i];
-            if close[i] > upper {
-                sig[i] = Signal::Buy;
-                pos = 1;
-            } else if close[i] < lower {
-                sig[i] = Signal::Sell;
-                pos = -1;
-            }
-        } else if pos == 1 {
-            if ![close[i], ma_vals[i]].iter().all(|v| v.is_finite()) {
-                continue;
-            }
-            if close[i] <= ma_vals[i] {
-                sig[i] = Signal::Close;
-                pos = 0;
-            }
-        } else {
-            if ![close[i], ma_vals[i]].iter().all(|v| v.is_finite()) {
-                continue;
-            }
-            if close[i] >= ma_vals[i] {
-                sig[i] = Signal::Close;
-                pos = 0;
-            }
+        if ![close[i], ma_vals[i], atr_vals[i]]
+            .iter()
+            .all(|v| v.is_finite())
+        {
+            continue;
+        }
+        let upper = ma_vals[i] + k * atr_vals[i];
+        let lower = ma_vals[i] - k * atr_vals[i];
+        if close[i] > upper {
+            sig[i] = Signal::Buy;
+        } else if close[i] < lower {
+            sig[i] = Signal::Sell;
         }
     }
     sig
@@ -203,6 +195,47 @@ mod tests {
         };
         assert_eq!(s.name(), "MA_ATR");
         assert_eq!(s.param_str(0), "ma=sma,len=20,mult=2,atrlen=14");
+    }
+
+    #[test]
+    fn test_flip_rule_holds_through_basis_and_reverses_at_opposite_band() {
+        // ma 恒 100, atr 恒 2, k=2 → 上轨 104 / 下轨 96
+        let n = 9;
+        let ma = vec![100.0; n];
+        let atr = vec![2.0; n];
+        let close = vec![
+            105.0, // 上轨之上 -> Buy
+            101.0, // 回中轨附近
+            100.0, // 恰好中轨
+            99.0,  // 仍在带内 -> 旧规则(回归基线)此处会 Close, flip 必须 Hold
+            95.0,  // 下轨之下 -> Sell 反手
+            105.0, // 再上轨之上 -> Buy 反手
+            100.0, 100.0, 95.0,
+        ];
+        let sig = ma_atr_signals(&close, &ma, &atr, 2.0);
+
+        assert_eq!(sig[0], Signal::Buy);
+        assert_eq!(sig[1], Signal::Hold);
+        assert_eq!(sig[2], Signal::Hold);
+        assert_eq!(sig[3], Signal::Hold, "flip 规则下回到中轨不得平仓");
+        assert_eq!(sig[4], Signal::Sell);
+        assert_eq!(sig[5], Signal::Buy);
+        assert_eq!(sig[6], Signal::Hold);
+        assert_eq!(sig[7], Signal::Hold);
+        assert_eq!(sig[8], Signal::Sell);
+        // flip 规则下不存在任何 Close 信号
+        assert!(!sig.contains(&Signal::Close));
+    }
+
+    #[test]
+    fn test_flip_nan_is_hold() {
+        let ma = vec![100.0; 3];
+        let atr = vec![f64::NAN, 2.0, 2.0];
+        let close = vec![105.0, 105.0, 105.0];
+        let sig = ma_atr_signals(&close, &ma, &atr, 2.0);
+        assert_eq!(sig[0], Signal::Hold, "atr 为 NaN 时无法定轨, 须保持持仓");
+        assert_eq!(sig[1], Signal::Buy);
+        assert_eq!(sig[2], Signal::Buy);
     }
 
     #[test]

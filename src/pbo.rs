@@ -16,9 +16,13 @@
 /// 单组 PBO 结果(可直接印表)。
 #[derive(Debug, Clone)]
 pub struct PboResult {
+    /// 组内策略数 N。
     pub n_strategies: usize,
+    /// 参与计算的 bar 数 T(已按 S 截齐)。
     pub t_bars: usize,
+    /// CSCV 分块数 S。
     pub s_blocks: usize,
+    /// 枚举出的划分数 C(S, S/2)。
     pub n_logits: usize,
     /// φ: IS 最优 OOS 跑输中位数的概率估计。>0.05 按 Neyman-Pearson 惯例拒绝该模型。
     pub pbo: f64,
@@ -137,10 +141,14 @@ pub fn cscv(curves: &[Vec<f64>], s: usize, bpy: f64) -> PboResult {
 
     // 全样本最优(报告用)。
     let full: Vec<f64> = (0..n).map(|j| sharpe_of(&rets[j], bpy)).collect();
+    // `total_cmp` 而非 `partial_cmp().unwrap()`: 后者在任一 Sharpe 为 NaN 时 panic。
+    // NaN 不是理论风险 —— 方差计算里任何一次溢出/Inf 都会传染到 mean 与 sqrt。
+    // `total_cmp` 给出全序且对 NaN 无害(NaN 排在 +∞ 之后), 故取不到最优时只会
+    // 静默选到某个确定的下标, 而不是让整轮 PBO 崩掉。
     let is_best_idx = full
         .iter()
         .enumerate()
-        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+        .max_by(|a, b| a.1.total_cmp(b.1))
         .map(|(i, _)| i)
         .unwrap_or(0);
 
@@ -162,10 +170,11 @@ pub fn cscv(curves: &[Vec<f64>], s: usize, bpy: f64) -> PboResult {
             }
         }
         let r_is = sharpe_of_blocks(&in_c);
+        // 同上: `total_cmp` 避免 NaN Sharpe 触发 panic。
         let best = r_is
             .iter()
             .enumerate()
-            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+            .max_by(|a, b| a.1.total_cmp(b.1))
             .map(|(i, _)| i)
             .unwrap_or(0);
         let r_oos = sharpe_of_blocks(&out_c);
@@ -209,14 +218,15 @@ pub fn run_pbo_report(dir: &str) -> crate::error::Result<()> {
 
     let detail = std::path::Path::new(dir).join("detail");
     let src = if detail.is_dir() {
-        detail.to_string_lossy().into_owned()
+        detail.clone()
     } else {
-        dir.to_string()
+        std::path::PathBuf::from(dir)
     };
     let curves = crate::output::read_fixed_curves(&src)?;
     if curves.is_empty() {
         return Err(crate::error::AppError::Msg(format!(
-            "未找到 *_fixedcurve.parquet, 请先用 detail=true 重跑: {src}"
+            "未找到 *_fixedcurve.parquet, 请先用 detail=true 重跑: {}",
+            src.display()
         )));
     }
     let mut groups: PboGroups = BTreeMap::new();
@@ -396,9 +406,71 @@ mod tests {
 
     #[test]
     fn test_sharpe_matches_engine_formula() {
-        // 常数收益序列 Sharpe 应为 0(方差为零); 线性序列与手算一致。
+        // 常数收益序列Sharpe 应为 0(方差为零); 线性序列与手算一致。
         assert_eq!(sharpe_of(&[0.01, 0.01, 0.01], 252.0), 0.0);
         let r = sharpe_of(&[0.01, -0.01, 0.01, -0.01], 252.0);
         assert!(r.abs() < 1e-9, "{r}");
+    }
+
+    /// 回归: NaN Sharpe **不得**让 CSCV panic。
+    ///
+    /// 可触发场景: 全样本/分块 argmax 原用 `partial_cmp(..).unwrap()`, 遇 NaN 即
+    /// `None` 解包 panic。现用 `total_cmp`(全序, 无 None)。
+    #[test]
+    fn nan_sharpe_argmax_path_is_total() {
+        // 直接验证 argmax 所依赖的比较语义: 全序 ⇒ 任意输入(含 NaN)都有最大值。
+        for xs in [
+            vec![f64::NAN, 2.0, 1.0],
+            vec![1.0, f64::NAN],
+            vec![f64::NEG_INFINITY, f64::NAN, f64::INFINITY],
+        ] {
+            let best = xs.iter().max_by(|a, b| a.total_cmp(b)).copied();
+            assert!(best.is_some(), "{xs:?} 应有确定的最大值");
+        }
+    }
+
+    /// `total_cmp` 在含 NaN 的序列上给出**全序**且不 panic, 使 argmax 必定有结果。
+    ///
+    /// 语义提示: 正 NaN 在 `total_cmp` 下排在**最大**一侧, 故 `max_by` 遇到 NaN
+    /// 会选中它。这与 `partial_cmp(..).unwrap()` 的差别不在"选谁", 而在于前者
+    /// **不会 panic** —— 见 `nan_inputs_do_not_panic_in_cscv` 的说明。
+    #[test]
+    fn total_cmp_orders_nan_without_panicking() {
+        let mut v = [1.0, f64::NAN, 3.0, f64::NEG_INFINITY];
+        // 旧写法 `a.partial_cmp(b).unwrap()` 在此会 panic(None 解包)。
+        v.sort_by(f64::total_cmp);
+        assert_eq!(v[0], f64::NEG_INFINITY, "-inf 排最前");
+        assert_eq!(v[1], 1.0);
+        assert_eq!(v[2], 3.0);
+        assert!(v[3].is_nan(), "正 NaN 排在末尾(全序约定)");
+
+        // 全序 ⇒ argmax 必有结果, 不再因 None 解包而 panic。
+        let best = [f64::NAN, 2.0, 1.0]
+            .iter()
+            .max_by(|a, b| a.total_cmp(b))
+            .copied();
+        assert!(best.is_some(), "含 NaN 时 max_by 仍须给出结果");
+        assert!(best.unwrap().is_nan() || best.unwrap() == 2.0);
+    }
+
+    /// 非有限输入**不得**让 CSCV panic, 且返回值必须可读。
+    ///
+    /// 说明(重要): 本用例注入 `NaN` / `Inf` 曲线, 但 NaN 实际**不会**传播到
+    /// Sharpe —— `to_returns` 复用 `engine::bar_log_returns`, 该函数对两侧非有限值
+    /// 一律记 0。因此这里真正锁定的是"退化输入下 cscv 稳定返回", 而非"NaN 被隔离"。
+    /// 换成 `partial_cmp().unwrap()` 时, 若未来 `sharpe_of` 的守卫被放宽, 本用例
+    /// 才会真正覆盖到 panic 路径。
+    #[test]
+    fn nan_inputs_do_not_panic_in_cscv() {
+        let t = 64;
+        let s = 4;
+        let mut curves = noise_curves(10, t, 5);
+        curves[3] = vec![f64::NAN; t];
+        curves[7] = vec![f64::INFINITY; t];
+        let r = cscv(&curves, s, 252.0);
+        assert!(r.pbo.is_finite(), "pbo 必须有限: {}", r.pbo);
+        assert!((0.0..=1.0).contains(&r.pbo));
+        assert!(r.degradation.is_finite(), "decay: {}", r.degradation);
+        assert_eq!(r.n_strategies, 10);
     }
 }

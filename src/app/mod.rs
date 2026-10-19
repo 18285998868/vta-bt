@@ -4,22 +4,31 @@ use crate::config;
 use crate::engine;
 use crate::output;
 use crate::strategies::bars_per_year;
-use crate::strategies::build::build_strategies;
+use crate::strategies::build::build_strategies_checked;
 
 #[derive(Debug, Clone)]
+/// 单个参数求值的结果行, 即报告 `result.parquet` 的一行。
 pub struct RunResult {
+    /// 品种。
     pub symbol: String,
+    /// 周期(如 `1d`)。
     pub timeframe: String,
+    /// 策略名。
     pub strategy: String,
+    /// 参数串原文; 四元组行主键 `(symbol, timeframe, strategy, params)` 之一。
     pub params: String,
+    /// 全部回测指标。
     pub metrics: engine::SummaryMetrics,
     /// **原样保留**写入时的数值, 合并时不重算(见 `strategy_params_value` 的文档)。
     /// 0 表示"未记录"(旧缓存文件无此列)。
     pub strategy_params: u64,
     /// 同上, 人类可读的 JSON 编码原样保留。空串表示未记录。
     pub strategy_params_json: String,
+    /// 执行口径: 信号到成交的 bar 间隔。
     pub delay_bars: u32,
+    /// 执行口径: 单边佣金(bp)。
     pub fee_bps: f64,
+    /// 执行口径: 单边逆向滑点(bp)。
     pub slippage_bps: f64,
     /// delay>0 时 fill bar 取收盘(true)还是开盘(false, 默认)。
     pub fill_close: bool,
@@ -64,6 +73,7 @@ pub enum RunStatus {
 }
 
 impl RunStatus {
+    /// 落盘用的文本。
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -91,12 +101,19 @@ impl RunStatus {
 }
 
 #[derive(Debug, Clone)]
+/// `--detail` 模式的落盘产物(逐笔交易 + 两条曲线)。
 pub struct DetailResult {
+    /// 品种。
     pub symbol: String,
+    /// 周期。
     pub timeframe: String,
+    /// 策略名。
     pub strategy: String,
+    /// 参数串原文。
     pub params: String,
+    /// 逐笔已平仓交易。
     pub trades: Vec<engine::Trade>,
+    /// 复利腿逐 bar `(时间戳, 权益)`。
     pub equity_curve: Vec<(f64, f64)>,
     /// fixed 腿逐 bar 权益(与 bar 对齐), 写入 `{...}_fixedcurve.parquet` 供 `--pbo`。
     pub fixed_curve: Vec<f64>,
@@ -137,8 +154,14 @@ fn data_fingerprint(cols: &kline_reader::KlineColumns) -> u64 {
         h = fnv_bytes(h, name.as_bytes());
         h = fnv_bytes(h, &[FNV_COL_SEP]);
     }
-    h = fnv_bytes_i64(h, &cols.time);
-    for col in [&cols.open, &cols.high, &cols.low, &cols.close, &cols.volume] {
+    h = fnv_bytes_i64(h, cols.time());
+    for col in [
+        cols.open(),
+        cols.high(),
+        cols.low(),
+        cols.close(),
+        cols.volume(),
+    ] {
         h = fnv_bytes_f64(h, col);
     }
     h
@@ -187,8 +210,14 @@ fn params_fingerprint(
     h
 }
 
-fn combo_parquet_path(temps_dir: &str, symbol: &str, tf: &str, strategy: &str, fp: u64) -> PathBuf {
-    PathBuf::from(temps_dir).join(format!("{symbol}_{tf}_{strategy}_{fp:016x}.parquet"))
+fn combo_parquet_path(
+    temps_dir: &std::path::Path,
+    symbol: &str,
+    tf: &str,
+    strategy: &str,
+    fp: u64,
+) -> PathBuf {
+    temps_dir.join(format!("{symbol}_{tf}_{strategy}_{fp:016x}.parquet"))
 }
 
 /// 单个组合执行所需的运行期上下文: 由 run() 一次性构建, 全部组合共享。
@@ -197,8 +226,8 @@ struct ComboCtx {
     detail: bool,
     fixed_curves: bool,
     overwrite: bool,
-    temps_dir: String,
-    detail_dir: String,
+    temps_dir: PathBuf,
+    detail_dir: PathBuf,
     /// 数据窗口标识 (start_date/end_date), 纳入缓存指纹以区分不同数据区间。
     window: String,
     exec: crate::engine::ExecConfig,
@@ -252,17 +281,22 @@ impl ComboCtx {
 /// 当时间戳, detail 落盘的 `entry_time`/`exit_time` 变成假时间。
 ///
 /// 因此在进入回测前一次性拒绝, 让问题在**数据加载边界**暴露。
+///
+/// 注意(2026-10): `KlineColumns` 私有化字段后, 不等长已**无法构造** ——
+/// `new()` 返回 `Err`, `From<Vec<Record>>` 六列同步 push。故本函数在当前实现下
+/// 不可达, 属兜底防御; 若日后 `kline-reader` 新增不做校验的构造路径, 它才会生效。
+/// 保留而非删除: 校验成本可忽略, 而失效的正是"静默少算 bar"这类难查问题。
 fn assert_columns_aligned(
     cols: &kline_reader::KlineColumns,
     where_: &str,
 ) -> crate::error::Result<()> {
     let lens = [
-        ("time", cols.time.len()),
-        ("open", cols.open.len()),
-        ("high", cols.high.len()),
-        ("low", cols.low.len()),
-        ("close", cols.close.len()),
-        ("volume", cols.volume.len()),
+        ("time", cols.time().len()),
+        ("open", cols.open().len()),
+        ("high", cols.high().len()),
+        ("low", cols.low().len()),
+        ("close", cols.close().len()),
+        ("volume", cols.volume().len()),
     ];
     let n = lens[4].1;
     if let Some((name, len)) = lens.iter().find(|(_, l)| *l != n) {
@@ -279,7 +313,9 @@ fn assert_columns_aligned(
 /// 2. 该策略的 n 个参数并行执行 信号生成+回测; detail 模式收集 trades/equity_curve
 /// 3. 计算完成即写入 temps/(及 detail/)
 ///
-/// `bpy` 由调用方按当前 timeframe 提供, 不放在 `ctx` 里(多周期扫描时每周期不同)。
+/// `bpy` 与 `data_fp` 由调用方按当前 (symbol, timeframe) 对提供, 不放在 `ctx` 里:
+/// 两者在策略层循环中是循环不变量(同一条 `cols`), 在这里重算等于把一次
+/// O(全部列字节) 的哈希乘以策略数量(见 `data_fingerprint` 的成本说明)。
 /// 返回 (组合文件路径, 是否本次计算; false 表示命中缓存被跳过)。
 fn run_combo(
     strategy: &dyn crate::strategies::Strategy,
@@ -287,6 +323,7 @@ fn run_combo(
     tf: &str,
     cols: &kline_reader::KlineColumns,
     bpy: f64,
+    data_fp: u64,
     ctx: &ComboCtx,
 ) -> crate::error::Result<(PathBuf, bool)> {
     assert_columns_aligned(cols, &format!("{symbol}/{tf}"))?;
@@ -297,20 +334,13 @@ fn run_combo(
         symbol,
         tf,
         strategy.name(),
-        params_fingerprint(
-            strategy,
-            n,
-            ctx.balance,
-            &ctx.window,
-            data_fingerprint(cols),
-            &ctx.exec,
-        ),
+        params_fingerprint(strategy, n, ctx.balance, &ctx.window, data_fp, &ctx.exec),
     );
 
     // L4: 指纹相同**不保证**文件完整 —— 文件可能被截断/写坏/被旧版本写入。
     // 少行的话下游合并会得到"缺一半参数"的结果而毫无提示, 故行数也必须对得上。
     if !ctx.overwrite && combo_path.exists() {
-        match output::read_parquet(combo_path.to_str().expect("non-UTF-8 path")) {
+        match output::read_parquet(&combo_path) {
             Ok(results) if results.len() == n => {
                 tracing::debug!(
                     "[{}]: 已存在, 跳过 ({} 条结果)",
@@ -335,7 +365,7 @@ fn run_combo(
     use rayon::prelude::*;
 
     if ctx.detail {
-        let (bh_pnl, bh_ret) = crate::engine::buy_hold_pnl(&cols.close, ctx.balance);
+        let (bh_pnl, bh_ret) = crate::engine::buy_hold_pnl(cols.close(), ctx.balance);
         // detail 预检与自适应分块: 曲线(trades+equity+fixed)常驻内存曾导致整机 swap。
         // 单 param 约 T×200B; 峰值钳在 DETAIL_MEM_BUDGET, 超量分批, 单批都装不下则拒绝。
         const DETAIL_MEM_BUDGET: u64 = 4 * 1024 * 1024 * 1024;
@@ -371,12 +401,12 @@ fn run_combo(
         for start in (0..n).step_by(chunk.max(1)) {
             let end = (start + chunk).min(n);
             let batch = strategy.generate_signals_batch(
-                &cols.open,
-                &cols.high,
-                &cols.low,
-                &cols.close,
-                &cols.volume,
-                &cols.time,
+                cols.open(),
+                cols.high(),
+                cols.low(),
+                cols.close(),
+                cols.volume(),
+                cols.time(),
                 start..end,
             )?;
             assert_eq!(batch.len(), end - start, "batch 信号数必须与参数区间对齐");
@@ -386,9 +416,9 @@ fn run_combo(
                 .map(|(k, signals)| {
                     let i = start + k;
                     let sim = crate::engine::simulate_detailed(
-                        &cols.time,
-                        &cols.close,
-                        &cols.open,
+                        cols.time(),
+                        cols.close(),
+                        cols.open(),
                         &signals,
                         ctx.balance,
                         bpy,
@@ -433,7 +463,7 @@ fn run_combo(
 
         output::write_single_parquet(&run_rows, &combo_path, ctx.balance)?;
     } else {
-        let (bh_pnl, bh_ret) = crate::engine::buy_hold_pnl(&cols.close, ctx.balance);
+        let (bh_pnl, bh_ret) = crate::engine::buy_hold_pnl(cols.close(), ctx.balance);
         // 非 detail 也按信号内存分块: 全量 batch 常驻曾 OOM (35k×2.6M)。
         // 单 param 约 T×size_of::<Signal>()B; 峰值钳在 BATCH_MEM_BUDGET, 超量分批。
         const BATCH_MEM_BUDGET: u64 = 4 * 1024 * 1024 * 1024;
@@ -453,12 +483,12 @@ fn run_combo(
         for start in (0..n).step_by(chunk.max(1)) {
             let end = (start + chunk).min(n);
             let batch = strategy.generate_signals_batch(
-                &cols.open,
-                &cols.high,
-                &cols.low,
-                &cols.close,
-                &cols.volume,
-                &cols.time,
+                cols.open(),
+                cols.high(),
+                cols.low(),
+                cols.close(),
+                cols.volume(),
+                cols.time(),
                 start..end,
             )?;
             assert_eq!(batch.len(), end - start, "batch 信号数必须与参数区间对齐");
@@ -468,30 +498,28 @@ fn run_combo(
                 .map(|(k, signals)| {
                     let i = start + k;
                     let metrics = crate::engine::simulate(
-                        &cols.close,
-                        &cols.open,
+                        cols.close(),
+                        cols.open(),
                         &signals,
                         ctx.balance,
                         bpy,
                         &ctx.exec,
                     );
-                    Ok(RunResult {
-                        symbol: symbol.to_string(),
-                        timeframe: tf.to_string(),
-                        strategy: strategy.name().to_string(),
-                        params: strategy.param_str(i),
+                    // `param_str` 会为每次调用分配一个 `String`。本分支需要它三次
+                    // (params 列 + 两列派生编码), 故只算一次再复用。
+                    let params = strategy.param_str(i);
+                    let status = RunStatus::classify(&signals, metrics.num_trades);
+                    Ok(ctx.run_row(
+                        symbol,
+                        tf,
+                        strategy,
+                        &params,
                         metrics,
-                        strategy_params: output::strategy_params_value(&strategy.param_str(i)),
-                        strategy_params_json: output::params_to_json(&strategy.param_str(i)),
-                        delay_bars: ctx.exec.delay() as u32,
-                        fee_bps: ctx.exec.fee_rate * 10_000.0,
-                        slippage_bps: ctx.exec.slip_rate * 10_000.0,
-                        fill_close: ctx.exec.fill_close,
-                        buy_hold_pnl: bh_pnl,
-                        buy_hold_return: bh_ret,
-                        bars_used: cols.len() as u32,
-                        status: RunStatus::classify(&signals, metrics.num_trades),
-                    })
+                        cols.len(),
+                        status,
+                        bh_pnl,
+                        bh_ret,
+                    ))
                 })
                 .collect::<crate::error::Result<Vec<_>>>()?;
             run_rows.append(&mut rows);
@@ -513,6 +541,7 @@ fn run_combo(
 /// 6.        run_combo(...) → 单个组合处理, 内部:
 /// 7.          a. 跳过判断: 非 overwrite 且组合缓存文件(含参数指纹)可读 → 跳过(仍并入合并)
 /// 8.          b. 参数并行: 按信号内存预算分批, 批内并行 生成信号 + simulate(/detailed)
+///8c.   data_fp = data_fingerprint(cols)   // 策略层循环**外**算一次, 供全部策略复用
 /// 9.          c. detail 模式收集 trades/equity_curve
 /// 10.         d. 写出: write_single_parquet(temps/) [+ write_detail_parquet(detail/)]
 /// 11. merge_parquet_files(combo_files) → result.parquet  // 只合并本次运行组合(新算+跳过)
@@ -523,7 +552,10 @@ fn run_combo(
 pub fn run(config_path: &str) -> crate::error::Result<()> {
     let config = config::load_config(config_path)?;
     config.validate()?;
-    let strategies = build_strategies(&config.strategy);
+    // 必须走 `build_strategies_checked`: 它在构建后对展开网格做 `param_str` 唯一性
+    // 自检, 碰撞即报错。直接用 `build_strategies` 会静默产出 parquet
+    // `strategy_params` 列碰撞的组合(见 build.rs 的文档)。
+    let strategies = build_strategies_checked(&config.strategy)?;
     let detail = config.output.as_ref().is_some_and(|o| o.detail);
     let fixed_curves = config.output.as_ref().is_some_and(|o| o.fixed_curves);
     let overwrite = config.output.as_ref().is_some_and(|o| o.overwrite);
@@ -538,13 +570,13 @@ pub fn run(config_path: &str) -> crate::error::Result<()> {
     let timeframes = config.data.timeframes();
     let pairs_total = symbols.len() * timeframes.len();
 
-    let out_dir = config
+    let out_dir: PathBuf = config
         .output
         .as_ref()
-        .and_then(|o| o.dir.as_deref())
-        .unwrap_or("reports");
-    let temps_dir = format!("{out_dir}/temps");
-    let detail_dir = format!("{out_dir}/detail");
+        .and_then(|o| o.dir.clone())
+        .unwrap_or_else(|| PathBuf::from("reports"));
+    let temps_dir = out_dir.join("temps");
+    let detail_dir = out_dir.join("detail");
 
     let mut combo_files: Vec<PathBuf> = Vec::new();
     let mut skipped = 0u64;
@@ -607,9 +639,12 @@ pub fn run(config_path: &str) -> crate::error::Result<()> {
             tracing::info!("数据: {} bars", cols.len());
 
             let bpy = bars_per_year(tf);
+            // 策略层循环外算一次: 同一份 `cols` 会被全部策略复用, 在 `run_combo`
+            // 内部重算等于把一次全列哈希乘以策略数(100+ 策略 ⇒ 100 倍浪费)。
+            let data_fp = data_fingerprint(&cols);
             for strategy in &strategies {
                 let (combo_path, computed) =
-                    run_combo(strategy.as_ref(), symbol, tf, &cols, bpy, &ctx)?;
+                    run_combo(strategy.as_ref(), symbol, tf, &cols, bpy, data_fp, &ctx)?;
                 if computed {
                     ran += 1;
                 } else {
@@ -627,7 +662,7 @@ pub fn run(config_path: &str) -> crate::error::Result<()> {
         )));
     }
 
-    let out_path = format!("{out_dir}/result.parquet");
+    let out_path = out_dir.join("result.parquet");
     let stats = output::merge_parquet_files(&combo_files, &out_path, balance)?;
     tracing::info!(
         "\n  完成: 运行 {ran} 组, 跳过 {skipped} 组, 合并 {} 条结果 (来自 {}/{} 个文件)",
@@ -645,9 +680,9 @@ pub fn run(config_path: &str) -> crate::error::Result<()> {
     if load_failed > 0 {
         tracing::info!("跳过 {load_failed} 组数据缺失的 (品种 × 周期)");
     }
-    tracing::info!("合并 Parquet 已保存: {out_path}");
+    tracing::info!("合并 Parquet 已保存: {}", out_path.display());
     if detail {
-        tracing::info!("详细数据 Parquet 已保存至: {detail_dir}/");
+        tracing::info!("详细数据 Parquet 已保存至: {}", detail_dir.display());
     }
 
     Ok(())
@@ -657,15 +692,35 @@ pub fn run(config_path: &str) -> crate::error::Result<()> {
 mod tests {
     use super::*;
 
+    /// 构造等长测试列。`KlineColumns` 字段已私有化, 只能经 `new` 构造,
+    /// 且无法原地改写 —— 需要"内容不同但等长"的列时必须重建。
+    #[allow(clippy::too_many_arguments)]
+    fn cols_raw(
+        time: Vec<i64>,
+        open: Vec<f64>,
+        high: Vec<f64>,
+        low: Vec<f64>,
+        close: Vec<f64>,
+        volume: Vec<f64>,
+    ) -> kline_reader::KlineColumns {
+        kline_reader::KlineColumns::new(time, open, high, low, close, volume)
+            .expect("测试列必须等长")
+    }
+
+    /// `n` 根标准 OHLCV 列 (close 逐根 +0.5, 供 `close_of` 覆盖)。
+    fn cols_with_close(n: usize, close_of: impl Fn(usize) -> f64) -> kline_reader::KlineColumns {
+        cols_raw(
+            (0..n as i64).map(|i| 1_700_000_000 + i * 3600).collect(),
+            (0..n).map(|i| 100.0 + i as f64).collect(),
+            (0..n).map(|i| 101.0 + i as f64).collect(),
+            (0..n).map(|i| 99.0 + i as f64).collect(),
+            (0..n).map(close_of).collect(),
+            (0..n).map(|i| 10.0 + i as f64).collect(),
+        )
+    }
+
     fn cols(n: usize) -> kline_reader::KlineColumns {
-        kline_reader::KlineColumns {
-            time: (0..n as i64).map(|i| 1_700_000_000 + i * 3600).collect(),
-            open: (0..n).map(|i| 100.0 + i as f64).collect(),
-            high: (0..n).map(|i| 101.0 + i as f64).collect(),
-            low: (0..n).map(|i| 99.0 + i as f64).collect(),
-            close: (0..n).map(|i| 100.5 + i as f64).collect(),
-            volume: (0..n).map(|i| 10.0 + i as f64).collect(),
-        }
+        cols_with_close(n, |i| 100.5 + i as f64)
     }
 
     /// L3: 缓存指纹必须覆盖**数据内容**。
@@ -683,23 +738,23 @@ mod tests {
             "相同数据必须同指纹(否则缓存永不命中)"
         );
 
-        // 追加 bar(数据被补齐)
-        let mut longer = a.clone();
-        longer.time.push(1_700_000_000 + 50 * 3600);
-        longer.open.push(150.0);
-        longer.high.push(151.0);
-        longer.low.push(149.0);
-        longer.close.push(150.5);
-        longer.volume.push(60.0);
+        // 追加 bar(数据被补齐)。`cols` 的取值公式逐根连续, 故 cols(51) 恰等于
+        // 在 cols(50) 末尾 push 一根 (i=50: open=150 / high=151 / low=149 / close=150.5)。
+        let longer = cols(51);
         assert_ne!(
             data_fingerprint(&a),
             data_fingerprint(&longer),
             "追加 bar 必须改变指纹(否则补数据后仍命中旧缓存)"
         );
 
-        // 同一长度但**价格被改写**(同路径文件原地替换)
-        let mut rewritten = a.clone();
-        rewritten.close[10] += 0.01;
+        // 同一长度但**价格被改写**(同路径文件原地替换): 只把第 10 根 close +0.01
+        let rewritten = cols_with_close(50, |i| {
+            if i == 10 {
+                100.5 + 10.0 + 0.01
+            } else {
+                100.5 + i as f64
+            }
+        });
         assert_ne!(
             data_fingerprint(&a),
             data_fingerprint(&rewritten),
@@ -707,9 +762,10 @@ mod tests {
         );
 
         // 窗口字符串相同但数据不同 → params_fingerprint 必须不同
-        let s = build_strategies(&[config::StrategyConfig::Sma(config::MaGridCfg {
+        let s = build_strategies_checked(&[config::StrategyConfig::Sma(config::MaGridCfg {
             period: config::PeriodParam::Single(20),
         })])
+        .expect("sma 网格合法")
         .pop()
         .expect("sma");
         let exec = crate::engine::ExecConfig::default();
@@ -721,18 +777,23 @@ mod tests {
     /// 列间必须有分隔符: 否则 `[1,2]+[3]` 与 `[1]+[2,3]` 的字节流相同。
     #[test]
     fn data_fingerprint_separates_columns() {
-        let a = kline_reader::KlineColumns {
-            time: vec![1, 2, 3],
-            open: vec![4.0, 5.0, 6.0],
-            high: vec![7.0, 8.0, 9.0],
-            low: vec![10.0, 11.0, 12.0],
-            close: vec![13.0, 14.0, 15.0],
-            volume: vec![16.0, 17.0, 18.0],
-        };
+        let a = cols_raw(
+            vec![1, 2, 3],
+            vec![4.0, 5.0, 6.0],
+            vec![7.0, 8.0, 9.0],
+            vec![10.0, 11.0, 12.0],
+            vec![13.0, 14.0, 15.0],
+            vec![16.0, 17.0, 18.0],
+        );
         // 把 close 的值挪到 open, 长度不变
-        let mut b = a.clone();
-        b.open = a.close.clone();
-        b.close = a.open.clone();
+        let b = cols_raw(
+            vec![1, 2, 3],
+            vec![13.0, 14.0, 15.0],
+            vec![7.0, 8.0, 9.0],
+            vec![10.0, 11.0, 12.0],
+            vec![4.0, 5.0, 6.0],
+            vec![16.0, 17.0, 18.0],
+        );
         assert_ne!(
             data_fingerprint(&a),
             data_fingerprint(&b),
@@ -743,9 +804,10 @@ mod tests {
     /// 执行口径任一变化都必须失效缓存: 前视乐观口径与费率差异会整体改写结果。
     #[test]
     fn fingerprint_covers_exec_params() {
-        let s = build_strategies(&[config::StrategyConfig::Sma(config::MaGridCfg {
+        let s = build_strategies_checked(&[config::StrategyConfig::Sma(config::MaGridCfg {
             period: config::PeriodParam::Single(20),
         })])
+        .expect("sma 网格合法")
         .pop()
         .expect("sma");
         let c = cols(10);
@@ -824,29 +886,20 @@ mod tests {
         let good = dir.join("good.parquet");
         let bad = dir.join("bad.parquet");
         let missing = dir.join("missing.parquet");
-        output::write_parquet(good.to_str().unwrap(), std::slice::from_ref(&rr), 10_000.0).unwrap();
+        output::write_parquet(&good, std::slice::from_ref(&rr), 10_000.0).unwrap();
         std::fs::write(&bad, b"not a parquet file").unwrap();
 
         let out = dir.join("merged.parquet");
 
         // 全部不可读 → 必须报错, 而不是"合并 0 条"式的成功
         assert!(
-            output::merge_parquet_files(
-                &[bad.clone(), missing.clone()],
-                out.to_str().unwrap(),
-                10_000.0
-            )
-            .is_err(),
+            output::merge_parquet_files(&[bad.clone(), missing.clone()], &out, 10_000.0).is_err(),
             "全部失败时必须报错"
         );
 
         // 部分失败 → 报告仍落盘, 但失败必须被**计数**并进入摘要
-        let st = output::merge_parquet_files(
-            &[good.clone(), bad, missing],
-            out.to_str().unwrap(),
-            10_000.0,
-        )
-        .expect("部分失败仍应产出报告");
+        let st = output::merge_parquet_files(&[good.clone(), bad, missing], &out, 10_000.0)
+            .expect("部分失败仍应产出报告");
         assert_eq!(st.total_files, 3);
         assert_eq!(
             st.failed_files, 2,
@@ -857,11 +910,9 @@ mod tests {
 
         // L4: 缓存行数必须等于参数数。截断文件(少 1 行)不能被当成有效缓存。
         let truncated = dir.join("trunc.parquet");
-        output::write_parquet(truncated.to_str().unwrap(), &[], 10_000.0).unwrap();
+        output::write_parquet(&truncated, &[], 10_000.0).unwrap();
         assert_eq!(
-            output::read_parquet(truncated.to_str().unwrap())
-                .unwrap()
-                .len(),
+            output::read_parquet(&truncated).unwrap().len(),
             0,
             "构造 0 行缓存作为反例"
         );
@@ -874,47 +925,158 @@ mod tests {
     /// 指标不报错但 bars_used 与预期不符; `time` 短 → `ts(i)` 退化成用 bar 序号
     /// 当时间戳, detail 落盘的时间字段变成假时间。
     #[test]
-    fn uneven_kline_columns_are_rejected_before_backtest() {
+    fn equal_length_columns_pass_alignment_check() {
         let c = cols(10);
         assert!(assert_columns_aligned(&c, "t").is_ok(), "等长必须通过");
-
-        for mutate in [
-            (0usize, "time"),
-            (1, "open"),
-            (2, "high"),
-            (3, "low"),
-            (4, "close"),
-            (5, "volume"),
-        ] {
-            let (idx, name) = mutate;
-            let mut bad = cols(10);
-            if idx == 0 {
-                bad.time.pop();
-            } else {
-                match idx {
-                    1 => bad.open.pop(),
-                    2 => bad.high.pop(),
-                    3 => bad.low.pop(),
-                    4 => bad.close.pop(),
-                    _ => bad.volume.pop(),
-                };
-            }
-            let e = assert_columns_aligned(&bad, "BTCUSDT/1d").expect_err("列长不一致必须被拒");
-            let m = format!("{e}");
-            assert!(m.contains(name), "错误消息应点名出问题的列 {name}: {m}");
-            assert!(m.contains("BTCUSDT/1d"), "错误消息应带上品种/周期: {m}");
-        }
         // 空数据不算"长度不一致", 交由 is_empty 判断
         let empty = cols(0);
         assert!(assert_columns_aligned(&empty, "t").is_ok());
     }
 
+    /// 列长相等现由 `KlineColumns` 的**构造**保证, 而非本模块事后校验:
+    /// `new()` 直接返回 `Err`, `From<Vec<Record>>` 对每条记录向六列各 push 一个值,
+    /// 两条路径都不可能产出不等长实例。故"列长不一致"必须在构造点被拒, 测试随之
+    /// 移到这里 —— 本函数(`assert_columns_aligned`)退化为不可达的兜底。
+    #[test]
+    fn uneven_columns_are_rejected_at_construction() {
+        let uneven = kline_reader::KlineColumns::new(
+            vec![1, 2, 3],
+            vec![4.0, 5.0, 6.0],
+            vec![7.0, 8.0, 9.0],
+            vec![10.0, 11.0],
+            vec![13.0, 14.0, 15.0],
+            vec![16.0, 17.0, 18.0],
+        );
+        let e = uneven.expect_err("少一根的列必须在构造时被拒");
+        assert!(
+            format!("{e}").contains("equal length"),
+            "错误消息应说明长度约束: {e}"
+        );
+        // 注: `From<Vec<Record>>` 那条路径无法从外部构造 —— `kline_reader::app::Record`
+        // 是私有类型, 外部只能经 `load_columns` 间接触达。
+    }
+
+    /// O9 回归: `run_combo` 的**两条分支**(detail / 非 detail)必须都经
+    /// [`ComboCtx::run_row`] 构造 `RunResult`。
+    ///
+    /// 可触发场景: 非 detail 分支曾内联写一份 16 字段字面量, 而 detail 分支走
+    /// `run_row`。两者字段集合已在一次字段新增中出现过漂移 —— 新列只加进其中一条,
+    /// 报告里 `--detail` 开关会改变指标列的语义, 且不报错。
+    /// 本测试用源码级断言把"两条分支都调用 run_row"钉死。
+    #[test]
+    fn both_combo_branches_construct_run_rows_via_run_row() {
+        let src = include_str!("mod.rs");
+        let body = src
+            .split("fn run_combo(")
+            .nth(1)
+            .expect("源码中应存在 run_combo");
+        // 只看函数体(到下一个顶层 `/// ` 文档注释为止), 避免匹配到后面的测试。
+        let body = body.split("\n/// ").next().expect("run_combo 体应可截取");
+
+        // 唯一构造点是 ComboCtx::run_row: 函数体内不得出现 RunResult 字面量。
+        assert!(
+            !body.contains("RunResult {"),
+            "run_combo 内不得内联构造 RunResult —— 唯一构造点是 ComboCtx::run_row; \
+             内联字面量会让 detail / 非 detail 两条分支的字段集合漂移(O9)"
+        );
+        // 两条分支各调用一次。
+        assert_eq!(
+            body.matches("ctx.run_row(").count(),
+            2,
+            "detail 与非 detail 分支必须各经一次 ctx.run_row"
+        );
+    }
+
+    /// P1 回归: `data_fingerprint` 必须在**策略层循环之外**计算一次。
+    ///
+    /// 可触发场景: 该函数遍历全部 6 列逐字节 FNV(自述~20ms/1M bars)。它原先在
+    /// `run_combo` 内被调用, 而 `run_combo` 按策略逐个调用 ⇒ 同一份行情被哈希
+    /// **N 次**(100+ 策略即 100 倍纯浪费), 且随网格规模线性放大。
+    /// 本测试锁定: `run()` 在策略循环外算 `data_fp` 并以参数传入。
+    #[test]
+    fn data_fingerprint_is_hoisted_out_of_the_strategy_loop() {
+        let src = include_str!("mod.rs");
+        let run_body = src.split("pub fn run(").nth(1).expect("源码中应存在 run()");
+        let run_body = run_body.split("\n#[cfg(test)]").next().expect("run() 体");
+
+        // run() 中恰有一次 data_fingerprint 调用, 且位于策略循环之前。
+        assert_eq!(
+            run_body.matches("data_fingerprint(").count(),
+            1,
+            "run() 中应只算一次 data_fingerprint"
+        );
+        let fp_at = run_body.find("data_fingerprint(").expect("已定位");
+        let loop_at = run_body
+            .find("for strategy in &strategies")
+            .expect("已定位策略循环");
+        assert!(
+            fp_at < loop_at,
+            "data_fingerprint 必须在 `for strategy in &strategies` 之前计算"
+        );
+
+        // run_combo 内部不得再算(否则按策略重复)。
+        let combo = src
+            .split("fn run_combo(")
+            .nth(1)
+            .expect("源码中应存在 run_combo");
+        let combo = combo.split("\n/// ").next().expect("run_combo 体");
+        assert!(
+            !combo.contains("data_fingerprint("),
+            "run_combo 内不得重算 data_fingerprint —— 它由调用方按 (symbol, tf) 对传入"
+        );
+    }
+
+    /// 回归: `build_strategies_checked` 的唯一性自检必须在**生产路径** `run()` 上生效。
+    ///
+    /// 可触发场景: `run()` 曾直接调 `build_strategies`(不做自检), 而
+    /// `build_strategies_checked` 全仓库无调用方 —— 于是 `param_str` 碰撞完全静默,
+    /// parquet 的 `strategy_params` 列排序错乱且无任何提示; README 却宣称该自检
+    /// "每次启动时"运行。此测试锁定 `run()` 必须走 checked 变体。
+    #[test]
+    fn run_uses_the_uniqueness_checked_strategy_builder() {
+        let src = include_str!("mod.rs");
+        let body = src.split("pub fn run(").nth(1).expect("源码中应存在 run()");
+        let body = body.split("\n#[cfg(test)]").next().expect("run() 函数体");
+        assert!(
+            body.contains("build_strategies_checked("),
+            "run() 必须调用 build_strategies_checked, 否则参数网格碰撞检查形同虚设"
+        );
+        assert!(
+            !body.contains("= build_strategies("),
+            "run() 不得调用未做唯一性自检的 build_strategies"
+        );
+    }
+
+    /// 回归: IO 层不得用 `to_str().expect(..)` 把 `Path` 降级成 `&str`。
+    ///
+    /// 可触发场景: 旧签名收 `&str`, 调用方被迫 `path.to_str().expect("non-UTF-8 path")`。
+    /// 输出目录来自配置, 用户一旦填入非 UTF-8 路径, 整轮回测在**第一个组合**就 panic,
+    /// 而不是报错。现签名直接收 `&Path`, 该转换连同 panic 一起消失。
+    #[test]
+    fn parquet_io_apis_take_path_and_never_panic_on_non_utf8() {
+        let src = include_str!("04_write_output/parquet.rs");
+        let io_fns = [
+            "pub fn write_parquet(path: &Path",
+            "pub fn read_parquet(path: &Path",
+            "pub fn read_equity_curves(dir: &Path",
+            "pub fn read_fixed_curves(dir: &Path",
+        ];
+        for sig in io_fns {
+            assert!(src.contains(sig), "IO 函数签名应收 &Path: {sig}");
+        }
+        assert!(
+            !src.contains("non-UTF-8 path"),
+            "生产代码不得用 expect(\"non-UTF-8 path\") 把 Path 降级为 &str"
+        );
+    }
+
     /// O9: `RunResult` 的构造必须**单一来源**, 否则两条分支的字段会漂移。
     #[test]
     fn run_row_is_the_single_construction_point() {
-        let s = build_strategies(&[config::StrategyConfig::Sma(config::MaGridCfg {
+        let s = build_strategies_checked(&[config::StrategyConfig::Sma(config::MaGridCfg {
             period: config::PeriodParam::Single(20),
         })])
+        .expect("sma 网格合法")
         .pop()
         .expect("sma");
         let ctx = ComboCtx {

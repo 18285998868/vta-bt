@@ -8,6 +8,7 @@ use super::config::FialiConfig;
 pub struct FialiStrategy;
 
 impl FialiStrategy {
+    /// 由 [`FialiConfig`] 构造; 参数网格由该配置展开。
     pub fn new(_config: FialiConfig) -> Self {
         Self
     }

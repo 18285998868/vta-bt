@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use arrow::array::*;
@@ -33,7 +33,7 @@ pub fn params_to_json(params: &str) -> String {
     }
     // 新策略 param_str 原样转 JSON 键(键名即含义, 各策略内唯一)。
     for prefix in [
-        "entry=", "n=", "stop=", "k=", "sigma=", "buy=", "reset=", "ma=",
+        "entry=", "left=", "n=", "stop=", "k=", "sigma=", "buy=", "reset=", "ma=",
     ] {
         if clean.strip_prefix(prefix).is_some() {
             let mut parts = Vec::new();
@@ -59,17 +59,71 @@ pub fn params_to_json(params: &str) -> String {
             format!("{{\"period\":{}}}", json_str(period))
         }
     } else {
-        // MA strategies: "ema_3", "sma_10", etc. — extract digits after last '_'
-        let period = clean
-            .chars()
-            .rev()
-            .take_while(char::is_ascii_digit)
-            .collect::<String>()
-            .chars()
-            .rev()
-            .collect::<String>();
-        format!("{{\"period\":{}}}", json_str(&period))
+        // MA strategies: "ema_3", "sma_10" —— 末尾数字**就是** period。
+        //
+        // 但对 `edma_p5_o0` / `sgma_p10_m2` / `atma_u5_d10` 这类**多参数**形态,
+        // 末尾数字只是最后一个维度, 写成 `{"period":"0"}` 是**错的**: `edma_p5_o0`
+        // 的真实 period 是 5 而不是 0。下游按 period 分组会直接归错类。
+        // 故多参数形态按参数串里原有的键名逐个还原(`edma_p5_o0` → {"p","o"})。
+        match split_underscore_pairs(&clean) {
+            Some(pairs) if pairs.len() > 1 => {
+                let body = pairs
+                    .iter()
+                    .map(|(k, v)| format!("{}:{}", json_str(k), json_str(v)))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!("{{{body}}}")
+            }
+            _ => {
+                let period = split_underscore_pairs(&clean)
+                    .and_then(|p| p.first().map(|(_, v)| v.clone()))
+                    .unwrap_or_else(|| trailing_digits(&clean));
+                format!("{{\"period\":{}}}", json_str(&period))
+            }
+        }
     }
+}
+
+/// 串末尾的连续 ASCII 数字; 没有则空串。
+fn trailing_digits(s: &str) -> String {
+    s.chars()
+        .rev()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect()
+}
+
+/// 把 `<策略名>_<段>_<段>…` 拆成 `(键, 值)` 序列, 跳过开头的策略名段。
+///
+/// - `edma_p5_o0` → `[("p","5"), ("o","0")]`(段 = 键字母 + 数字)
+/// - `macd_8_21_5` → `[("0","8"), ("1","21"), ("2","5")]`(段是纯数字 ⇒ 键退化为位置)
+/// - `sma_10` → `[("period","10")]`(单段, 由调用方按单参数形态处理)
+///
+/// 任一段不含数字即返回 `None`, 交调用方走既有兜底。
+fn split_underscore_pairs(s: &str) -> Option<Vec<(String, String)>> {
+    let mut parts = s.split('_');
+    // 首段是策略名(edma / sgma / sma …), 不携带参数。
+    parts.next()?;
+    let mut out = Vec::new();
+    for seg in parts {
+        let split_at = seg.find(|c: char| c.is_ascii_digit()).unwrap_or(seg.len());
+        let (key, val) = seg.split_at(split_at);
+        if val.is_empty() || !val.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        let key = if key.is_empty() {
+            out.len().to_string()
+        } else {
+            key.to_string()
+        };
+        out.push((key, val.to_string()));
+    }
+    if out.is_empty() {
+        return None;
+    }
+    Some(out)
 }
 
 /// 极简 JSON 字符串字面量: 加引号 + 转义 `"` `\\` 与控制字符。
@@ -102,13 +156,19 @@ fn fnv1a_32(s: &str) -> u32 {
     h
 }
 
+/// 参数串 → 可排序的 `u64` 代理编码(报告的 `strategy_params` 列)。
+///
+/// **同一策略内必须唯一**: 该列是报告里「按参数大小排序 / 取 top-N」的依据。
+/// 编码分两种 —— 已知形态按槽位打包, 未识别形态回退 FNV-32(有损)。
+/// 唯一性由 [`build_strategies_checked`](crate::strategies::build::build_strategies_checked)
+/// 在启动时自检, 碰撞即报错。
 pub fn strategy_params_value(params: &str) -> u64 {
     let clean = params.replace(' ', "");
     // 已知形态白名单前缀。走到最后的分支意味着参数串形态未被识别。
     // 该形态不在白名单里时走 FNV 回退 + warn, 而不是静默编码成"末尾数字"
     // (后者在 `period=abc` 之类输入下会退化成 0, 与真实的 period=0 撞值)。
     let known = [
-        "fast=", "entry=", "n=", "ma=", "stop=", "k=", "sigma=", "buy=", "reset=", "period=",
+        "fast=", "entry=", "left=", "n=", "ma=", "stop=", "k=", "sigma=", "buy=", "reset=", "period=",
     ];
     let _ = &known; // 白名单仅用于可读性提示; 分支本身已逐个覆盖
     // 双均线 "fast=F,slow=S" 编码为 F*1_000_000+S(F/S<1_000_000, 本项目网格内唯一)。
@@ -123,6 +183,19 @@ pub fn strategy_params_value(params: &str) -> u64 {
             .parse()
             .unwrap_or(0);
         return f.saturating_mul(1_000_000).saturating_add(s);
+    }
+    // 摆动点突破 "left=L,right=R" → L*1M+R(与海龟同构, 均为两个 <1M 的整数维度)。
+    if let Some(rest) = clean.strip_prefix("left=") {
+        let mut it = rest.split(',');
+        let l: u64 = it.next().unwrap_or("0").parse().unwrap_or(0);
+        let r: u64 = it
+            .next()
+            .unwrap_or("0")
+            .strip_prefix("right=")
+            .unwrap_or("0")
+            .parse()
+            .unwrap_or(0);
+        return l.saturating_mul(1_000_000).saturating_add(r);
     }
     // 海龟 "entry=E,exit=X" → E*1M+X。
     if let Some(rest) = clean.strip_prefix("entry=") {
@@ -300,18 +373,23 @@ pub fn strategy_params_value(params: &str) -> u64 {
             .parse::<u64>()
             .unwrap_or(0)
     } else {
-        // MA strategies: "ema_3", "sma_10", etc. —— 取末尾数字作 period。
-        let digits: String = clean
-            .chars()
-            .rev()
-            .take_while(char::is_ascii_digit)
-            .collect::<String>()
-            .chars()
-            .rev()
-            .collect();
-        match digits.parse::<u64>() {
-            Ok(v) => v,
-            Err(_) => {
+        // MA strategies: "ema_3", "sma_10" —— 末尾数字**就是**参数身份。
+        //
+        // 但这个"取末尾数字"的兜底只在串形如 `<前缀>_<数字>` 时才成立。形如
+        // `edma_p1_o0` / `sgma_p1_m2` / `atma_u1_d226` / `macd_12_26_9` 的**多参数**
+        // 形态, 末尾数字只编码了**最后一个维度**, 直接取它会让整族塌陷成一个值:
+        //   edma_p1_o0 … edma_p500_o0  → 全部 0
+        //   sgma_p1_m2 … sgma_p500_m2  → 全部 2
+        //   atma_u1_d226 / u26_d226 / u51_d226 / … → 20 组各自塌陷
+        // 报告的 strategy_params 列正是"同策略内按参数大小排序"的依据, 塌陷后
+        // 排序完全失效且无任何提示。
+        //
+        // 因此只在**严格形状**(`<前缀>_<数字>`, 前缀不含下划线)下取末尾数字;
+        // 其余形态一律走 FNV(对整串哈希), 宁可排序代理"无意义"也不静默撞值。
+        let split = single_underscore_form(&clean);
+        match split {
+            Some(v) => v,
+            None => {
                 // 形态未识别: 必须可见。静默返 0 会与"真实 period=0"撞值,
                 // 使报告里两个不同参数在 strategy_params 列上不可区分。
                 tracing::warn!(
@@ -322,6 +400,23 @@ pub fn strategy_params_value(params: &str) -> u64 {
             }
         }
     }
+}
+
+/// `s` 是否形如 `<前缀>_<数字>`(前缀不含下划线), 是则返回该数字。
+///
+/// 覆盖 `sma_10` / `ema_3` / `t3_12` 这类**单参数**形态 —— 它们末尾的数字就是
+/// 参数身份, 可直接作编码。`edma_p1_o0` 含两个下划线、`macd_12_26_9` 含三个,
+/// 末尾数字只是其中一个维度, 故返回 `None` 由调用方走 FNV。
+fn single_underscore_form(s: &str) -> Option<u64> {
+    let (prefix, tail) = s.rsplit_once('_')?;
+    // 前缀里再出现下划线 ⇒ 多参数形态, 末尾数字不代表全部维度。
+    if prefix.contains('_') {
+        return None;
+    }
+    if tail.is_empty() || !tail.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    tail.parse::<u64>().ok()
 }
 
 fn build_parquet(results: &[RunResult], balance: f64) -> RecordBatch {
@@ -552,7 +647,11 @@ fn build_parquet(results: &[RunResult], balance: f64) -> RecordBatch {
     RecordBatch::try_new(Arc::new(schema), cols).expect("Parquet schema/column count mismatch")
 }
 
-pub fn write_parquet(path: &str, results: &[RunResult], balance: f64) -> Result<()> {
+/// 把结果行写成单个 Parquet 文件(父目录自动创建)。
+///
+/// # Errors
+/// IO 失败, 或 Arrow schema 与列数不匹配时返回 [`AppError`]。
+pub fn write_parquet(path: &Path, results: &[RunResult], balance: f64) -> Result<()> {
     use parquet::arrow::ArrowWriter;
     use parquet::file::properties::WriterProperties;
     use std::fs::File;
@@ -560,7 +659,7 @@ pub fn write_parquet(path: &str, results: &[RunResult], balance: f64) -> Result<
     let batch = build_parquet(results, balance);
     let schema = batch.schema();
 
-    if let Some(parent) = std::path::Path::new(path).parent() {
+    if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
 
@@ -572,9 +671,16 @@ pub fn write_parquet(path: &str, results: &[RunResult], balance: f64) -> Result<
     Ok(())
 }
 
+/// 写出 `--detail` 的产物: 逐笔交易 + 复利曲线 + (可选) fixed 曲线。
+///
+/// 每组 (symbol, timeframe, strategy, params) 一个文件组。`write_curves` 为 false
+/// 时跳过 GB 级的 fixed 曲线 I/O(做 PBO 时才需开启)。
+///
+/// # Errors
+/// 目录创建、文件写入或 Arrow 构造失败时返回 [`AppError`]。
 pub fn write_detail_parquet(
     details: &[crate::app::DetailResult],
-    dir: &str,
+    dir: &Path,
     write_curves: bool,
 ) -> Result<()> {
     use parquet::arrow::ArrowWriter;
@@ -582,7 +688,7 @@ pub fn write_detail_parquet(
     use std::collections::HashMap;
     use std::fs::File;
 
-    let path = std::path::Path::new(dir);
+    let path = dir;
     std::fs::create_dir_all(path)?;
 
     let mut groups: HashMap<(String, String, String, String), Vec<&crate::app::DetailResult>> =
@@ -796,11 +902,17 @@ pub fn col_by_name(
 
 /// 权益曲线文件元组。
 #[derive(Debug, Clone)]
+/// 权益曲线文件元组。
 pub struct EquityCurve {
+    /// 品种。
     pub symbol: String,
+    /// 周期。
     pub timeframe: String,
+    /// 策略名。
     pub strategy: String,
+    /// 参数串原文。
     pub params: String,
+
     /// bar 时间戳(毫秒)。
     pub times: Vec<i64>,
     /// 复利腿逐 bar 权益。
@@ -812,14 +924,14 @@ pub struct EquityCurve {
 /// 与 [`read_fixed_curves`] 同构但**列语义不同**: 前者返回 `(time, equity)`,
 /// 后者返回 `(bar_idx, fixed_equity)`。刻意不复用同一个 reader —— 两条曲线的
 /// 索引列类型(Int64 vs UInt64)、含义(时间戳 vs 序号)都不同, 混用会静默误读。
-pub fn read_equity_curves(dir: &str) -> Result<Vec<EquityCurve>> {
+pub fn read_equity_curves(dir: &Path) -> Result<Vec<EquityCurve>> {
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
     use std::fs;
     use std::fs::File;
 
     let mut out = Vec::new();
     let entries = fs::read_dir(dir).map_err(|e| {
-        crate::error::AppError::Msg(format!("读取 equitycurve 目录失败 {dir}: {e}"))
+        crate::error::AppError::Msg(format!("读取 equitycurve 目录失败 {}: {e}", dir.display()))
     })?;
     let mut paths: Vec<_> = entries
         .filter_map(|e| e.ok().map(|e| e.path()))
@@ -870,23 +982,30 @@ pub fn read_equity_curves(dir: &str) -> Result<Vec<EquityCurve>> {
 }
 
 /// fixed 曲线文件元组(供 `--pbo` 按(币,周期,策略)分组)。
+/// fixed 曲线文件元组(供 `--pbo` 按 (币, 周期, 策略) 分组)。
 pub struct FixedCurve {
+    /// 品种。
     pub symbol: String,
+    /// 周期。
     pub timeframe: String,
+    /// 策略名。
     pub strategy: String,
+    /// 参数串原文。
     pub params: String,
+    /// fixed 腿逐 bar 权益。
     pub values: Vec<f64>,
 }
 
 /// 读取目录下全部 `*_fixedcurve.parquet`(一般为 detail/ 目录)。
-pub fn read_fixed_curves(dir: &str) -> Result<Vec<FixedCurve>> {
+pub fn read_fixed_curves(dir: &Path) -> Result<Vec<FixedCurve>> {
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
     use std::fs;
     use std::fs::File;
 
     let mut out = Vec::new();
-    let entries = fs::read_dir(dir)
-        .map_err(|e| crate::error::AppError::Msg(format!("读取 fixedcurve 目录失败 {dir}: {e}")))?;
+    let entries = fs::read_dir(dir).map_err(|e| {
+        crate::error::AppError::Msg(format!("读取 fixedcurve 目录失败 {}: {e}", dir.display()))
+    })?;
     let mut paths: Vec<_> = entries
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| {
@@ -899,7 +1018,11 @@ pub fn read_fixed_curves(dir: &str) -> Result<Vec<FixedCurve>> {
     for path in paths {
         let file = File::open(&path)?;
         let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
-        let meta = builder.schema().metadata().clone();
+        let schema = builder.schema().clone();
+        // 按列名取值列, 而非魔法下标 1: 理由同 `read_equity_curves` —— 下标会在
+        // schema 调整后静默读到类型恰好兼容的另一列(不报错, 数值错位)。
+        let val_idx = col_by_name(&schema, "fixed_equity", &path)?;
+        let meta = schema.metadata().clone();
         let get = |k: &str| -> Result<String> {
             meta.get(k).cloned().ok_or_else(|| {
                 crate::error::AppError::Msg(format!(
@@ -916,7 +1039,7 @@ pub fn read_fixed_curves(dir: &str) -> Result<Vec<FixedCurve>> {
         let mut values = Vec::new();
         for batch in reader {
             let batch = batch?;
-            values.extend(f64_col(&batch, 1));
+            values.extend(f64_col(&batch, val_idx));
         }
         out.push(FixedCurve {
             symbol,
@@ -1098,11 +1221,11 @@ pub const COLUMNS: &[(&str, Unit)] = &[
 #[derive(Debug, Clone)]
 struct ColumnIndex {
     map: std::collections::HashMap<String, usize>,
-    file: String,
+    file: PathBuf,
 }
 
 impl ColumnIndex {
-    fn new(schema: &arrow::datatypes::Schema, file: &str) -> Self {
+    fn new(schema: &arrow::datatypes::Schema, file: &Path) -> Self {
         Self {
             map: schema
                 .fields()
@@ -1110,7 +1233,7 @@ impl ColumnIndex {
                 .enumerate()
                 .map(|(i, f)| (f.name().clone(), i))
                 .collect(),
-            file: file.to_string(),
+            file: file.to_path_buf(),
         }
     }
 
@@ -1120,7 +1243,7 @@ impl ColumnIndex {
             actual.sort_unstable();
             crate::error::AppError::Msg(format!(
                 "{} 缺必需列 {name:?}; 实际列: {actual:?}(旧格式缓存请删 temps/ 后重跑)",
-                self.file
+                self.file.display()
             ))
         })
     }
@@ -1136,7 +1259,7 @@ impl ColumnIndex {
 /// 没有它们。原先用 `batch.num_columns() > 37` 这类**列数**判断, 一旦有人调整列
 /// 顺序就会把"有但不同名"的列误判成"没有"。现在统一走 [`ColumnIndex::opt`]:
 /// 按名字找, 找不到才回退。
-pub fn read_parquet(path: &str) -> Result<Vec<RunResult>> {
+pub fn read_parquet(path: &Path) -> Result<Vec<RunResult>> {
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
     use std::fs::File;
 
@@ -1341,15 +1464,15 @@ fn opt_u8(batch: &RecordBatch, ci: &ColumnIndex, name: &str, n: usize) -> Vec<u8
         .map_or_else(|| vec![0; n], |i| u8_col(batch, i))
 }
 
-pub fn write_single_parquet(
-    results: &[RunResult],
-    path: &std::path::Path,
-    balance: f64,
-) -> Result<()> {
+/// 把结果行写入单个组合缓存文件(父目录自动创建)。
+///
+/// # Errors
+/// IO 失败时返回 [`AppError`]。
+pub fn write_single_parquet(results: &[RunResult], path: &Path, balance: f64) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    write_parquet(path.to_str().expect("non-UTF-8 path"), results, balance)
+    write_parquet(path, results, balance)
 }
 
 /// 合并本次运行产生的组合文件(含跳过的缓存文件), 输出为最终的 result.parquet。
@@ -1357,21 +1480,21 @@ pub fn write_single_parquet(
 ///
 /// 合并若干组合临时文件为单一报告。
 ///
-/// **读失败不再静默**: 原实现只 `eprintln!` 一行然后跳过, 返回值仍是成功,
+/// **读失败不再静默**: 原实现只打一行日志然后跳过, 返回值仍是成功,
 /// 调用方无从得知丢了几个组合 —— 报告里少了参数却显示"完成"。
 /// 现在返回 [`MergeStats`], 失败数进入最终摘要; 全部失败才报错。
 pub fn merge_parquet_files(
     paths: &[PathBuf],
-    output_path: &str,
+    output_path: &Path,
     balance: f64,
 ) -> Result<MergeStats> {
     let mut all: Vec<RunResult> = Vec::new();
     let mut failed = 0u32;
     for path in paths {
-        match read_parquet(path.to_str().expect("non-UTF-8 path")) {
+        match read_parquet(path) {
             Ok(mut results) => all.append(&mut results),
             Err(e) => {
-                eprintln!("  [警告] 读取失败 {}: {e}", path.display());
+                tracing::warn!("  [警告] 读取失败 {}: {e}", path.display());
                 failed += 1;
             }
         }
@@ -1379,7 +1502,8 @@ pub fn merge_parquet_files(
     if all.is_empty() {
         return Err(crate::error::AppError::Msg(format!(
             "合并失败: {} 个组合文件全部无法读取, 未产出 {}",
-            failed, output_path
+            failed,
+            output_path.display()
         )));
     }
     let total = all.len() as u64;
@@ -1394,9 +1518,11 @@ pub fn merge_parquet_files(
 /// [`merge_parquet_files`] 的产出。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MergeStats {
+    /// 成功合并的行数。
     pub merged_rows: u64,
     /// 读失败被跳过的组合文件数。
     pub failed_files: u32,
+    /// 传入的组合文件总数。
     pub total_files: u32,
 }
 
@@ -1418,6 +1544,10 @@ mod tests {
         // 海龟/DT/RBreaker/ATR带/Keltner/BBMR/RSI2/Aberration 编码各策略内唯一。
         assert_eq!(strategy_params_value("entry=20,exit=10"), 20_000_010);
         assert_eq!(strategy_params_value("entry=55,exit=10"), 55_000_010);
+        // 摆动点突破 "left=L,right=R" 与海龟同构: L*1M+R。
+        assert_eq!(strategy_params_value("left=10,right=5"), 10_000_005);
+        assert_eq!(strategy_params_value("left=3,right=10"), 3_000_010);
+        assert_eq!(strategy_params_value("left=20,right=7"), 20_000_007);
         assert_eq!(strategy_params_value("n=5,k=0.2"), 5_000_200);
         assert_eq!(strategy_params_value("n=50,m=2"), 50_002_000);
         assert_eq!(strategy_params_value("stop=0.5"), 50);
@@ -1510,7 +1640,7 @@ mod tests {
         };
         let dir = std::env::temp_dir().join("vta_test_nocurves");
         let _ = std::fs::remove_dir_all(&dir);
-        write_detail_parquet(std::slice::from_ref(&d), dir.to_str().unwrap(), false).unwrap();
+        write_detail_parquet(std::slice::from_ref(&d), &dir, false).unwrap();
         let names: Vec<String> = std::fs::read_dir(&dir)
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
@@ -1519,7 +1649,7 @@ mod tests {
         assert!(!names.iter().any(|f| f.contains("fixedcurve")), "{names:?}");
         let dir2 = std::env::temp_dir().join("vta_test_curves");
         let _ = std::fs::remove_dir_all(&dir2);
-        write_detail_parquet(std::slice::from_ref(&d), dir2.to_str().unwrap(), true).unwrap();
+        write_detail_parquet(std::slice::from_ref(&d), &dir2, true).unwrap();
         let names2: Vec<String> = std::fs::read_dir(&dir2)
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
@@ -1539,6 +1669,7 @@ mod tests {
     fn test_params_json_is_always_valid_json() {
         for p in [
             "entry=20,exit=10",
+            "left=10,right=5",
             "n=5,k=0.2",
             "sigma=2.5",
             "buy=10,sell=90",
@@ -1560,6 +1691,10 @@ mod tests {
         assert_eq!(
             params_to_json("entry=20,exit=10"),
             "{\"entry\":\"20\",\"exit\":\"10\"}"
+        );
+        assert_eq!(
+            params_to_json("left=10,right=5"),
+            "{\"left\":\"10\",\"right\":\"5\"}"
         );
         assert_eq!(params_to_json("n=5,k=0.2"), "{\"n\":\"5\",\"k\":\"0.2\"}");
         assert_eq!(params_to_json("sigma=2.5"), "{\"sigma\":\"2.5\"}");
@@ -1613,7 +1748,7 @@ mod tests {
         };
         // write_curves = false: fixedcurve 跳过, equitycurve 仍必须落盘
         let details = vec![mk("period=10", 0.0), mk("period=20", 500.0)];
-        write_detail_parquet(&details, dir.to_str().unwrap(), false).unwrap();
+        write_detail_parquet(&details, &dir, false).unwrap();
 
         let files: Vec<String> = std::fs::read_dir(&dir)
             .unwrap()
@@ -1635,7 +1770,7 @@ mod tests {
 
         // 内容: time 与 equity 两列, 组内多参数按顺序拼接
         let p = dir.join("BTCUSDT_1d_sma_period-10_equitycurve.parquet");
-        let curves = read_equity_curves(dir.to_str().unwrap()).unwrap();
+        let curves = read_equity_curves(&dir).unwrap();
         let c = curves
             .iter()
             .find(|c| c.params == "period=10")
@@ -1669,7 +1804,7 @@ mod tests {
                 .collect(),
             fixed_curve: vec![500.0, 501.0, 502.0],
         }];
-        write_detail_parquet(&details, dir.to_str().unwrap(), true).unwrap();
+        write_detail_parquet(&details, &dir, true).unwrap();
 
         use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
         for (name, expect) in [
@@ -1727,9 +1862,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("r.parquet");
-        write_parquet(p.to_str().unwrap(), &rows, 10_000.0).unwrap();
+        write_parquet(&p, &rows, 10_000.0).unwrap();
 
-        let back = read_parquet(p.to_str().unwrap()).unwrap();
+        let back = read_parquet(&p).unwrap();
         assert_eq!(back.len(), 3);
         assert_eq!(back[0].bars_used, 300);
         assert_eq!(back[0].status, crate::app::RunStatus::Ok);
@@ -1771,9 +1906,9 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let a = dir.join("a.parquet");
         let out = dir.join("m.parquet");
-        write_parquet(a.to_str().unwrap(), std::slice::from_ref(&r), 10_000.0).unwrap();
-        merge_parquet_files(&[a], out.to_str().unwrap(), 10_000.0).unwrap();
-        let back = read_parquet(out.to_str().unwrap()).unwrap();
+        write_parquet(&a, std::slice::from_ref(&r), 10_000.0).unwrap();
+        merge_parquet_files(&[a], &out, 10_000.0).unwrap();
+        let back = read_parquet(&out).unwrap();
         assert_eq!(
             back[0].strategy_params, 999_999_999_999,
             "strategy_params 被重算了"
@@ -1829,7 +1964,7 @@ mod tests {
             status: crate::app::RunStatus::Ok,
         };
         let full = dir.join("full.parquet");
-        write_parquet(full.to_str().unwrap(), std::slice::from_ref(&r), 10_000.0).unwrap();
+        write_parquet(&full, std::slice::from_ref(&r), 10_000.0).unwrap();
 
         // 2) 原样读回, 再造一个**只缺 sharpe** 的文件
         let src = ParquetRecordBatchReaderBuilder::try_new(std::fs::File::open(&full).unwrap())
@@ -1865,15 +2000,15 @@ mod tests {
         w.close().unwrap();
 
         // 3) 必须点名 sharpe 缺失; 绝不能把 sortino 当 sharpe 读进来
-        let err = read_parquet(cut.to_str().unwrap())
-            .expect_err("缺 sharpe 列必须报错, 不能把 sortino 当 sharpe 读进来");
+        let err =
+            read_parquet(&cut).expect_err("缺 sharpe 列必须报错, 不能把 sortino 当 sharpe 读进来");
         let msg = format!("{err}");
         assert!(msg.contains("缺必需列"), "{msg}");
         assert!(msg.contains("\"sharpe\""), "应点名缺的具体列: {msg}");
         assert!(msg.contains("sortino"), "必须列出实际列名以便定位: {msg}");
 
         // 4) 未删列时一切照常
-        let ok = read_parquet(full.to_str().unwrap()).unwrap();
+        let ok = read_parquet(&full).unwrap();
         assert_eq!(ok[0].metrics.sharpe_ratio, 1.5);
         assert_eq!(ok[0].metrics.sortino_ratio, 2.5);
         let _ = std::fs::remove_dir_all(&dir);
@@ -1890,7 +2025,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("r.parquet");
         write_parquet(
-            p.to_str().unwrap(),
+            &p,
             &[RunResult {
                 symbol: "B".into(),
                 timeframe: "1d".into(),
@@ -1961,7 +2096,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("r.parquet");
-        write_parquet(p.to_str().unwrap(), std::slice::from_ref(&r), 10_000.0).unwrap();
+        write_parquet(&p, std::slice::from_ref(&r), 10_000.0).unwrap();
 
         use arrow::record_batch::RecordBatch;
         use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -1986,7 +2121,7 @@ mod tests {
             "fixed 腿回撤应为 0.10(与复利腿同单位), 实为 {fixed}"
         );
         // 往返: 读回时单位必须还原
-        let back = read_parquet(p.to_str().unwrap()).unwrap();
+        let back = read_parquet(&p).unwrap();
         assert!((back[0].metrics.max_drawdown_pct - 25.0).abs() < 1e-9);
         assert!((back[0].metrics.fixed_max_drawdown_pct - 10.0).abs() < 1e-9);
         let _ = std::fs::remove_dir_all(&dir);
@@ -2024,7 +2159,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("r.parquet");
-        write_parquet(p.to_str().unwrap(), std::slice::from_ref(&r), 10_000.0).unwrap();
+        write_parquet(&p, std::slice::from_ref(&r), 10_000.0).unwrap();
 
         use arrow::record_batch::RecordBatch;
         use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;

@@ -29,7 +29,8 @@
 type = "binance" # 必填，数据源类型："binance" | "dukascopy"
 dir = "/data/nutilustrader/data" # 必填，数据根目录（自动追加数据源子路径）
 symbol = ["BTCUSDT"] # 必填，回测品种列表
-timeframes = ["1d"] # 必填，可选 ["1m","3m","5m","15m","30m","1h","2h","4h","6h","8h","12h","1d"]
+timeframe = ["1d"] # 必填(单数!), 可选 ["1m","3m","5m","15m","30m","1h","2h","4h","6h","8h","12h","1d","1w"]
+# 也可写单值: timeframe = "1d"
 # start_date = "2024-01-01" # 可选，数据起始日期，格式 YYYY-MM-DD
 # end_date = "2024-12-31" # 可选，数据结束日期，格式 YYYY-MM-DD
 
@@ -47,7 +48,7 @@ type = "sma" # 必填
 period = { start = 5, end = 100, step = 5 } # 必填，参数范围；单值可写 period = 20
 ```
 
-## 关键设计约束（改动前必读，13 条）
+## 关键设计约束（改动前必读，15 条）
 
 这些不是风格偏好，而是踩过坑之后定下来的硬约束。违反它们会**静默产出错误结果**。
 
@@ -123,12 +124,40 @@ period = { start = 5, end = 100, step = 5 } # 必填，参数范围；单值可�
 `no_signals` 同时覆盖"窗口 > 数据长度"与"该参数本就无信号"两种成因（引擎层
 不可区分），`bars_used` 提供区分所需信息。
 
-### 6. 参数网格的唯一性在构建期校验
+### 6. 参数网格的唯一性在构建期校验（字符串层 **与** 编码层）
 
-`strategy_params` 整数列由 `strategy_params_value` 手工把参数元组压进 u32，溢出时回退 `fnv1a_32`（**有损**）。
+`strategy_params` 整数列由 `strategy_params_value` 把参数元组压进 `u64`，未知形态回退 `fnv1a_32`（**有损**）。
 行主键实为 `(symbol, timeframe, strategy, params)` 四元组，该列仅作"同策略内按参数大小排序"的代理，碰撞不构成数据损坏，但会让排序错乱。
 
-`build_strategies_checked` 在每次启动时对展开后的完整网格做 `HashSet` 唯一性自检，碰撞即**报错退出**（O(N)，微秒级）。新增策略后若看到该错误，说明 `param_str` 格式写错了。
+`build_strategies_checked` 在每次启动时对展开后的完整网格做**两层** `HashSet` 自检，任一层碰撞即**报错退出**（O(N)，微秒级）：
+
+1. **字符串层**：`param_str(i)` 两两不同 → 捕获"网格展开有误 / `param_str` 未覆盖全部维度"。
+2. **编码层**：`strategy_params_value(param_str(i))` 两两不同 → 捕获真正会**塌陷**的那一层。
+
+> **只查字符串是不够的。** 二者是不同映射：字符串可以两两不同，压缩后的整数却撞在一起，
+> 而报告排序/去重用的正是整数列。
+
+**历史缺陷（已修）**：编码器的兜底分支对**任何**未识别形态一律"取末尾数字"。对
+`edma_p5_o0` / `sgma_p10_m2` / `atma_u5_d10` / `macd_12_26_5` 这类含**多个下划线**的串，
+末尾数字只编码了最后一个维度，于是整族塌陷成一个值：
+
+| 策略 | 塌陷前 | 后果 |
+|---|---|---|
+| `edma` | `edma_p1_o0` … `edma_p500_o0` 全为 `0` | 500 组参数同值，排序完全失效 |
+| `sgma` | `sgma_p1_m2` … `sgma_p500_m2` 全为 `2` | 同上 |
+| `atma` | 20 组各自塌陷 | 同上 |
+
+同一根因也让 `params_to_json` 谎报参数：`edma_p5_o0` 曾被写成 `{"period":"0"}`，
+而它真实的 period 是 **5**（0 是 offset）—— 下游按 period 分组会直接归错类。
+
+**修复后的规则**：
+
+- 编码：仅当串严格形如 `<前缀>_<数字>`（前缀不含下划线，即 `sma_10`）才取末尾数字；
+  其余形态一律 FNV（整串哈希）。`sma_10` / `ema_3` / `t3_12` 的封存口径**逐位不变**。
+- JSON：多参数形态按参数串里原有的键名逐个还原（`edma_p5_o0` → `{"p":"5","o":"0"}`），
+  不再谎称 `period`；单参数形态（`sma_10`）仍是 `{"period":"10"}`。
+
+新增策略后若看到该报错，说明 `param_str` 格式写错了（或该策略的编码分支需要补）。
 
 ### 7. 缓存指纹覆盖数据身份
 
@@ -148,6 +177,9 @@ period = { start = 5, end = 100, step = 5 } # 必填，参数范围；单值可�
 值统一为 JSON **字符串**并转义（`{"ma":"hma","malen":"100"}`）。历史实现对 `ma=`/`variant=` 形态输出裸 token（`{"ma":hma}`），
 **非法 JSON 且与同列内合法的 `{"sigma":2.5}` 并存**，使整列无法被 JSON 工具消费。测试用 `serde_json` 实解析断言。
 
+**键名必须诚实**：多参数形态（`edma_p5_o0`）按串里原有的键名还原为 `{"p":"5","o":"0"}`，
+**不得**把最后一个维度伪装成 `period`（详见第 6 条）。
+
 ### 9. `read_parquet` 按**列名**索引，禁用魔法列号
 
 `ColumnIndex` 把列名映射成下标：必需列缺失即**报错并列出实际列名**，可选列
@@ -159,6 +191,10 @@ period = { start = 5, end = 100, step = 5 } # 必填，参数范围；单值可�
 
 新增输出列仍应**追加到末尾**以兼容旧缓存，但正确性不再依赖这一点。
 
+**曲线读取同理**：`read_equity_curves` 与 `read_fixed_curves` 都用 `col_by_name`
+取 `time`/`equity` 与 `fixed_equity`，**不得**改回下标 `1`（两条曲线列语义不同，
+读错列的类型恰好兼容，不报错）。二者刻意**不复用同一个 reader**。
+
 ### 10. 缓存行数也是有效性的一部分
 
 指纹相同**不保证**文件完整（可能被截断、被旧版本写入）。`run_combo` 要求缓存
@@ -167,9 +203,23 @@ period = { start = 5, end = 100, step = 5 } # 必填，参数范围；单值可�
 ### 11. `RunResult` 只有一个构造点
 
 detail 与非 detail 两条分支共用 `ComboCtx::run_row`。此前两份 16 字段字面量
-各自维护，任何新增字段都可能只改到其中一条。
+各自维护，任何新增字段都可能只改到其中一条 —— 该漂移**已经真实发生过**
+（非 detail 分支曾内联写一份字面量）。
 
-### 12. 引擎不做无谓分配
+回归测试 `both_combo_branches_construct_run_rows_via_run_row` 用源码级断言钉死：
+`run_combo` 函数体内不得出现 `RunResult {` 字面量，且 `ctx.run_row(` 恰出现 2 次。
+
+### 12. 指标与 `--detail` 开关无关（类型级保证）
+
+`simulate` 与 `simulate_detailed` 的指标都只经**同一条**在线累加器
+（`MetricsSource`）计算。这不只是"测出来一致"，而是**类型上不可能不一致**：
+`compute_metrics` 的签名收 `&MetricsSource`，而 `MetricsSource` 里**没有**
+`trades` / 曲线字段 —— 指标在编译期就看不到 `--detail` 的落盘产物。
+
+回归测试 `non_detailed_metrics_match_detailed_bit_for_bit` 锁定逐位一致，
+`test_simulate_does_not_materialize_equity_curve` 锁定非详细路径不物化产物。
+
+### 13. 引擎不做无谓分配
 
 - `CurveAccum`：`simulate()` 只算统计量，**不物化权益曲线**（O(1) 内存而非
   O(T)）。与"物化后单遍遍历"**逐位一致**，由
@@ -180,7 +230,7 @@ detail 与非 detail 两条分支共用 `ComboCtx::run_row`。此前两份 16 �
   锁定。
 - `Side` enum 取代 `i8` 方向：原实现里 `side == 2` 会静默走"卖出"分支。
 
-### 13. K 线六列必须等长
+### 14. K 线六列必须等长
 
 引擎内部用 `close.len().min(open.len())` 截断，列短了只会少算几根 bar 而
 **不报错**；`time` 短了更会让 `ts(i)` 退化成用 bar 序号当时间戳。
@@ -191,9 +241,9 @@ detail 与非 detail 两条分支共用 `ComboCtx::run_row`。此前两份 16 �
 ```
 启动 -> main.rs: cli::parse() 解析 --config/-c（或 --pbo <reports_dir>，二选一）
 v
-加载配置 -> config::load_config：toml 反序列化 → Config(deny_unknown_fields) + validate(资金>0 / symbol / timeframes / strategy 非空)
+加载配置 -> config::load_config：toml 反序列化 → Config(deny_unknown_fields) + validate(资金>0 / symbol / timeframe 非空 / 周期合法 / 各策略参数范围)
 v
-构建策略 -> build_strategies(config.strategy)：MA 变体(build_ma! 宏) + ssf/ssf_st → Vec<Box<dyn Strategy>>
+构建策略 -> build_strategies_checked(config.strategy)：单个穷尽 match 覆盖全部 85 个变体 + 参数网格两层唯一性自检(字符串/编码) -> Vec<Box<dyn Strategy>>
 v
 for symbol in symbols                        # 品种层（串行）
 v
@@ -203,7 +253,8 @@ v
 v
     for strategy in strategies               # 策略层（串行）
 v
-      run_combo(strategy, symbol, tf, cols, ctx):
+      data_fp = data_fingerprint(cols)   # 策略层循环**外**算一次, 供全部策略复用
+      run_combo(strategy, symbol, tf, cols, bpy, data_fp, ctx):
         a. 非 overwrite 且缓存 temps/{sym}_{tf}_{strat}_{参数指纹}.parquet 可读 → 跳过（仍并入合并）
         b. (0..n).into_par_iter 参数并行：一波 生成信号 → simulate(/detailed)
         c. detail 模式收集 trades/equity_curve → detail_rows
@@ -218,19 +269,19 @@ v
 # 支撑件(cli/error/pbo)在 crate 根，不编号；执行代码在 app/，按"调用执行流程"编号：main → cli → 01_config → 02_load_data → 03_run_backtest → 04_write_output → 05_strategies
 main.rs             # 入口：cli::parse() → -c 走 config::load_config → app::run(&config)，--pbo 走 pbo::run_pbo_report；二选一，错误 anyhow 收敛
 lib.rs              # 只做导出：#[path] 挂载 app/NN_* 保持逻辑模块名(config/data/engine/output/strategies) + pub mod app/cli/error
-cli.rs              # 支撑件：命令行解析 clap 4(derive)，解析 --config/-c（必填，无默认值）+ --pbo，返回 Cli
+cli.rs              # 支撑件：命令行解析 clap 4(derive)，解析 --config/-c + --pbo（二选一），返回 Cli
 config.rs           # 支撑件：Config{data/backtest/output/strategy} + DataSection::for_pair(symbol, tf) 降为 kline-reader 单值 DataConfig
 error.rs            # 支撑件：AppError(thiserror, Io/Config/Data/Parquet/Arrow/Msg)，#[from] 实现 ? 自动转换
 pbo.rs              # 支撑件：CSCV 实算（Bailey et al. 2016），T×N 常驻内存
 app/                            # 执行代码
-app/mod.rs          # 整体编排 run(config)：validate → build_strategies → 预算 out_dir → for symbol × timeframe(串行) → load_columns → for strategy: run_combo → merge → result.parquet
+app/mod.rs          # 整体编排 run(config)：validate → build_strategies_checked → 预算 out_dir → for symbol × timeframe(串行) → load_columns → data_fp(循环外算一次) → for strategy: run_combo → merge → result.parquet
 app/03_run_backtest.rs # 回测引擎（lib 映射为 engine）：持仓/成交/绩效 — SummaryMetrics(30 项)/Trade/SimResult；simulate / simulate_detailed 供 run_combo 单参数调用
 app/04_write_output/    # 输出（lib 映射为 output）
 app/04_write_output/parquet.rs # Parquet 读写：write_single_parquet(单组合 temps/) / write_detail_parquet(detail/) / read_parquet(缓存校验) / merge_parquet_files(显式合并)
 app/05_strategies/      # 策略叶（lib 映射为 strategies，~80+ 子目录）
 app/05_strategies/mod.rs # Strategy trait(name/param_count/param_str/generate_signals_full/generate_signals_batch, Send+Sync) + shared 再导出
 app/05_strategies/shared.rs # Signal 枚举(Hold/Buy/Sell/Close) / price_cross_signal 穿越信号 / bars_per_year
-app/05_strategies/build.rs # 策略构建工厂(build_ma! 宏 MA 变体 → Box<dyn Strategy>) + ssf/ssf_st
+app/05_strategies/build.rs # 策略构建工厂：build_one 单个穷尽 match(全部 85 变体, 无 `_` 兜底) → Box<dyn Strategy>；build_strategies_checked 再加两层唯一性自检
 app/05_strategies/{alma,dema,...,zlema}/… # 单 MA 策略（周期遍历 → vector_ta 指标 → 价格穿越）
 ```
 
@@ -251,7 +302,7 @@ app/05_strategies/{alma,dema,...,zlema}/… # 单 MA 策略（周期遍历 → v
 2. TOML 可解析，失败带路径。
 3. `deny_unknown_fields`：未知键拒收（`PeriodParam` untagged 除外）。
 
-语义层：`initial_balance > 0`；`symbol` / `timeframes` / `strategy` 非空。
+语义层：`initial_balance > 0`；`symbol` / `timeframe` / `strategy` 非空。
 
 #### 数据加载（dir 为根）
 
@@ -298,6 +349,63 @@ cargo run --release -- --pbo /path/to/reports_XXX
     全部失败则报错
   - 文件：`src/app/04_write_output/parquet.rs`
 
+## 2026-10 代码审查修复（rust-skills）
+
+本轮审查发现并修复的问题，按严重度排列。完整回归测试见 `tests/`。
+
+### 正确性（静默出错类）
+
+- **`build_strategies_checked` 从未被调用**（Critical）
+  - `run()` 曾直接调 `build_strategies`，而带唯一性自检的 checked 变体全仓库零调用方
+    —— 本文档此前声称的"每次启动时自检"**与代码事实不符**。
+  - 现在 `run()` 走 checked 变体；回归测试 `run_uses_the_uniqueness_checked_strategy_builder`。
+- **`RunResult` 出现第二个构造点**（Critical）
+  - 非 detail 分支内联写了一份 16 字段字面量，正是本文件第 11 条声称已消除的漂移。
+  - 两分支统一走 `ComboCtx::run_row`，顺带把同一行里重复 3 次的 `param_str(i)`（每次分配
+    一个 `String`）收敛为 1 次。
+- **`strategy_params` 编码塌陷**（Critical，见第 6 条）
+  - `edma` 500 组 / `sgma` 500 组 / `atma` 400 组参数全部编码为同一个值，排序代理完全失效。
+  - 同一根因让 `params_to_json` 把 `edma_p5_o0` 写成 `{"period":"0"}`（真实 period 是 5）。
+- **`partial_cmp().unwrap()` 遇 NaN panic**（High）
+  - PBO 的两处 argmax 改用 `f64::total_cmp`（全序、无 `None`）。
+- **`read_fixed_curves` 用魔法列号 `1`**（Medium）
+  - 与本项目自己写下的"按列名索引"规则冲突；改为 `col_by_name("fixed_equity")`。
+
+### 鲁棒性
+
+- **生产路径的 `expect("non-UTF-8 path")`**（Medium，5 处）
+  - 输出目录来自配置，用户填非 UTF-8 路径时整轮回测在第一个组合 panic。
+  - `write_parquet` / `read_parquet` / `read_*_curves` / `merge_parquet_files` 全部改收 `&Path`；
+    `OutputConfig.dir`、`ComboCtx.temps_dir/detail_dir`、`ColumnIndex.file` 改 `PathBuf`。
+- **`eprintln!` 绕过 tracing**（Medium）
+  - 合并阶段的读失败告警改 `tracing::warn!`，可被 `RUST_LOG` 过滤。
+
+### 性能
+
+- **`data_fingerprint` 按策略重算**（High）
+  - 该函数遍历六列逐字节 FNV（自述 ~20ms/1M bars），原先在 `run_combo` 内调用，
+    而 `run_combo` 按策略逐个调用 ⇒ **同一份行情被哈希 N 次**（100+ 策略即 100 倍浪费）。
+  - 现在在 `run()` 的策略循环**外**算一次，以参数传入。零语义变化。
+  - 回归测试 `data_fingerprint_is_hoisted_out_of_the_strategy_loop`。
+
+### 架构
+
+- **策略构建的三处手工同步清单收敛为一处**（P5）
+  - 原先 `build_ma!` 宏的 `unreachable!()` 兜底、`matches!` 排除表、60 条 `filter_map` 分支
+    需同步维护；漏改前两处**不报错**，只会让该策略被静默跳过（配置写了却不跑）。
+  - 现在是单个**穷尽 match**（`build_one`，无 `_` 兜底），编译器强制覆盖全部 85 个变体。
+    回归测试 `every_variant_has_a_construction_arm` / `real_configs_build_all_their_strategies`。
+- **指标与落盘产物在类型上分离**（Q2）
+  - `ScanOut` 拆成 `MetricsSource`（指标唯一来源）与 `DetailArtifacts`（仅 detailed）。
+    `compute_metrics` 签名收 `&MetricsSource`，故指标**编译期就看不到** `--detail` 的产物。
+- **补充 `[profile.bench]`**（P4）
+  - 刻意**不设** `panic = "abort"`：测试用 `catch_unwind` 断言 `from_bps(0)` 会 panic。
+
+### 文档与 CI
+
+- 公开 API 的 `missing_docs` 从 **648 → 0**，`lib.rs` 补 crate 级文档与三条核心不变量。
+- CI 新增 `cargo doc -D missing_docs` 门禁，防止新增项无文档混入。
+
 ## 完整架构
 
 ```
@@ -325,7 +433,9 @@ timeframe = "1d" # 必填，单值或数组
 # end_date = "2024-12-31" # 可选
 [backtest]
 initial_balance = 10000.0 # 必填，>0
-# delay_bars / fill_bar_price(open|close) / fee_bps / slippage_bps 均可选，默认 0/open/0/0
+# delay_bars: 可选, 默认 1, **必须 >= 1**(0 是前视乐观口径, 反序列化期即被拒)
+# fill_bar_price: 可选, "open"(默认) | "close"
+# fee_bps / slippage_bps: 可选, 默认 0, 非负且有限
 [output]
 dir = "/data/nutilustrader/outputs/reports/vta" # 可选，默认 "reports"
 detail = false # 可选，默认 false

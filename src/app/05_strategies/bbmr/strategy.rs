@@ -16,6 +16,7 @@ pub struct BBMRStrategy {
 }
 
 impl BBMRStrategy {
+    /// 由 [`BBMRConfig`] 构造; 参数网格由该配置展开。
     pub fn new(config: BBMRConfig) -> Self {
         Self {
             sigmas: config.values(),

@@ -12,6 +12,7 @@ pub struct KeltnerStrategy {
 }
 
 impl KeltnerStrategy {
+    /// 由 [`KeltnerConfig`] 构造; 参数网格由该配置展开。
     pub fn new(config: KeltnerConfig) -> Self {
         Self {
             mults: config.values(),

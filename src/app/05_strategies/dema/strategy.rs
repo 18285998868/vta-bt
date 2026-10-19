@@ -2,11 +2,13 @@ use crate::config::RangeParam;
 use crate::strategies::{Signal, Strategy, price_cross_signal};
 use vector_ta::indicators::moving_averages::dema::{DemaInput, DemaParams, dema};
 
+/// **DEMA** 策略实现。
 pub struct DemaStrategy {
     periods: Vec<usize>,
 }
 
 impl DemaStrategy {
+    /// 由均线周期范围 `range` 构造(单 MA 策略的公共入口)。
     pub fn new(range: RangeParam<usize>) -> Self {
         let periods: Vec<usize> = (range.start..=range.end).step_by(range.step).collect();
         Self { periods }

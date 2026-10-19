@@ -15,6 +15,7 @@ pub struct BbrkHmaV4SlStrategy {
 }
 
 impl BbrkHmaV4SlStrategy {
+    /// 由 [`BbrkHmaV4SlConfig`] 构造; 参数网格由该配置展开。
     pub fn new(config: BbrkHmaV4SlConfig) -> Self {
         Self {
             quads: config.quads(),

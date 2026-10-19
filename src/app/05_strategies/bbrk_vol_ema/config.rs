@@ -10,12 +10,16 @@ use crate::config::F64Param;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BbrkVolEmaConfig {
+    /// 布林带标准差倍数(通道宽度)。
     pub sigma: F64Param,
+    /// 量能均值窗口(bar 数)。
     pub voln: F64Param,
+    /// 量能放大倍数阈值。
     pub volmult: F64Param,
 }
 
 impl BbrkVolEmaConfig {
+    /// 展开后的参数组合(按策略的笛卡尔积顺序)。
     pub fn pairs(&self) -> Vec<(f64, usize, f64)> {
         let mut out = Vec::new();
         for &s in &self.sigma.values() {
@@ -32,6 +36,10 @@ impl BbrkVolEmaConfig {
 impl BbrkVolEmaConfig {
     /// 语义校验(原集中在 `config.rs::Config::validate` 的 match 中,
     /// 已下沉到本类型; 分派处只保留一行调用)。
+    /// 语义校验: 范围、步长与网格非空性。
+    ///
+    /// # Errors
+    /// 任一参数越界或展开为空时返回 [`AppError`](crate::error::AppError)。
     pub fn validate(&self) -> crate::error::Result<()> {
         self.sigma.validate_range("bbrk_vol_ema.sigma", 0.1, 10.0)?;
         self.voln.validate_range("bbrk_vol_ema.voln", 2.0, 500.0)?;

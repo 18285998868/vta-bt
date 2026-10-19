@@ -13,6 +13,7 @@ pub struct BbrkHmaV2Strategy {
 }
 
 impl BbrkHmaV2Strategy {
+    /// 由 [`BbrkHmaV2Config`] 构造; 参数网格由该配置展开。
     pub fn new(config: BbrkHmaV2Config) -> Self {
         Self {
             triples: config.triples(),

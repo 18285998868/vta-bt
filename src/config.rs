@@ -60,16 +60,22 @@ use crate::strategies::ssf::SsfConfig;
 use crate::strategies::ssf_cd::SsfCdConfig;
 use crate::strategies::ssf_st::SsfStConfig;
 use crate::strategies::ssf_st_cd::SsfStCdConfig;
+use crate::strategies::swing_fractal::SwingFractalConfig;
 use crate::strategies::turtle::TurtleConfig;
 use crate::strategies::vwap::VwapConfig;
 use crate::strategies::vwap_trend::VwapTrendConfig;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+/// 回测配置根。`deny_unknown_fields`: 拼错的键会直接报错而非被忽略。
 pub struct Config {
+    /// 数据源与扫描范围(品种 × 周期)。
     pub data: DataSection,
+    /// 执行口径(资金 / 延迟 / 费率)。
     pub backtest: BacktestConfig,
+    /// 输出选项; 缺省写到 `./reports/`。
     pub output: Option<OutputConfig>,
+    /// 要跑的策略列表(至少一个)。
     pub strategy: Vec<StrategyConfig>,
 }
 
@@ -77,12 +83,17 @@ pub struct Config {
 /// TOML 里 `symbol = "BTCUSDT"` 与 `symbol = ["BTCUSDT", "ETHUSDT"]` 都合法。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
+/// 单值或列表, 统一归一化。TOML 里 `symbol = "BTC"` 与 `symbol = ["BTC","ETH"]` 都合法。
 pub enum OneOrMany {
+    /// 单值形态。
     One(String),
+    /// 列表形态。
     Many(Vec<String>),
 }
 
 impl OneOrMany {
+    /// 归一化为 `Vec<String>`。
+    #[must_use]
     pub fn items(&self) -> Vec<String> {
         match self {
             OneOrMany::One(s) => vec![s.clone()],
@@ -96,22 +107,32 @@ impl OneOrMany {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DataSection {
+    /// 数据源类型(如 `binance`)。
     #[serde(rename = "type")]
     pub source_type: kline_reader::DataSource,
+    /// 数据根目录。
     pub dir: PathBuf,
+    /// 品种, 单值或列表。
     pub symbol: OneOrMany,
+    /// 周期, 单值或列表。
     pub timeframe: OneOrMany,
     #[serde(default)]
+    /// 起始日期(含), 缺省不限。
     pub start_date: Option<String>,
     #[serde(default)]
+    /// 结束日期(含), 缺省不限。
     pub end_date: Option<String>,
 }
 
 impl DataSection {
+    /// 品种列表。
+    #[must_use]
     pub fn symbols(&self) -> Vec<String> {
         self.symbol.items()
     }
 
+    /// 周期列表。
+    #[must_use]
     pub fn timeframes(&self) -> Vec<String> {
         self.timeframe.items()
     }
@@ -137,6 +158,10 @@ impl DataSection {
 impl Config {
     /// 语义校验。**执行口径(资金/费率/延迟)已由 [`BacktestConfig`] 的字段类型
     /// 在反序列化时保证**, 此处不再重复检查; 只剩数据维度与策略专属约束。
+    /// 语义校验。
+    ///
+    /// # Errors
+    /// 品种/周期为空、周期未知或策略参数非法时返回 [`AppError`]。
     pub fn validate(&self) -> crate::error::Result<()> {
         if self.data.symbols().iter().any(|s| s.is_empty()) || self.data.symbols().is_empty() {
             return Err(AppError::Msg("data.symbol 不能为空".into()));
@@ -245,6 +270,7 @@ impl Config {
                 StrategyConfig::Ssf(c) => c.validate()?,
                 StrategyConfig::SsfStCd(c) => c.validate()?,
                 StrategyConfig::SsfSt(c) => c.validate()?,
+                StrategyConfig::SwingFractal(c) => c.validate()?,
                 StrategyConfig::Turtle(c) => c.validate()?,
                 StrategyConfig::Vwap(c) => c.validate()?,
                 StrategyConfig::VwapTrend(c) => c.validate()?,
@@ -263,6 +289,7 @@ impl Config {
 pub struct InitialBalance(f64);
 
 impl InitialBalance {
+    /// 取回原始数值。
     #[must_use]
     pub fn get(self) -> f64 {
         self.0
@@ -287,9 +314,11 @@ impl TryFrom<f64> for InitialBalance {
 macro_rules! nonneg_bps {
     ($name:ident, $label:literal) => {
         #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+        /// 单边费率(bp): **非负且有限**。见模块内 `nonneg_bps` 宏的说明。
         pub struct $name(f64);
 
         impl $name {
+            /// 取回原始数值。
             #[must_use]
             pub fn get(self) -> f64 {
                 self.0
@@ -343,11 +372,14 @@ struct RawBacktestConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(try_from = "RawBacktestConfig")]
 pub struct BacktestConfig {
+    /// 初始资金: 严格正且有限。
     pub initial_balance: InitialBalance,
     /// 信号到成交的 bar 间隔, 恒 ≥ 1。`delay_bars = 0`(信号当根成交, 前视乐观)
     /// 已在引擎层彻底移除, 此处类型级拒绝。
     pub delay_bars: NonZeroUsize,
+    /// 单边佣金(bp): 非负且有限。
     pub fee_bps: FeeBps,
+    /// 单边逆向滑点(bp): 非负且有限。
     pub slippage_bps: SlippageBps,
     /// fill bar 的成交价: "open"(默认, 次根开盘)或 "close"(次根收盘)。
     pub fill_bar_price: FillBarPrice,
@@ -387,7 +419,8 @@ pub enum FillBarPrice {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OutputConfig {
-    pub dir: Option<String>,
+    /// 输出根目录; 缺省 `./reports/`。
+    pub dir: Option<PathBuf>,
     /// 是否导出逐笔交易和权益曲线详细数据
     #[serde(default)]
     pub detail: bool,
@@ -404,11 +437,16 @@ pub struct OutputConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MaGridCfg {
+    /// 均线周期, 单值或范围。
     pub period: PeriodParam,
 }
 
 impl MaGridCfg {
     /// 语义校验: 单周期策略只需校验 `period` 的区间与方向。
+    /// 语义校验: 只需校验 `period` 的区间与方向。
+    ///
+    /// # Errors
+    /// `period` 越界时返回 [`AppError`]。
     pub fn validate(&self) -> crate::error::Result<()> {
         self.period.validate()
     }
@@ -442,107 +480,204 @@ impl SsfConfig {
     }
 }
 
+/// 策略配置。以 TOML 的 `type` 标签做**内部标签**判别。
+///
+/// `deny_unknown_fields`: 拼错的键直接报错, 不会被静默忽略。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum StrategyConfig {
+    /// **Sma** 均线策略: 配置 [`MaGridCfg`]。
     Sma(MaGridCfg),
+    /// **SmaCd** 均线策略: 配置 [`MaGridCfg`]。
     SmaCd(MaGridCfg),
+    /// **Ema** 均线策略: 配置 [`MaGridCfg`]。
     Ema(MaGridCfg),
+    /// **Hma** 均线策略: 配置 [`MaGridCfg`]。
     Hma(MaGridCfg),
+    /// **Zlma** 均线策略: 配置 [`MaGridCfg`]。
     Zlma(MaGridCfg),
+    /// **Alma** 均线策略: 配置 [`MaGridCfg`]。
     Alma(MaGridCfg),
+    /// **Dema** 均线策略: 配置 [`MaGridCfg`]。
     Dema(MaGridCfg),
+    /// **Fwma** 均线策略: 配置 [`MaGridCfg`]。
     Fwma(MaGridCfg),
+    /// **Jma** 均线策略: 配置 [`MaGridCfg`]。
     Jma(MaGridCfg),
+    /// **Kama** 均线策略: 配置 [`MaGridCfg`]。
     Kama(MaGridCfg),
+    /// **LinReg** 均线策略: 配置 [`MaGridCfg`]。
     LinReg(MaGridCfg),
+    /// **Pwma** 均线策略: 配置 [`MaGridCfg`]。
     Pwma(MaGridCfg),
+    /// **SinWma** 均线策略: 配置 [`MaGridCfg`]。
     SinWma(MaGridCfg),
+    /// **Swma** 均线策略: 配置 [`MaGridCfg`]。
     Swma(MaGridCfg),
+    /// **Tema** 均线策略: 配置 [`MaGridCfg`]。
     Tema(MaGridCfg),
+    /// **Tilson** 均线策略: 配置 [`MaGridCfg`]。
     Tilson(MaGridCfg),
+    /// **Trima** 均线策略: 配置 [`MaGridCfg`]。
     Trima(MaGridCfg),
+    /// **Wilders** 均线策略: 配置 [`MaGridCfg`]。
     Wilders(MaGridCfg),
+    /// **Wma** 均线策略: 配置 [`MaGridCfg`]。
     Wma(MaGridCfg),
+    /// **Smma** 均线策略: 配置 [`MaGridCfg`]。
     Smma(MaGridCfg),
+    /// **Ehma** 均线策略: 配置 [`MaGridCfg`]。
     Ehma(MaGridCfg),
+    /// **Frama** 均线策略: 配置 [`MaGridCfg`]。
     Frama(MaGridCfg),
+    /// **Dma** 均线策略: 配置 [`MaGridCfg`]。
     Dma(MaGridCfg),
+    /// **Vwma** 均线策略: 配置 [`MaGridCfg`]。
     Vwma(MaGridCfg),
+    /// **Vidya** 均线策略: 配置 [`MaGridCfg`]。
     Vidya(MaGridCfg),
+    /// **McGinley** 均线策略: 配置 [`MaGridCfg`]。
     McGinley(MaGridCfg),
+    /// **Ssf** 策略: 配置 [`SsfConfig`]。
     Ssf(SsfConfig),
+    /// **SsfCd** 策略: 配置 [`SsfCdConfig`]。
     SsfCd(SsfCdConfig),
+    /// **SsfSt** 策略: 配置 [`SsfStConfig`]。
     SsfSt(SsfStConfig),
+    /// **SsfStCd** 策略: 配置 [`SsfStCdConfig`]。
     SsfStCd(SsfStCdConfig),
+    /// **SwingFractal** 策略: 配置 [`SwingFractalConfig`]。 TOML 中写作 `type = "swing_fractal"`。
+    SwingFractal(SwingFractalConfig),
+    /// **Turtle** 策略: 配置 [`TurtleConfig`]。
     Turtle(TurtleConfig),
+    /// **DualThrust** 策略: 配置 [`DualThrustConfig`]。
     DualThrust(DualThrustConfig),
+    /// **RBreaker** 策略: 配置 [`RBreakerConfig`]。
     RBreaker(RBreakerConfig),
+    /// **Fiali** 策略: 配置 [`FialiConfig`]。
     Fiali(FialiConfig),
+    /// **Aberration** 策略: 配置 [`AberrationConfig`]。
     Aberration(AberrationConfig),
+    /// **Edma** 策略: 配置 [`EdmaConfig`]。
     Edma(EdmaConfig),
+    /// **Atma** 策略: 配置 [`AtmaConfig`]。
     Atma(AtmaConfig),
+    /// **Sgma** 策略: 配置 [`SgmaConfig`]。
     Sgma(SgmaConfig),
     #[serde(rename = "atr_band")]
+    /// **ATRBand** 策略: 配置 [`ATRBandConfig`]。 TOML 中写作 `type = "atr_band"`。
     ATRBand(ATRBandConfig),
+    /// **Keltner** 策略: 配置 [`KeltnerConfig`]。
     Keltner(KeltnerConfig),
     #[serde(rename = "bbmr")]
+    /// **BBMR** 策略: 配置 [`BBMRConfig`]。 TOML 中写作 `type = "bbmr"`。
     BBMR(BBMRConfig),
+    /// **Bbrk** 策略: 配置 [`BBRKConfig`]。
     Bbrk(BBRKConfig),
+    /// **BbrkAdx** 策略: 配置 [`BbrkAdxConfig`]。
     BbrkAdx(BbrkAdxConfig),
+    /// **BbrkTrail** 策略: 配置 [`BbrkTrailConfig`]。
     BbrkTrail(BbrkTrailConfig),
+    /// **BbrkDon** 策略: 配置 [`BbrkDonConfig`]。
     BbrkDon(BbrkDonConfig),
+    /// **BbrkEma** 策略: 配置 [`BbrkEmaConfig`]。
     BbrkEma(BbrkEmaConfig),
+    /// **BbrkPctb** 策略: 配置 [`BbrkPctbConfig`]。
     BbrkPctb(BbrkPctbConfig),
+    /// **BbrkAtr** 策略: 配置 [`BbrkAtrConfig`]。
     BbrkAtr(BbrkAtrConfig),
+    /// **BbrkStr** 策略: 配置 [`BbrkStrConfig`]。
     BbrkStr(BbrkStrConfig),
+    /// **BbrkSma** 策略: 配置 [`BbrkSmaConfig`]。
     BbrkSma(BbrkSmaConfig),
+    /// **BbrkHma** 策略: 配置 [`BbrkHmaConfig`]。
     BbrkHma(BbrkHmaConfig),
+    /// **BbrkMax** 策略: 配置 [`BbrkMaxConfig`]。
     BbrkMax(BbrkMaxConfig),
+    /// **BbrkBb** 策略: 配置 [`BbrkBbConfig`]。
     BbrkBb(BbrkBbConfig),
+    /// **BbrkVolEma** 策略: 配置 [`BbrkVolEmaConfig`]。
     BbrkVolEma(BbrkVolEmaConfig),
+    /// **BbrkAtrEma** 策略: 配置 [`BbrkAtrEmaConfig`]。
     BbrkAtrEma(BbrkAtrEmaConfig),
+    /// **BbrkSmaEma** 策略: 配置 [`BbrkSmaEmaConfig`]。
     BbrkSmaEma(BbrkSmaEmaConfig),
+    /// **BbrkHmaEma** 策略: 配置 [`BbrkHmaEmaConfig`]。
     BbrkHmaEma(BbrkHmaEmaConfig),
+    /// **BbrkHmaV1** 策略: 配置 [`BbrkHmaV1Config`]。
     BbrkHmaV1(BbrkHmaV1Config),
+    /// **BbrkHmaV2** 策略: 配置 [`BbrkHmaV2Config`]。
     BbrkHmaV2(BbrkHmaV2Config),
+    /// **BbrkHmaV3** 策略: 配置 [`BbrkHmaV3Config`]。
     BbrkHmaV3(BbrkHmaV3Config),
+    /// **BbrkHmaV4** 策略: 配置 [`BbrkHmaV4Config`]。
     BbrkHmaV4(BbrkHmaV4Config),
+    /// **BbrkHmaV5** 策略: 配置 [`BbrkHmaV5Config`]。
     BbrkHmaV5(BbrkHmaV5Config),
+    /// **BbrkHmaV1Sl** 策略: 配置 [`BbrkHmaV1SlConfig`]。
     BbrkHmaV1Sl(BbrkHmaV1SlConfig),
+    /// **BbrkHmaV2Sl** 策略: 配置 [`BbrkHmaV2SlConfig`]。
     BbrkHmaV2Sl(BbrkHmaV2SlConfig),
+    /// **BbrkHmaV3Sl** 策略: 配置 [`BbrkHmaV3SlConfig`]。
     BbrkHmaV3Sl(BbrkHmaV3SlConfig),
+    /// **BbrkHmaV4Sl** 策略: 配置 [`BbrkHmaV4SlConfig`]。
     BbrkHmaV4Sl(BbrkHmaV4SlConfig),
+    /// **BbrkHmaV5Sl** 策略: 配置 [`BbrkHmaV5SlConfig`]。
     BbrkHmaV5Sl(BbrkHmaV5SlConfig),
+    /// **BbrkZlemaEma** 策略: 配置 [`BbrkZlemaEmaConfig`]。
     BbrkZlemaEma(BbrkZlemaEmaConfig),
+    /// **BbrkRex** 策略: 配置 [`BbrkRexConfig`]。
     BbrkRex(BbrkRexConfig),
+    /// **BbrkVol** 策略: 配置 [`BbrkVolConfig`]。
     BbrkVol(BbrkVolConfig),
+    /// **BbrkTtm** 策略: 配置 [`BbrkTtmConfig`]。
     BbrkTtm(BbrkTtmConfig),
+    /// **BbrkTtmFire** 策略: 配置 [`BbrkTtmFireConfig`]。
     BbrkTtmFire(BbrkTtmFireConfig),
+    /// **BbrkCross** 策略: 配置 [`BbrkCrossConfig`]。
     BbrkCross(BbrkCrossConfig),
+    /// **BbrkKdj** 策略: 配置 [`BbrkKdjConfig`]。
     BbrkKdj(BbrkKdjConfig),
+    /// **BbrkM2** 策略: 配置 [`BbrkM2Config`]。
     BbrkM2(BbrkM2Config),
+    /// **BbrkM3** 策略: 配置 [`BbrkM3Config`]。
     BbrkM3(BbrkM3Config),
+    /// **BbrkOrth** 策略: 配置 [`BbrkOrthConfig`]。
     BbrkOrth(BbrkOrthConfig),
+    /// **VwapTrend** 策略: 配置 [`VwapTrendConfig`]。
     VwapTrend(VwapTrendConfig),
     #[serde(rename = "rsi2")]
+    /// **RSI2** 策略: 配置 [`RSI2Config`]。 TOML 中写作 `type = "rsi2"`。
     RSI2(RSI2Config),
+    /// **Vwap** 策略: 配置 [`VwapConfig`]。
     Vwap(VwapConfig),
+    /// **MabbLong** 策略: 配置 [`MabbLongConfig`]。
     MabbLong(MabbLongConfig),
+    /// **MabbShort** 策略: 配置 [`MabbShortConfig`]。
     MabbShort(MabbShortConfig),
+    /// **MaAtr** 策略: 配置 [`MaAtrConfig`]。
     MaAtr(MaAtrConfig),
+    /// **Macd** 策略: 配置 [`MacdConfig`]。
     Macd(MacdConfig),
+    /// **EmaCross** 策略: 配置 [`EmaCrossConfig`]。
     EmaCross(EmaCrossConfig),
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
+/// 整型参数: 单值或范围。
 pub enum PeriodParam {
+    /// 单值形态。
     Single(usize),
+    /// 范围形态 `{ start, end, step }`。
     Range(RangeParam<usize>),
 }
 
 impl PeriodParam {
+    /// 语义校验: 范围必须 `start >= 1`、`start <= end`、`step > 0`。
+    ///
+    /// # Errors
+    /// 任一约束不满足时返回 [`AppError`]。
     pub fn validate(&self) -> crate::error::Result<()> {
         match self {
             PeriodParam::Single(v) => {
@@ -574,6 +709,8 @@ impl PeriodParam {
         Ok(())
     }
 
+    /// 消耗自身归一化为范围(单值 → `start == end`)。
+    #[must_use]
     pub fn into_range(self) -> RangeParam<usize> {
         match self {
             PeriodParam::Single(v) => RangeParam {
@@ -585,6 +722,8 @@ impl PeriodParam {
         }
     }
 
+    /// 借用自身归一化为范围(单值 → `start == end`)。
+    #[must_use]
     pub fn to_range(&self) -> RangeParam<usize> {
         match self {
             PeriodParam::Single(v) => RangeParam {
@@ -599,9 +738,13 @@ impl PeriodParam {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+/// 范围参数 `{ start, end, step }`。
 pub struct RangeParam<T: PartialOrd + Copy> {
+    /// 起点(含)。
     pub start: T,
+    /// 终点(含)。
     pub end: T,
+    /// 步长(恒 > 0, 由 `validate` 保证)。
     pub step: T,
 }
 
@@ -609,12 +752,17 @@ pub struct RangeParam<T: PartialOrd + Copy> {
 /// TOML 里 `k = 0.2` 与 `k = { start = 0.1, end = 0.6, step = 0.1 }` 都合法。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
+/// 浮点参数: 单值或范围(与 [`PeriodParam`] 对应)。
 pub enum F64Param {
+    /// 单值形态。
     Single(f64),
+    /// 范围形态 `{ start, end, step }`。
     Range(RangeParam<f64>),
 }
 
 impl F64Param {
+    /// 展开为具体取值列表。
+    #[must_use]
     pub fn values(&self) -> Vec<f64> {
         match self {
             F64Param::Single(v) => vec![*v],
@@ -622,6 +770,10 @@ impl F64Param {
         }
     }
 
+    /// 校验展开结果落在 `[lo, hi]` 且非空。
+    ///
+    /// # Errors
+    /// 展开为空或存在越界/非有限值时返回 [`AppError`]。
     pub fn validate_range(&self, name: &str, lo: f64, hi: f64) -> crate::error::Result<()> {
         let vs = self.values();
         if vs.is_empty() {
@@ -634,6 +786,11 @@ impl F64Param {
     }
 }
 
+/// 读取并解析 TOML 配置文件。
+///
+/// # Errors
+/// 文件读取失败, 或 TOML 结构非法(含未知字段 / 类型不匹配)时返回
+/// [`AppError`]。
 pub fn load_config(path: &str) -> crate::error::Result<Config> {
     let content = std::fs::read_to_string(path)?;
     let config: Config = toml::from_str(&content)?;
@@ -857,10 +1014,10 @@ mod tests {
         ))
         .unwrap();
         let pair = cfg.data.for_pair("ETHUSDT", "1h").unwrap();
-        assert_eq!(pair.symbol.as_str(), "ETHUSDT");
-        assert_eq!(pair.timeframe.as_str(), "1h");
-        assert_eq!(pair.dir, cfg.data.dir);
-        assert_eq!(pair.source_type, cfg.data.source_type);
+        assert_eq!(pair.symbol().as_str(), "ETHUSDT");
+        assert_eq!(pair.timeframe().as_str(), "1h");
+        assert_eq!(pair.dir(), cfg.data.dir);
+        assert_eq!(pair.source_type(), cfg.data.source_type);
     }
 
     #[test]
@@ -869,11 +1026,11 @@ mod tests {
         let cfg: Config = toml::from_str(toml).unwrap();
         let pair = cfg.data.for_pair("BTCUSDT", "15m").unwrap();
         assert_eq!(
-            pair.start_date.map(|d| d.to_string()).as_deref(),
+            pair.start_date().map(|d| d.to_string()).as_deref(),
             Some("2024-01-01")
         );
         assert_eq!(
-            pair.end_date.map(|d| d.to_string()).as_deref(),
+            pair.end_date().map(|d| d.to_string()).as_deref(),
             Some("2024-06-30")
         );
     }

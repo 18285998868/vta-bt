@@ -12,6 +12,7 @@ pub struct EmaCrossStrategy {
 }
 
 impl EmaCrossStrategy {
+    /// 由 [`EmaCrossConfig`] 构造; 参数网格由该配置展开。
     pub fn new(config: EmaCrossConfig) -> Self {
         Self {
             pairs: config.pairs(),

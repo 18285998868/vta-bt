@@ -29,7 +29,8 @@ fn median_f(mut v: Vec<f64>) -> f64 {
     if v.is_empty() {
         return f64::NAN;
     }
-    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    // `total_cmp` 而非 `partial_cmp().unwrap()`: 序列里混入 NaN 时后者会 panic。
+    v.sort_by(f64::total_cmp);
     let n = v.len();
     if n % 2 == 1 {
         v[n / 2]
@@ -49,7 +50,7 @@ fn run_pair(symbol: &str, timeframe: &str, len: usize, sigma: f64, adxlen: usize
     )
     .expect("valid DataConfig");
     let cols = load_columns(&cfg).expect("load_columns");
-    let n = cols.close.len();
+    let n = cols.len();
 
     let base = BbrkBbStrategy::new(BbrkBbConfig {
         ma: vec!["sma".to_string()],
@@ -64,23 +65,23 @@ fn run_pair(symbol: &str, timeframe: &str, len: usize, sigma: f64, adxlen: usize
     });
     let bs = base
         .generate_signals_full(
-            &cols.open,
-            &cols.high,
-            &cols.low,
-            &cols.close,
-            &cols.volume,
-            &cols.time,
+            cols.open(),
+            cols.high(),
+            cols.low(),
+            cols.close(),
+            cols.volume(),
+            cols.time(),
             0,
         )
         .expect("base signals");
     let fs = filt
         .generate_signals_full(
-            &cols.open,
-            &cols.high,
-            &cols.low,
-            &cols.close,
-            &cols.volume,
-            &cols.time,
+            cols.open(),
+            cols.high(),
+            cols.low(),
+            cols.close(),
+            cols.volume(),
+            cols.time(),
             0,
         )
         .expect("filt signals");
@@ -137,9 +138,9 @@ fn run_pair(symbol: &str, timeframe: &str, len: usize, sigma: f64, adxlen: usize
                     lagpos.push((j - bi) as i64);
                 }
                 let slip = if *d == 1 {
-                    (cols.close[j] - cols.close[*bi]) / cols.close[*bi] * 10000.0
+                    (cols.close()[j] - cols.close()[*bi]) / cols.close()[*bi] * 10000.0
                 } else {
-                    (cols.close[*bi] - cols.close[j]) / cols.close[*bi] * 10000.0
+                    (cols.close()[*bi] - cols.close()[j]) / cols.close()[*bi] * 10000.0
                 };
                 slips.push(slip);
                 if j != *bi {
@@ -149,9 +150,11 @@ fn run_pair(symbol: &str, timeframe: &str, len: usize, sigma: f64, adxlen: usize
             None => {
                 missed += 1;
                 let r = if *d == 1 {
-                    (cols.close[(*be).min(n - 1)] - cols.close[*bi]) / cols.close[*bi] * 10000.0
+                    (cols.close()[(*be).min(n - 1)] - cols.close()[*bi]) / cols.close()[*bi]
+                        * 10000.0
                 } else {
-                    (cols.close[*bi] - cols.close[(*be).min(n - 1)]) / cols.close[*bi] * 10000.0
+                    (cols.close()[*bi] - cols.close()[(*be).min(n - 1)]) / cols.close()[*bi]
+                        * 10000.0
                 };
                 missed_rets.push(r);
                 if r > 0.0 {

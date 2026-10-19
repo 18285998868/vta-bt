@@ -12,6 +12,7 @@ pub struct ATRBandStrategy {
 }
 
 impl ATRBandStrategy {
+    /// 由 [`ATRBandConfig`] 构造; 参数网格由该配置展开。
     pub fn new(config: ATRBandConfig) -> Self {
         Self {
             mults: config.values(),

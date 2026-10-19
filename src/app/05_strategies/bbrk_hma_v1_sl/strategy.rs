@@ -16,6 +16,7 @@ pub struct BbrkHmaV1SlStrategy {
 }
 
 impl BbrkHmaV1SlStrategy {
+    /// 由 [`BbrkHmaV1SlConfig`] 构造; 参数网格由该配置展开。
     pub fn new(config: BbrkHmaV1SlConfig) -> Self {
         Self {
             quints: config.quints(),

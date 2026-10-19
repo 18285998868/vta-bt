@@ -8,13 +8,18 @@ use crate::config::F64Param;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BbrkHmaV4SlConfig {
+    /// 布林带标准差倍数(通道宽度)。
     pub sigma: F64Param,
+    /// 布林带周期。
     pub bblen: F64Param,
+    /// 止损 ATR 倍数。
     pub stopk: F64Param,
+    /// ATR 周期。
     pub atrlen: F64Param,
 }
 
 impl BbrkHmaV4SlConfig {
+    /// 展开后的四元参数组合。
     pub fn quads(&self) -> Vec<(f64, usize, f64, usize)> {
         let mut out = Vec::new();
         for &s in &self.sigma.values() {
@@ -33,6 +38,10 @@ impl BbrkHmaV4SlConfig {
 impl BbrkHmaV4SlConfig {
     /// 语义校验(原集中在 `config.rs::Config::validate` 的 match 中,
     /// 已下沉到本类型; 分派处只保留一行调用)。
+    /// 语义校验: 范围、步长与网格非空性。
+    ///
+    /// # Errors
+    /// 任一参数越界或展开为空时返回 [`AppError`](crate::error::AppError)。
     pub fn validate(&self) -> crate::error::Result<()> {
         self.sigma
             .validate_range("bbrk_hma_v4_sl.sigma", 0.1, 10.0)?;

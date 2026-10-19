@@ -16,6 +16,7 @@ pub struct BbrkAdxStrategy {
 }
 
 impl BbrkAdxStrategy {
+    /// 由 [`BbrkAdxConfig`] 构造; 参数网格由该配置展开。
     pub fn new(config: BbrkAdxConfig) -> Self {
         Self {
             pairs: config.pairs(),

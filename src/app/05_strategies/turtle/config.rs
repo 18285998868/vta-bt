@@ -8,11 +8,14 @@ use crate::config::PeriodParam;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TurtleConfig {
+    /// 入场通道周期。
     pub entry: PeriodParam,
+    /// 离场通道周期。
     pub exit: PeriodParam,
 }
 
 impl TurtleConfig {
+    /// 展开后的参数组合(按策略的笛卡尔积顺序)。
     pub fn pairs(&self) -> Vec<(usize, usize)> {
         let e = self.entry.to_range();
         let x = self.exit.to_range();
@@ -31,6 +34,10 @@ impl TurtleConfig {
 impl TurtleConfig {
     /// 语义校验(原集中在 `config.rs::Config::validate` 的 match 中,
     /// 已下沉到本类型; 分派处只保留一行调用)。
+    /// 语义校验: 范围、步长与网格非空性。
+    ///
+    /// # Errors
+    /// 任一参数越界或展开为空时返回 [`AppError`](crate::error::AppError)。
     pub fn validate(&self) -> crate::error::Result<()> {
         for pp in [&self.entry, &self.exit] {
             pp.validate()?;

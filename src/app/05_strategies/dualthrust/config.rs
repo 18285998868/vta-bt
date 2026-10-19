@@ -9,11 +9,14 @@ use crate::config::{F64Param, PeriodParam};
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DualThrustConfig {
+    /// 计数/统计窗口(bar 数)。
     pub n: PeriodParam,
+    /// 阈值倍数(常为 ATR / 通道倍数)。
     pub k: F64Param,
 }
 
 impl DualThrustConfig {
+    /// 展开后的参数组合(按策略的笛卡尔积顺序)。
     pub fn pairs(&self) -> Vec<(usize, f64)> {
         let r = self.n.to_range();
         let ns: Vec<usize> = (r.start..=r.end).step_by(r.step).collect();
@@ -31,6 +34,10 @@ impl DualThrustConfig {
 impl DualThrustConfig {
     /// 语义校验(原集中在 `config.rs::Config::validate` 的 match 中,
     /// 已下沉到本类型; 分派处只保留一行调用)。
+    /// 语义校验: 范围、步长与网格非空性。
+    ///
+    /// # Errors
+    /// 任一参数越界或展开为空时返回 [`AppError`](crate::error::AppError)。
     pub fn validate(&self) -> crate::error::Result<()> {
         self.n.validate()?;
         self.k.validate_range("dualthrust.k", 0.01, 5.0)?;

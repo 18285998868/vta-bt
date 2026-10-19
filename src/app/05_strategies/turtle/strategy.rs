@@ -10,6 +10,7 @@ pub struct TurtleStrategy {
 }
 
 impl TurtleStrategy {
+    /// 由 [`TurtleConfig`] 构造; 参数网格由该配置展开。
     pub fn new(config: TurtleConfig) -> Self {
         Self {
             pairs: config.pairs(),

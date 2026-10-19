@@ -16,6 +16,7 @@ pub struct BbrkCrossStrategy {
 }
 
 impl BbrkCrossStrategy {
+    /// 由 [`BbrkCrossConfig`] 构造; 参数网格由该配置展开。
     pub fn new(config: BbrkCrossConfig) -> Self {
         Self {
             sigmas: config.values(),

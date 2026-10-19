@@ -16,6 +16,7 @@ pub struct BBRKStrategy {
 }
 
 impl BBRKStrategy {
+    /// 由 [`BBRKConfig`] 构造; 参数网格由该配置展开。
     pub fn new(config: BBRKConfig) -> Self {
         Self {
             sigmas: config.values(),

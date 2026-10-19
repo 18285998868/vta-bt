@@ -23,6 +23,7 @@ pub struct BbrkOrthStrategy {
 }
 
 impl BbrkOrthStrategy {
+    /// 由 [`BbrkOrthConfig`] 构造; 参数网格由该配置展开。
     pub fn new(config: BbrkOrthConfig) -> Self {
         Self {
             sigmas: config.values(),

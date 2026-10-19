@@ -11,10 +11,12 @@ use crate::config::F64Param;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VwapTrendConfig {
+    /// 重置模式(0=连续24h, 1=UTC 日切)。
     pub reset: F64Param,
 }
 
 impl VwapTrendConfig {
+    /// 展开后的模式列表。
     pub fn modes(&self) -> Vec<u8> {
         self.reset
             .values()
@@ -27,6 +29,10 @@ impl VwapTrendConfig {
 impl VwapTrendConfig {
     /// 语义校验(原集中在 `config.rs::Config::validate` 的 match 中,
     /// 已下沉到本类型; 分派处只保留一行调用)。
+    /// 语义校验: 范围、步长与网格非空性。
+    ///
+    /// # Errors
+    /// 任一参数越界或展开为空时返回 [`AppError`](crate::error::AppError)。
     pub fn validate(&self) -> crate::error::Result<()> {
         self.reset.validate_range("vwap_trend.reset", 0.0, 4.0)?;
         if self.modes().is_empty() {

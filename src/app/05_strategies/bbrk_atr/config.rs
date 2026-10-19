@@ -13,16 +13,21 @@ use crate::config::F64Param;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BbrkAtrConfig {
+    /// 布林带标准差倍数(通道宽度)。
     pub sigma: F64Param,
     /// BB周期（缺省20＝旧串语义，封存数据即len20）。
     #[serde(default = "default_bblen")]
+    /// 布林带周期。
     pub bblen: F64Param,
     /// ATR短窗（缺省5＝旧串语义）。
     #[serde(default = "default_atr1")]
+    /// 快 ATR 周期。
     pub atr1: F64Param,
     /// ATR长窗（缺省20＝旧串语义）。
     #[serde(default = "default_atr2")]
+    /// 慢 ATR 周期。
     pub atr2: F64Param,
+    /// ATR 突破阈值(倍数)。
     pub atrthr: F64Param,
 }
 
@@ -39,6 +44,7 @@ fn default_atr2() -> F64Param {
 }
 
 impl BbrkAtrConfig {
+    /// 展开后的参数组合(按策略的笛卡尔积顺序)。
     pub fn pairs(&self) -> Vec<(f64, usize, usize, usize, f64)> {
         let ss = self.sigma.values();
         let ls = self.bblen.values();
@@ -68,6 +74,10 @@ impl BbrkAtrConfig {
 impl BbrkAtrConfig {
     /// 语义校验(原集中在 `config.rs::Config::validate` 的 match 中,
     /// 已下沉到本类型; 分派处只保留一行调用)。
+    /// 语义校验: 范围、步长与网格非空性。
+    ///
+    /// # Errors
+    /// 任一参数越界或展开为空时返回 [`AppError`](crate::error::AppError)。
     pub fn validate(&self) -> crate::error::Result<()> {
         self.sigma.validate_range("bbrk_atr.sigma", 0.1, 10.0)?;
         self.bblen.validate_range("bbrk_atr.bblen", 2.0, 2000.0)?;

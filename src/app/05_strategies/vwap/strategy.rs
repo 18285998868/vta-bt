@@ -13,6 +13,7 @@ pub struct VwapStrategy {
 }
 
 impl VwapStrategy {
+    /// 由 [`VwapConfig`] 构造; 参数网格由该配置展开。
     pub fn new(config: VwapConfig) -> Self {
         Self {
             threshs: config.values(),

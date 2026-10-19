@@ -2,7 +2,9 @@ use clap::Parser;
 
 #[derive(Parser, Debug)]
 #[command(name = "vector-ta", about = "向量化技术指标回测框架")]
+/// 命令行参数。`-c` 跑回测, `--pbo` 实算 PBO, 二者必须且只能给一个。
 pub struct Cli {
+    /// 回测模式: 配置文件路径。
     #[arg(short, long)]
     pub config: Option<String>,
 
@@ -12,6 +14,11 @@ pub struct Cli {
     pub pbo: Option<String>,
 }
 
+/// 解析命令行参数。
+///
+/// # Panics
+/// 参数非法时 `clap` 会打印用法并退出。
+#[must_use]
 pub fn parse() -> Cli {
     Cli::parse()
 }

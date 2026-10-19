@@ -15,6 +15,7 @@ pub struct BbrkAtrStrategy {
 }
 
 impl BbrkAtrStrategy {
+    /// 由 [`BbrkAtrConfig`] 构造; 参数网格由该配置展开。
     pub fn new(config: BbrkAtrConfig) -> Self {
         Self {
             pairs: config.pairs(),

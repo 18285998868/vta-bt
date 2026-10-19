@@ -14,6 +14,7 @@ pub struct BbrkDonStrategy {
 }
 
 impl BbrkDonStrategy {
+    /// 由 [`BbrkDonConfig`] 构造; 参数网格由该配置展开。
     pub fn new(config: BbrkDonConfig) -> Self {
         Self {
             pairs: config.pairs(),

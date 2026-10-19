@@ -12,11 +12,14 @@ use super::MA_NAMES;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BbrkMaxConfig {
+    /// 均线类型名列表(取值见对应策略的 `*_MA_NAMES`)。
     pub ma: Vec<String>,
+    /// regime 均线周期。
     pub malen: F64Param,
 }
 
 impl BbrkMaxConfig {
+    /// 展开后的参数组合(按策略的笛卡尔积顺序)。
     pub fn pairs(&self) -> Vec<(String, usize)> {
         let mut out = Vec::new();
         for name in &self.ma {
@@ -27,6 +30,10 @@ impl BbrkMaxConfig {
         out
     }
 
+    /// 语义校验: 参数范围与网格非空性。
+    ///
+    /// # Errors
+    /// 任一参数越界或展开为空时返回 [`AppError`](crate::error::AppError)。
     pub fn validate(&self) -> crate::error::Result<()> {
         // 范围校验(原在 config.rs 的 match 中, 已下沉到本类型)
         self.malen.validate_range("bbrk_max.malen", 2.0, 2000.0)?;

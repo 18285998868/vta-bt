@@ -11,6 +11,7 @@ pub struct EdmaStrategy {
 }
 
 impl EdmaStrategy {
+    /// 由 [`EdmaConfig`] 构造; 参数网格由该配置展开。
     pub fn new(config: EdmaConfig) -> Self {
         Self {
             pairs: config.pairs(),

@@ -8,11 +8,14 @@ use crate::config::F64Param;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RSI2Config {
+    /// 超卖阈值(RSI 量纲)。
     pub buy: F64Param,
+    /// 超买阈值(RSI 量纲)。
     pub sell: F64Param,
 }
 
 impl RSI2Config {
+    /// 展开后的参数组合(按策略的笛卡尔积顺序)。
     pub fn pairs(&self) -> Vec<(f64, f64)> {
         let bs = self.buy.values();
         let ss = self.sell.values();
@@ -29,6 +32,10 @@ impl RSI2Config {
 impl RSI2Config {
     /// 语义校验(原集中在 `config.rs::Config::validate` 的 match 中,
     /// 已下沉到本类型; 分派处只保留一行调用)。
+    /// 语义校验: 范围、步长与网格非空性。
+    ///
+    /// # Errors
+    /// 任一参数越界或展开为空时返回 [`AppError`](crate::error::AppError)。
     pub fn validate(&self) -> crate::error::Result<()> {
         self.buy.validate_range("rsi2.buy", 0.0, 100.0)?;
         self.sell.validate_range("rsi2.sell", 0.0, 100.0)?;

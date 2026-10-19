@@ -15,6 +15,7 @@ pub struct BbrkVolEmaStrategy {
 }
 
 impl BbrkVolEmaStrategy {
+    /// 由 [`BbrkVolEmaConfig`] 构造; 参数网格由该配置展开。
     pub fn new(config: BbrkVolEmaConfig) -> Self {
         Self {
             pairs: config.pairs(),

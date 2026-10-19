@@ -8,12 +8,15 @@ use crate::config::PeriodParam;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EdmaConfig {
+    /// 指标周期(bar 数)。
     pub period: PeriodParam,
     #[serde(default)]
+    /// 策略参数 `offset`。
     pub offset: Option<PeriodParam>,
 }
 
 impl EdmaConfig {
+    /// 展开后的参数组合(按策略的笛卡尔积顺序)。
     pub fn pairs(&self) -> Vec<(usize, usize)> {
         let pr = self.period.to_range();
         let periods: Vec<usize> = (pr.start..=pr.end).step_by(pr.step).collect();
@@ -37,6 +40,10 @@ impl EdmaConfig {
 impl EdmaConfig {
     /// 语义校验(原集中在 `config.rs::Config::validate` 的 match 中,
     /// 已下沉到本类型; 分派处只保留一行调用)。
+    /// 语义校验: 范围、步长与网格非空性。
+    ///
+    /// # Errors
+    /// 任一参数越界或展开为空时返回 [`AppError`](crate::error::AppError)。
     pub fn validate(&self) -> crate::error::Result<()> {
         self.period.validate()?;
         Ok(())

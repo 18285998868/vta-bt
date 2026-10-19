@@ -11,10 +11,13 @@ use crate::config::F64Param;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BbrkEmaConfig {
+    /// 布林带标准差倍数(通道宽度)。
     pub sigma: F64Param,
     /// BB周期（缺省20＝旧串语义）。
     #[serde(default = "default_bblen")]
+    /// 布林带周期。
     pub bblen: F64Param,
+    /// EMA regime 周期。
     pub emareg: F64Param,
 }
 
@@ -23,6 +26,7 @@ fn default_bblen() -> F64Param {
 }
 
 impl BbrkEmaConfig {
+    /// 展开后的参数组合(按策略的笛卡尔积顺序)。
     pub fn pairs(&self) -> Vec<(f64, usize, usize)> {
         let ss = self.sigma.values();
         let bs = self.bblen.values();
@@ -42,6 +46,10 @@ impl BbrkEmaConfig {
 impl BbrkEmaConfig {
     /// 语义校验(原集中在 `config.rs::Config::validate` 的 match 中,
     /// 已下沉到本类型; 分派处只保留一行调用)。
+    /// 语义校验: 范围、步长与网格非空性。
+    ///
+    /// # Errors
+    /// 任一参数越界或展开为空时返回 [`AppError`](crate::error::AppError)。
     pub fn validate(&self) -> crate::error::Result<()> {
         self.sigma.validate_range("bbrk_ema.sigma", 0.1, 10.0)?;
         self.bblen.validate_range("bbrk_ema.bblen", 2.0, 2000.0)?;

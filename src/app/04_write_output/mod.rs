@@ -1,3 +1,4 @@
+/// Parquet 读写层: 报告落盘、缓存校验读取、曲线读取与合并。
 pub mod parquet;
 
 pub use parquet::FixedCurve;

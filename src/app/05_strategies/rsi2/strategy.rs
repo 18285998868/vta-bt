@@ -12,6 +12,7 @@ pub struct RSI2Strategy {
 }
 
 impl RSI2Strategy {
+    /// 由 [`RSI2Config`] 构造; 参数网格由该配置展开。
     pub fn new(config: RSI2Config) -> Self {
         Self {
             pairs: config.pairs(),

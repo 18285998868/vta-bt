@@ -20,6 +20,7 @@ pub struct BbrkTtmStrategy {
 }
 
 impl BbrkTtmStrategy {
+    /// 由 [`BbrkTtmConfig`] 构造; 参数网格由该配置展开。
     pub fn new(config: BbrkTtmConfig) -> Self {
         Self {
             pairs: config.pairs(),

@@ -59,5 +59,12 @@ opt-level = 3
 incremental = false
 strip = "symbols"
 
+# 刻意**不设** `panic = "abort"`: `zero_delay_is_rejected_at_every_entry_point` 用
+# `catch_unwind` 断言 from_bps(0) 会 panic, abort 会让该测试无法观测。
+[profile.bench]
+inherits = "release"
+debug = true
+strip = false
+
 [profile.dev.package."*"]
 opt-level = 3

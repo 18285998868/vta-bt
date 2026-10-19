@@ -5,14 +5,20 @@ use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+/// 均线 + ATR 通道策略配置。
 pub struct MaAtrConfig {
+    /// 均线类型名列表(取值见对应策略的 `*_MA_NAMES`)。
     pub ma: Vec<String>,
+    /// 均线周期。
     pub len: F64Param,
+    /// 阈值倍数。
     pub mult: F64Param,
+    /// ATR 周期。
     pub atrlen: F64Param,
 }
 
 impl MaAtrConfig {
+    /// 展开后的五元参数组合。
     pub fn quints(&self) -> Vec<(String, usize, f64, usize)> {
         let mut out = Vec::new();
         for name in &self.ma {
@@ -27,6 +33,10 @@ impl MaAtrConfig {
         out
     }
 
+    /// 语义校验: 参数范围与网格非空性。
+    ///
+    /// # Errors
+    /// 任一参数越界或展开为空时返回 [`AppError`](crate::error::AppError)。
     pub fn validate(&self) -> crate::error::Result<()> {
         self.len.validate_range("ma_atr.len", 1.0, 2000.0)?;
         self.mult.validate_range("ma_atr.mult", 0.1, 20.0)?;

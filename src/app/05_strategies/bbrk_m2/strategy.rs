@@ -28,6 +28,7 @@ pub struct BbrkM2Strategy {
 }
 
 impl BbrkM2Strategy {
+    /// 由 [`BbrkM2Config`] 构造; 参数网格由该配置展开。
     pub fn new(config: BbrkM2Config) -> Self {
         Self {
             sigmas: config.values(),

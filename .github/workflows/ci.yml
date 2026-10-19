@@ -34,6 +34,12 @@ jobs:
       - name: cargo clippy -D warnings
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # 公开 API 必须有文档: missing_docs 提为 error, 防止新增项无文档混入。
+      - name: cargo doc -D missing_docs
+        run: cargo doc --no-deps
+        env:
+          RUSTDOCFLAGS: "-D missing_docs"
+
       - name: cargo test
         run: cargo test --workspace --locked
 

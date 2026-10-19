@@ -5,10 +5,13 @@ use crate::strategies::PoleCount;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+/// SSF(SuperSmoother)策略配置。
 pub struct SsfConfig {
+    /// 指标周期(bar 数)。
     pub period: PeriodParam,
     /// 极数。2 = Ehlers 论文原版 (带预平均), 3 = *Cybernetic Analysis* ch.13。默认 2。
     #[serde(default)]
+    /// 策略参数 `poles`。
     pub poles: PoleCount,
 }
 

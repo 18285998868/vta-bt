@@ -25,6 +25,7 @@ pub struct BbrkKdjStrategy {
 }
 
 impl BbrkKdjStrategy {
+    /// 由 [`BbrkKdjConfig`] 构造; 参数网格由该配置展开。
     pub fn new(config: BbrkKdjConfig) -> Self {
         Self {
             sigmas: config.values(),

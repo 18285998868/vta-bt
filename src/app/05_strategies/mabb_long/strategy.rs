@@ -15,6 +15,7 @@ pub struct MabbLongStrategy {
 }
 
 impl MabbLongStrategy {
+    /// 由 [`MabbLongConfig`] 构造; 参数网格由该配置展开。
     pub fn new(config: MabbLongConfig) -> Self {
         Self {
             quints: config.quints(),
@@ -137,6 +138,7 @@ fn mabb_core(close: &[f64], maname: &str, len: usize) -> Option<(Vec<f64>, Vec<f
     Some((mid, sd))
 }
 
+/// 计算 MABB 通道的 ATR 归一化带宽序列。
 pub fn mabb_atr(high: &[f64], low: &[f64], close: &[f64], atrlen: usize) -> Vec<f64> {
     if atrlen == 0 {
         return vec![f64::NAN; close.len()];

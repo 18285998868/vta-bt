@@ -11,6 +11,7 @@ pub struct MacdStrategy {
 }
 
 impl MacdStrategy {
+    /// 由 [`MacdConfig`] 构造; 参数网格由该配置展开。
     pub fn new(config: MacdConfig) -> Self {
         Self {
             triples: config.triples(),

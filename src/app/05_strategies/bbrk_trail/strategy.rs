@@ -19,6 +19,7 @@ pub struct BbrkTrailStrategy {
 }
 
 impl BbrkTrailStrategy {
+    /// 由 [`BbrkTrailConfig`] 构造; 参数网格由该配置展开。
     pub fn new(config: BbrkTrailConfig) -> Self {
         Self {
             pairs: config.pairs(),

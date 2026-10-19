@@ -186,3 +186,10 @@ sigma = { start = 2.0, end = 3.0, step = 0.5 }
 type = "rsi2"
 buy = { start = 5.0, end = 10.0, step = 5.0 }
 sell = { start = 90.0, end = 95.0, step = 5.0 }
+
+# 摆动点突破(N/K): left=N 左侧比较根数, right=K 右侧确认根数(确认延迟)
+# left/right 支持单值(10) / 列表([3,5,10]) / 等差范围({start,end,step}) 三种形态
+[[strategy]]
+type = "swing_fractal"
+left = { start = 3, end = 20, step = 5 }
+right = { start = 3, end = 10, step = 2 }

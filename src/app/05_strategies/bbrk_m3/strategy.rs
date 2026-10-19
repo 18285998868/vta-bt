@@ -27,6 +27,7 @@ pub struct BbrkM3Strategy {
 }
 
 impl BbrkM3Strategy {
+    /// 由 [`BbrkM3Config`] 构造; 参数网格由该配置展开。
     pub fn new(config: BbrkM3Config) -> Self {
         Self {
             sigmas: config.values(),

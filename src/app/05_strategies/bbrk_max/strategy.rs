@@ -26,6 +26,7 @@ pub struct BbrkMaxStrategy {
 }
 
 impl BbrkMaxStrategy {
+    /// 由 [`BbrkMaxConfig`] 构造; 参数网格由该配置展开。
     pub fn new(config: BbrkMaxConfig) -> Self {
         Self {
             pairs: config.pairs(),

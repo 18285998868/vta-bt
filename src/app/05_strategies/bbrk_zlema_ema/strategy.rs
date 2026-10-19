@@ -16,6 +16,7 @@ pub struct BbrkZlemaEmaStrategy {
 }
 
 impl BbrkZlemaEmaStrategy {
+    /// 由 [`BbrkZlemaEmaConfig`] 构造; 参数网格由该配置展开。
     pub fn new(config: BbrkZlemaEmaConfig) -> Self {
         Self {
             pairs: config.pairs(),

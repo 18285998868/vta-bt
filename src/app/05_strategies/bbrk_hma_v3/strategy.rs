@@ -12,6 +12,7 @@ pub struct BbrkHmaV3Strategy {
 }
 
 impl BbrkHmaV3Strategy {
+    /// 由 [`BbrkHmaV3Config`] 构造; 参数网格由该配置展开。
     pub fn new(config: BbrkHmaV3Config) -> Self {
         Self {
             pairs: config.pairs(),

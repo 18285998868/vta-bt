@@ -11,10 +11,12 @@ use crate::config::F64Param;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BbrkM2Config {
+    /// 布林带标准差倍数(通道宽度)。
     pub sigma: F64Param,
 }
 
 impl BbrkM2Config {
+    /// 展开后的取值列表。
     pub fn values(&self) -> Vec<f64> {
         self.sigma.values()
     }
@@ -23,6 +25,10 @@ impl BbrkM2Config {
 impl BbrkM2Config {
     /// 语义校验(原集中在 `config.rs::Config::validate` 的 match 中,
     /// 已下沉到本类型; 分派处只保留一行调用)。
+    /// 语义校验: 范围、步长与网格非空性。
+    ///
+    /// # Errors
+    /// 任一参数越界或展开为空时返回 [`AppError`](crate::error::AppError)。
     pub fn validate(&self) -> crate::error::Result<()> {
         self.sigma.validate_range("bbrk_m2.sigma", 0.1, 10.0)?;
         if self.values().is_empty() {

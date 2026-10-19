@@ -4,58 +4,97 @@ use rayon::prelude::*;
 
 use crate::strategies::Signal;
 
+/// 单次求值的全部回测指标。
+///
+/// **单位约定**: 带 `_pct` 的字段是百分数(15.0 = 15%), `total_return` /
+/// `win_rate` 是小数(0.15 = 15%)。落盘时按 [`output::COLUMNS`](crate::output)
+/// 声明的单位再折算一次, 该表由测试锁定与 schema 一致。
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct SummaryMetrics {
+    /// 总收益率(百分数, 15.0 = 15%)。
     pub total_return_pct: f64,
+    /// 总收益率(小数)。`= total_return_pct / 100`。
     pub total_return: f64,
+    /// 年化夏普(逐 bar 对数收益, ddof=1 × √bars_per_year)。
     pub sharpe_ratio: f64,
     /// 下行偏差口径, 分母为**下行 bar 数**的样本方差(ddof=1), 与 `sharpe_ratio`
     /// 同一自由度约定, 两者可并列比较。
     pub sortino_ratio: f64,
+    /// 最大回撤(百分数)。
     pub max_drawdown_pct: f64,
+    /// 盈利笔数占比(百分数)。
     pub win_rate: f64,
+    /// 总盈利 / 总亏损。无亏损时取总盈利。
     pub profit_factor: f64,
+    /// CAGR / 最大回撤。无回撤时为 0。
     pub calmar_ratio: f64,
+    /// 已平仓交易笔数(往返各计一次)。
     pub num_trades: u32,
+    /// 盈利笔的平均 pnl(货币)。
     pub avg_win: f64,
+    /// 亏损笔的平均亏损**绝对值**(货币, 正数)。
     pub avg_loss: f64,
+    /// 逐笔 `pnl_pct` 的均值(小数)。
     pub expectancy: f64,
+    /// 最长连��盈利笔数。
     pub consecutive_wins: u32,
+    /// 最长连亏笔数。
     pub consecutive_losses: u32,
+    /// 末根权益(货币)。空头浮空时可为负。
     pub final_equity: f64,
+    /// 年化波动率(百分数)。
     pub volatility: f64,
+    /// 总收益 / 最大回撤。
     pub recovery_factor: f64,
+    /// 平均持仓 bar 数。
     pub avg_hold_bars: f64,
+    /// 平均最大不利偏移(价格差)。
     pub avg_mae: f64,
+    /// 平均最大有利偏移(价格差)。
     pub avg_mfe: f64,
+    /// `avg_mfe / avg_mae`。avg_mae=0 时为 0。
     pub edge_ratio: f64,
+    /// 平均盈利 / 平均亏损。
     pub wl_ratio: f64,
+    /// 逐笔 pnl 的样本偏度(小样本校正)。
     pub skewness: f64,
+    /// 逐笔 pnl 的超额峰度(Fisher,小样本校正)。
     pub kurtosis: f64,
     /// SQN = √n · mean/stdev (Van Thorp 1998)。**仅在 `num_trades` >= 30 时有意义**
     /// (Van Thorp 建议门槛); n 越大 SQN 越高是统计显著性的体现, 非过拟合信号。
     /// 判读时必须与 `num_trades` 配对。
     pub sqn: f64,
+    /// 前后半段 profit factor 的比值(≤1)。样本 <20 时为 0。
     pub pf_stability: f64,
+    /// 连盈连亏段数的 runs 检验 z 值。
     pub z_score: f64,
+    /// runs 检验双尾 p 值。
     pub p_value: f64,
+    /// fixed 腿(固定名义、不复利)总盈亏。
     pub total_fixed_pnl: f64,
     /// 年化成交笔数(往返次数)。信号抖动的主要预警指标:
     /// 平均持仓不足 5 根 bar 时, 该值会高到成本必然吞掉全部毛利。
     pub turnover_per_year: f64,
     /// 执行口径(回放用): 信号延迟 bar 数。
+    /// 执行口径: 信号到成交的 bar 间隔(恒 ≥1)。
     pub delay_bars: u32,
     /// 执行口径(回放用): 单边佣金 bp。
+    /// 执行口径: 单边佣金(bp)。
     pub fee_bps: f64,
     /// 执行口径(回放用): 单边逆向滑点 bp。
+    /// 执行口径: 单边逆向滑点(bp)。
     pub slippage_bps: f64,
     /// fixed 腿总收益(固定名义, 不复利)。研究报告引用此值, 而非复利 total_return。
+    /// fixed 腿总收益率(小数)。
     pub fixed_total_return: f64,
     /// fixed 腿年化 Sharpe(与 sharpe_ratio 同公式, 曲线为 fixed 盯市)。
+    /// fixed 腿年化夏普。
     pub fixed_sharpe_ratio: f64,
     /// fixed 腿最大回撤 %。
+    /// fixed 腿最大回撤(百分数)。
     pub fixed_max_drawdown_pct: f64,
     /// fixed 腿单笔期望(bp, 以 initial 计)。C6 成本分析的直接输入。
+    /// fixed 腿单笔期望(bp, 以初始资金计)。
     pub fixed_expectancy_bps: f64,
     /// fixed 腿 profit factor。
     pub fixed_profit_factor: f64,
@@ -140,6 +179,7 @@ impl ExecConfig {
         Self::from_bps_fill(delay_bars, fee_bps, slippage_bps, false)
     }
 
+    /// 信号到成交的 bar 间隔(恒 ≥1)。
     #[must_use]
     pub fn delay(&self) -> usize {
         self.delay_bars.get()
@@ -173,6 +213,7 @@ impl Side {
         }
     }
 
+    /// 由 `+1` / `-1` / 其他 还原方向。
     #[must_use]
     pub fn from_sign(s: i8) -> Self {
         match s {
@@ -192,6 +233,7 @@ impl Side {
         }
     }
 
+    /// 是否处于持仓(`Long` 或 `Short`)。
     #[must_use]
     pub fn is_open(self) -> bool {
         self != Self::Flat
@@ -225,19 +267,31 @@ impl std::fmt::Display for Side {
 }
 
 #[derive(Debug, Clone)]
+/// 一笔已平仓交易。仅 `--detail` 路径产出(非详细路径只累计标量统计)。
 pub struct Trade {
+    /// 开仓 bar 的时间戳(ms)。
     pub entry_time: i64,
+    /// 平仓 bar 的时间戳(ms)。
     pub exit_time: i64,
     /// 持仓方向: `Long` / `Short`。恒不为 `Flat`。
     pub side: Side,
+    /// 开仓成交价(含逆向滑点)。
     pub entry_price: f64,
+    /// 平仓成交价(含逆向滑点)。
     pub exit_price: f64,
+    /// 复利腿持仓数量。
     pub qty: f64,
+    /// 复利腿盈亏(货币, 已扣双边佣金)。
     pub pnl: f64,
+    /// 相对开仓价的收益率(小数)。
     pub pnl_pct: f64,
+    /// fixed 腿盈亏(固定名义, 已扣双边佣金)。
     pub fixed_pnl: f64,
+    /// 持仓 bar 数。
     pub bars_held: i64,
+    /// 持仓期内最大有利偏移(价格差)。
     pub max_runup: f64,
+    /// 持仓期内最大不利偏移(价格差)。
     pub max_drawdown: f64,
     /// 平仓原因。取值集合是**封闭**的(见 [`ExitReason`]), 故用 `&'static str`
     /// 而非 `String`: 原实现每个平仓都 `format!`-出一个堆 `String`, 而参数网格
@@ -258,6 +312,7 @@ pub enum ExitReason {
 }
 
 impl ExitReason {
+    /// 落盘用的文本。
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -268,11 +323,16 @@ impl ExitReason {
 }
 
 #[derive(Debug, Clone)]
+/// `--detail` 路径的一次求值结果。
 pub struct SimResult {
+    /// 全部指标(与 [`simulate`] 逐位一致)。
     pub summary: SummaryMetrics,
+    /// 逐笔已平仓交易。
     pub trades: Vec<Trade>,
+    /// 复利腿逐 bar `(时间戳, 权益)`。
     pub equity_curve: Vec<(f64, f64)>,
     /// fixed 腿逐 bar 权益(与 bar 对齐, `--pbo` 的 T×N 输入)。
+    /// fixed 腿逐 bar 权益(与 bar 对齐)。
     pub fixed_curve: Vec<f64>,
 }
 
@@ -472,20 +532,39 @@ fn materialize_trade(args: &CloseArgs, out: CloseOutcome) -> Trade {
     }
 }
 
-/// `scan_trades` 的产出。
+/// 指标计算的**唯一**数据源。
 ///
-/// `equity` / `fixed` 仅在 `collect_curves` 为 true 时填充 —— [`simulate`]
-/// 只需统计量, 传 false 即**不物化曲线**; [`simulate_detailed`] 需要落盘故传 true。
+/// 两条路径(详细 / 非详细)**都**填充它, 且填充方式逐行相同 —— 这是
+/// "报告数字不随 `--detail` 开关变化"的结构性保证: [`compute_metrics`] 的签名
+/// 收 `&MetricsSource`, 因此它在**类型上就看不到** [`DetailArtifacts`]。
+///
+/// 拆分自原先的单一 `ScanOut`: 那里 6 个字段并列, "指标只读其中 3 个"仅仅是
+/// 约定(谁新增一个字段并顺手读它, 就会让两条路径漂移), 而非编译期约束。
 #[derive(Debug)]
-struct ScanOut {
-    /// 仅 `collect_curves == true`(detailed)时有内容; 否则为空以省掉每笔 `Trade`。
-    trades: Vec<Trade>,
-    /// 非 detailed 路径也要的标量统计源, 两条路径都有。
+struct MetricsSource {
     acc: TradeAccum,
     eq: CurveAccum,
     fx: CurveAccum,
-    equity: Option<Vec<f64>>,
-    fixed: Option<Vec<f64>>,
+}
+
+/// 仅详细路径需要落盘的产物。
+///
+/// 为空表示 `collect_curves == false`([`simulate`]); [`simulate_detailed`] 传
+/// true 时填充。这些字段**不参与**任何指标计算 —— 指标只读 [`MetricsSource`]。
+#[derive(Debug)]
+struct DetailArtifacts {
+    trades: Vec<Trade>,
+    equity: Vec<f64>,
+    fixed: Vec<f64>,
+}
+
+/// `scan_trades` 的产出: 指标源 + (可选的)落盘产物。
+#[derive(Debug)]
+struct ScanOut {
+    /// 两条路径都有, 且填充方式完全一致。
+    metrics: MetricsSource,
+    /// 仅 `collect_curves == true` 时为 `Some`, 以省掉每笔 `Trade` 与两条曲线。
+    detail: Option<DetailArtifacts>,
 }
 
 /// `collect_curves`: 是否物化两条权益曲线。false = O(1) 内存(见 [`CurveAccum`])。
@@ -670,12 +749,17 @@ fn scan_trades(
     }
 
     ScanOut {
-        trades,
-        acc,
-        eq: eq_acc,
-        fx: fx_acc,
-        equity: equity_curve,
-        fixed: fixed_curve,
+        metrics: MetricsSource {
+            acc,
+            eq: eq_acc,
+            fx: fx_acc,
+        },
+        detail: collect_curves.then(|| DetailArtifacts {
+            trades,
+            // 两处 `push` 都以 `collect_curves` 为前提, 故此处必为 Some。
+            equity: equity_curve.expect("collect_curves 时已物化权益曲线"),
+            fixed: fixed_curve.expect("collect_curves 时已物化 fixed 曲线"),
+        }),
     }
 }
 
@@ -716,6 +800,9 @@ pub fn bar_log_returns(curve: &[f64]) -> impl ExactSizeIterator<Item = f64> + '_
 /// (单调上涨 / 锯齿 / 首根即持仓 / 穿零 / 含 NaN) 锁定。故这是纯内存优化,
 /// **不改变任何指标数值**。
 #[derive(Debug, Clone)]
+/// 权益曲线的**在线**统计累加器: O(1) 内存。
+///
+/// 与「物化曲线后单遍遍历」**逐位一致**, 故 [`simulate`] 可省掉 O(T) 的曲线内存。
 pub struct CurveAccum {
     initial_cash: f64,
     /// 已喂入的点数(含初始点)。
@@ -732,8 +819,11 @@ pub struct CurveAccum {
 /// 曲线统计结果。复利腿与 fixed 腿共用同一口径, 保证两套 Sharpe 可比。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CurveStats {
+    /// 年化夏普。
     pub sharpe: f64,
+    /// Sortino 比率(下行偏差口径, ddof=1)。
     pub sortino: f64,
+    /// 最大回撤(小数)。
     pub max_dd: f64,
     /// 年化波动率, 百分数。
     pub volatility: f64,
@@ -759,6 +849,7 @@ impl TradeAccum {
 }
 
 impl CurveAccum {
+    /// 以初始资金建立累加器。
     #[must_use]
     pub fn new(initial_cash: f64) -> Self {
         Self {
@@ -810,6 +901,7 @@ impl CurveAccum {
         self.n
     }
 
+    /// 是否尚未喂入任何点。
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.n == 0
@@ -936,7 +1028,11 @@ fn reference_curve_stats(curve: &[f64], initial_cash: f64, bars_per_year: f64) -
     }
 }
 
-fn compute_metrics(out: &ScanOut, initial_cash: f64, bars_per_year: f64) -> SummaryMetrics {
+/// 由**唯一**指标源计算全部 `SummaryMetrics`。
+///
+/// 签名只收 [`MetricsSource`] —— 落盘产物(`trades` / 曲线)在类型上不可达, 故
+/// 指标**不可能**依赖 `--detail` 开关。
+fn compute_metrics(out: &MetricsSource, initial_cash: f64, bars_per_year: f64) -> SummaryMetrics {
     let n = out.eq.len();
     if n < 2 {
         return SummaryMetrics::default();
@@ -1259,6 +1355,10 @@ fn erf(x: f64) -> f64 {
     sign * y
 }
 
+/// 执行一次回测并返回全部指标。
+///
+/// **不物化权益曲线**(内存 O(1) 而非 O(T))。`--detail` 开关不影响任何指标数值,
+/// 详见 [`crate::lib`] 的不变量 2。
 pub fn simulate(
     close: &[f64],
     open: &[f64],
@@ -1272,16 +1372,19 @@ pub fn simulate(
         return SummaryMetrics::default();
     }
     let positions = signals_to_positions(signals);
-    // collect_curves = false: 不物化曲线, 统计量在线累计(内存 O(1) 而非 O(T))。
+    // collect_curves = false: 不物化曲线与逐笔 Trade, 统计量在线累计(内存 O(1))。
     let out = scan_trades(close, open, &positions, &[], initial_cash, exec, false);
-    debug_assert!(out.equity.is_none(), "simulate 不得物化权益曲线");
-    let mut summary = compute_metrics(&out, initial_cash, bars_per_year);
+    debug_assert!(out.detail.is_none(), "simulate 不得物化落盘产物");
+    let mut summary = compute_metrics(&out.metrics, initial_cash, bars_per_year);
     summary.delay_bars = exec.delay() as u32;
     summary.fee_bps = exec.fee_rate * 10_000.0;
     summary.slippage_bps = exec.slip_rate * 10_000.0;
     summary
 }
 
+/// 执行一次回测并额外产出逐笔交易与两条曲线。
+///
+/// 指标经与 [`simulate`] **同一条**路径计算, 二者逐位一致。
 pub fn simulate_detailed(
     time: &[i64],
     close: &[f64],
@@ -1301,16 +1404,19 @@ pub fn simulate_detailed(
         };
     }
     let positions = signals_to_positions(signals);
-    // detailed 路径要落盘, 故物化曲线。
+    // detailed 路径要落盘, 故额外物化逐笔 Trade 与两条曲线。
+    // 注意指标仍只经 `out.metrics` 计算 —— 与 `simulate` 完全同源。
     let out = scan_trades(close, open, &positions, time, initial_cash, exec, true);
-    let mut summary = compute_metrics(&out, initial_cash, bars_per_year);
+    let mut summary = compute_metrics(&out.metrics, initial_cash, bars_per_year);
     summary.delay_bars = exec.delay() as u32;
     summary.fee_bps = exec.fee_rate * 10_000.0;
     summary.slippage_bps = exec.slip_rate * 10_000.0;
 
-    let equity_curve: Vec<(f64, f64)> = out
+    let detail = out
+        .detail
+        .expect("scan_trades(collect_curves = true) 必然产出落盘产物");
+    let equity_curve: Vec<(f64, f64)> = detail
         .equity
-        .expect("scan_trades(collect_curves = true) 必然物化曲线")
         .into_iter()
         .enumerate()
         .map(|(i, eq)| {
@@ -1325,14 +1431,13 @@ pub fn simulate_detailed(
 
     SimResult {
         summary,
-        trades: out.trades,
+        trades: detail.trades,
         equity_curve,
-        fixed_curve: out
-            .fixed
-            .expect("scan_trades(collect_curves = true) 必然物化曲线"),
+        fixed_curve: detail.fixed,
     }
 }
 
+/// 批量回测(rayon 并行)。返回顺序与 `signal_batch` 一一对应。
 pub fn simulate_batch(
     close: &[f64],
     open: &[f64],
@@ -1347,6 +1452,7 @@ pub fn simulate_batch(
         .collect()
 }
 
+/// 批量详细回测(rayon 并行)。返回顺序与 `signal_batch` 一一对应。
 pub fn simulate_batch_detailed(
     time: &[i64],
     close: &[f64],
@@ -1728,7 +1834,7 @@ mod tests {
         }
     }
 
-    /// [`simulate`] 必须**不物化**权益曲线(内存 O(1) 而非 O(T)); 这是 O2 的全部意义。
+    /// [`simulate`] 必须**不物化**落盘产物(内存 O(1) 而非 O(T)); 这是 O2 的全部意义。
     #[test]
     fn test_simulate_does_not_materialize_equity_curve() {
         let close = make_prices(100_000);
@@ -1739,6 +1845,20 @@ mod tests {
         let d = simulate_detailed(&[], &close, &close, &sig, 10_000.0, 365.0, &exec);
         assert_eq!(d.equity_curve.len(), 100_000, "detailed 必须物化曲线");
         assert_eq!(d.fixed_curve.len(), 100_000);
+
+        // Q2 结构性保证: `scan_trades` 在 collect_curves=false 时不得产出任何
+        // DetailArtifacts(逐笔 Trade + 两条曲线)。类型上由 Option 表达, 此处
+        // 在 debug 构建下由 debug_assert! 复核。
+        let out = scan_trades(
+            &close,
+            &close,
+            &signals_to_positions(&sig),
+            &[],
+            10_000.0,
+            &exec,
+            false,
+        );
+        assert!(out.detail.is_none(), "非 detailed 路径不得物化落盘产物");
         for f in [
             m.sharpe_ratio,
             m.sortino_ratio,
@@ -1880,12 +2000,14 @@ mod tests {
         }
     }
 
-    /// L9: 非 detailed 路径不物化 `Vec<Trade>`, 但**指标必须逐位一致**。
+    /// L9 / Q2: 非 detailed 路径不物化落盘产物, 但**指标必须逐位一致**。
     ///
-    /// `simulate()` 与 `simulate_detailed()` 走两条不同的聚合路径:
-    /// 前者只用 `TradeAccum` 的标量, 后者还物化逐笔 `Trade`。若二者口径漂移
-    /// (例如 avg_mae 只在 detailed 侧累计), 报告里的数字就会随 `--detail` 开关
-    /// 变化 —— 这是最难发现的一类不一致。
+    /// 现在这不只是"测出来一致", 而是**类型上不可能不一致**: `compute_metrics`
+    /// 的签名收 `&MetricsSource`, 而 `MetricsSource` 里没有 `trades` / 曲线字段 ——
+    /// 指标在编译期就看不到 `--detail` 的产物。两者即便未来实现分叉, 也无法让
+    /// 指标依赖 detail 侧的数据。
+    ///
+    /// 本测试锁住"当前实现确实逐位一致", 防止有人绕过 `&MetricsSource` 重接指标源。
     #[test]
     fn non_detailed_metrics_match_detailed_bit_for_bit() {
         let exec = ExecConfig::try_from_bps_fill(1, 2.0, 1.0, false).unwrap();

@@ -10,6 +10,7 @@ pub struct SgmaStrategy {
 }
 
 impl SgmaStrategy {
+    /// 由 [`SgmaConfig`] 构造; 参数网格由该配置展开。
     pub fn new(config: SgmaConfig) -> Self {
         Self {
             pairs: config.pairs(),

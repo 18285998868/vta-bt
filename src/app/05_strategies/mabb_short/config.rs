@@ -9,14 +9,20 @@ use super::MABB_MA_NAMES;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MabbShortConfig {
+    /// 均线类型名列表(取值见对应策略的 `*_MA_NAMES`)。
     pub ma: Vec<String>,
+    /// 布林带周期。
     pub bblen: F64Param,
+    /// 布林带标准差倍数(通道宽度)。
     pub sigma: F64Param,
+    /// 止损 ATR 倍数。
     pub stopk: F64Param,
+    /// ATR 周期。
     pub atrlen: F64Param,
 }
 
 impl MabbShortConfig {
+    /// 展开后的五元参数组合。
     pub fn quints(&self) -> Vec<(String, usize, f64, f64, usize)> {
         let mut out = Vec::new();
         for name in &self.ma {
@@ -43,6 +49,10 @@ impl MabbShortConfig {
         out
     }
 
+    /// 语义校验: 参数范围与网格非空性。
+    ///
+    /// # Errors
+    /// 任一参数越界或展开为空时返回 [`AppError`](crate::error::AppError)。
     pub fn validate(&self) -> crate::error::Result<()> {
         // 范围校验(原在 config.rs 的 match 中, 已下沉到本类型)
         self.sigma.validate_range("mabb_short.sigma", 0.1, 10.0)?;

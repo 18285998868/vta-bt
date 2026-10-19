@@ -1,10 +1,17 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+/// 策略信号。
+///
+/// 由信号序列展开为持仓方向; `Hold` 维持上一方向, `Close` 平仓。
 pub enum Signal {
+    /// 维持当前方向。
     Hold,
+    /// 开多(或由空翻多)。
     Buy,
+    /// 开空(或由多翻空)。
     Sell,
+    /// 平仓, 之后转空仓。
     Close,
 }
 
@@ -15,7 +22,9 @@ pub enum Signal {
 #[serde(try_from = "usize", into = "usize")]
 pub enum PoleCount {
     #[default]
+    /// 二极 SuperSmoother。
     Two,
+    /// 三极 SuperSmoother。
     Three,
 }
 
@@ -42,6 +51,7 @@ impl From<PoleCount> for usize {
     }
 }
 
+/// 价格与指标线的上/下穿越 → 信号。任一侧为 NaN 时降级为 `Hold`。
 pub fn price_cross_signal(indicator: &[f64], close: &[f64]) -> Vec<Signal> {
     let n = close.len().min(indicator.len());
     let mut sig = vec![Signal::Hold; n];
@@ -164,6 +174,7 @@ pub fn rolling_highest(data: &[f64], n: usize) -> Vec<f64> {
     rolling_extreme(data, n, true)
 }
 
+/// O(n) 滑动最低。语义同 [`rolling_highest`], 取极小值。
 pub fn rolling_lowest(data: &[f64], n: usize) -> Vec<f64> {
     rolling_extreme(data, n, false)
 }
@@ -212,6 +223,10 @@ fn rolling_extreme(data: &[f64], n: usize, want_max: bool) -> Vec<f64> {
 /// 故必须显式告警。
 pub const MAX_F64_RANGE: usize = 100_000;
 
+/// 展开 f64 范围(6 位小数取整, 避免累加漂移)。
+///
+/// 上限 [`MAX_F64_RANGE`] 档; 触顶且未走完时**告警**而非静默截断。
+#[must_use]
 pub fn expand_f64_range(start: f64, end: f64, step: f64) -> Vec<f64> {
     let mut out = Vec::new();
     if !step.is_finite() || step <= 0.0 || !start.is_finite() || !end.is_finite() || start > end {
@@ -239,16 +254,25 @@ pub fn expand_f64_range(start: f64, end: f64, step: f64) -> Vec<f64> {
 /// UTC 自然日聚合 bar(日内策略：Dual Thrust / R-Breaker / 菲阿里用)。
 /// NaN 在极值折叠时跳过；`end_idx` 为当日最后一根 bar 下标(含)。
 #[derive(Debug, Clone)]
+/// 一个 UTC 自然日的聚合 bar。
 pub struct DayBar {
+    /// UTC 日序号(见 [`utc_day_index`])。
     pub day: i64,
+    /// 当日首根开盘价。
     pub open: f64,
+    /// 当日最高价(跳过非有限值)。
     pub high: f64,
+    /// 当日最低价(跳过非有限值)。
     pub low: f64,
+    /// 当日末根收盘价。
     pub close: f64,
+    /// 当日首根 bar 在原始序列中的下标。
     pub start_idx: usize,
+    /// 当日末根 bar 在原始序列中的下标(含)。
     pub end_idx: usize,
 }
 
+/// 按 UTC 自然日聚合 OHLC(日内策略用)。`DayBar` 记录当日首末 bar 下标。
 pub fn aggregate_days(
     time: &[i64],
     open: &[f64],

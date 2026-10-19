@@ -12,6 +12,7 @@ pub struct RBreakerStrategy {
 }
 
 impl RBreakerStrategy {
+    /// 由 [`RBreakerConfig`] 构造; 参数网格由该配置展开。
     pub fn new(config: RBreakerConfig) -> Self {
         Self {
             stops: config.values(),
@@ -21,11 +22,17 @@ impl RBreakerStrategy {
 
 #[derive(Debug, Clone, Copy)]
 pub struct Levels {
+    /// 策略参数 `b_break`。
     pub b_break: f64,
+    /// 策略参数 `s_setup`。
     pub s_setup: f64,
+    /// 策略参数 `s_enter`。
     pub s_enter: f64,
+    /// 策略参数 `b_enter`。
     pub b_enter: f64,
+    /// 策略参数 `b_setup`。
     pub b_setup: f64,
+    /// 策略参数 `s_break`。
     pub s_break: f64,
 }
 

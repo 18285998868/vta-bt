@@ -14,6 +14,7 @@ pub struct MabbShortStrategy {
 }
 
 impl MabbShortStrategy {
+    /// 由 [`MabbShortConfig`] 构造; 参数网格由该配置展开。
     pub fn new(config: MabbShortConfig) -> Self {
         Self {
             quints: config.quints(),

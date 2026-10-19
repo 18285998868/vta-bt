@@ -6,10 +6,12 @@ use serde::Deserialize;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MacdConfig {
+    /// 参数组列表, 每项为 `[fast, slow, signal]` 三元组。
     pub groups: Vec<[usize; 3]>,
 }
 
 impl MacdConfig {
+    /// 展开后的三元参数组合。
     pub fn triples(&self) -> Vec<(usize, usize, usize)> {
         self.groups.iter().map(|g| (g[0], g[1], g[2])).collect()
     }
@@ -18,6 +20,10 @@ impl MacdConfig {
 impl MacdConfig {
     /// 语义校验(原集中在 `config.rs::Config::validate` 的 match 中,
     /// 已下沉到本类型; 分派处只保留一行调用)。
+    /// 语义校验: 范围、步长与网格非空性。
+    ///
+    /// # Errors
+    /// 任一参数越界或展开为空时返回 [`AppError`](crate::error::AppError)。
     pub fn validate(&self) -> crate::error::Result<()> {
         if self.triples().is_empty() {
             return Err(AppError::Msg("macd 参数组合为空".into()));
