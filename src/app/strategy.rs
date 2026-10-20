@@ -51,9 +51,17 @@ pub const STRATEGIES: &[&str] = &[
     "mc_ginley",
 ];
 
-/// 参数网格上限：`build` 之前做算术预检（`SmaStrategy::new` / `BBRKStrategy::new`
-/// 会 eager 展开整个网格，`step = 0` 直接 panic，大范围直接 OOM）。
-const MAX_GRID: usize = 1024;
+/// 参数网格上限：**实际回测的档数**上限。
+///
+/// 两个理由：
+/// 1. `SmaStrategy::new` / `BBRKStrategy::new` 会 eager 展开整个网格
+///    （`step = 0` 直接 panic，大范围直接 OOM）⇒ 必须先做算术预检；
+/// 2. 每档都要跑一遍完整回测（59k 根 ≈ 134ms）⇒ 档数直接决定请求耗时，
+///    上限同时是**单请求的计算预算**。
+///
+/// 早先这里是 1024，但当时只跑首档、网格只用于防 OOM；现在网格真跑，
+/// 1024 档 ≈ 2 分钟，不可接受，故降到 16。
+const MAX_GRID: usize = 16;
 
 /// 策略描述（给前端下拉用）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,8 +137,8 @@ pub struct MarkerDto {
     pub time: i64,
     /// 持仓方向。
     pub side: TradeSide,
-    /// 成交价。
-    pub price: f64,
+    /// 成交价（非有限时为 `null`）。
+    pub price: Option<f64>,
     /// 标记类型。
     pub kind: MarkerKind,
 }
@@ -144,18 +152,18 @@ pub struct TradeDto {
     pub exit_time: i64,
     /// 持仓方向。
     pub side: TradeSide,
-    /// 开仓成交价。
-    pub entry_price: f64,
-    /// 平仓成交价。
-    pub exit_price: f64,
-    /// 复利腿持仓数量。
-    pub qty: f64,
-    /// 复利腿盈亏。
-    pub pnl: f64,
-    /// 相对开仓价的收益率。
-    pub pnl_pct: f64,
-    /// fixed 腿盈亏。
-    pub fixed_pnl: f64,
+    /// 开仓成交价（非有限时为 `null`）。
+    pub entry_price: Option<f64>,
+    /// 平仓成交价（非有限时为 `null`）。
+    pub exit_price: Option<f64>,
+    /// 复利腿持仓数量（非有限时为 `null`）。
+    pub qty: Option<f64>,
+    /// 复利腿盈亏（非有限时为 `null`）。
+    pub pnl: Option<f64>,
+    /// 相对开仓价的收益率（非有限时为 `null`）。
+    pub pnl_pct: Option<f64>,
+    /// fixed 腿盈亏（非有限时为 `null`）。
+    pub fixed_pnl: Option<f64>,
     /// 持仓 bar 数。
     pub bars_held: i64,
 }
@@ -165,8 +173,8 @@ pub struct TradeDto {
 pub struct EquityPoint {
     /// 毫秒时间戳。
     pub time: i64,
-    /// 权益值。
-    pub value: f64,
+    /// 权益值（非有限时为 `null`）。
+    pub value: Option<f64>,
 }
 
 /// 策略指标线（后端用 signal 同源函数算出，前端只做时间窗过滤+绘制）。
@@ -179,38 +187,73 @@ pub struct OverlayLineDto {
 }
 
 /// 回测汇总指标。
+///
+/// 所有浮点字段都可为 `null`（JSON `null`）：指标里的 NaN/Inf 是**真实语义**
+/// —— 零波动 ⇒ 夏普无定义、无亏损 ⇒ 盈利因子无定义。归零会让
+/// "真的是 0" 与 "算不出来" 无法区分。
 #[derive(Debug, Clone, Serialize)]
 pub struct SummaryDto {
     /// 已平仓交易笔数。
     pub num_trades: u32,
     /// 盈利笔占比（百分数）。
-    pub win_rate: f64,
+    pub win_rate: Option<f64>,
     /// 总收益率（百分数）。
-    pub total_return_pct: f64,
+    pub total_return_pct: Option<f64>,
     /// 年化夏普。
-    pub sharpe_ratio: f64,
+    pub sharpe_ratio: Option<f64>,
     /// 年化索提诺。
-    pub sortino_ratio: f64,
+    pub sortino_ratio: Option<f64>,
     /// 最大回撤（百分数）。
-    pub max_drawdown_pct: f64,
+    pub max_drawdown_pct: Option<f64>,
     /// 盈利因子。
-    pub profit_factor: f64,
+    pub profit_factor: Option<f64>,
     /// 逐笔期望值。
-    pub expectancy: f64,
+    pub expectancy: Option<f64>,
     /// 末根权益。
-    pub final_equity: f64,
+    pub final_equity: Option<f64>,
     /// 年化换手。
-    pub turnover_per_year: f64,
+    pub turnover_per_year: Option<f64>,
     /// fixed 腿总收益率（百分数）。
-    pub fixed_total_return: f64,
+    pub fixed_total_return: Option<f64>,
     /// fixed 腿年化夏普。
-    pub fixed_sharpe_ratio: f64,
+    pub fixed_sharpe_ratio: Option<f64>,
     /// fixed 腿最大回撤（百分数）。
-    pub fixed_max_drawdown_pct: f64,
+    pub fixed_max_drawdown_pct: Option<f64>,
     /// fixed 腿期望值（基点）。
-    pub fixed_expectancy_bps: f64,
+    pub fixed_expectancy_bps: Option<f64>,
     /// fixed 腿盈利因子。
-    pub fixed_profit_factor: f64,
+    pub fixed_profit_factor: Option<f64>,
+}
+
+/// 参数网格执行情况。
+#[derive(Debug, Clone, Serialize)]
+pub struct ParamGridDto {
+    /// 请求的档数（由 TOML 的 range 展开而来）。
+    pub requested: usize,
+    /// 实际回测的档数（不可计算的档被跳过，不计入）。
+    pub ran: usize,
+    /// 实际回测的各档参数标识（如 `sma_20`）。
+    pub params: Vec<String>,
+    /// 被跳过的档及原因（该档参数不可计算，如数据不足）。
+    pub skipped: Vec<SkippedParamDto>,
+}
+
+/// 被跳过的参数档。
+#[derive(Debug, Clone, Serialize)]
+pub struct SkippedParamDto {
+    /// 参数标识。
+    pub params: String,
+    /// 跳过原因。
+    pub reason: String,
+}
+
+/// 单档参数网格的回测结果（仅汇总，不含曲线）。
+#[derive(Debug, Clone, Serialize)]
+pub struct RunSummaryDto {
+    /// 参数标识（如 `sma_20`）。
+    pub params: String,
+    /// 该档汇总。
+    pub summary: SummaryDto,
 }
 
 /// 回测结果（图表就绪 DTO）。
@@ -220,16 +263,20 @@ pub struct StrategyResult {
     pub strategy: String,
     /// 回测 bar 数。
     pub count: usize,
-    /// 成交标记。
+    /// 成交标记（**第 0 档**）。
     pub markers: Vec<MarkerDto>,
-    /// 已平仓交易。
+    /// 已平仓交易（**第 0 档**）。
     pub trades: Vec<TradeDto>,
-    /// 资金曲线。
+    /// 资金曲线（**第 0 档**）。
     pub equity: Vec<EquityPoint>,
-    /// 指标线。
+    /// 指标线（**第 0 档**）。
     pub overlays: Vec<OverlayLineDto>,
-    /// 汇总指标。
+    /// 汇总指标（**第 0 档**）。
     pub summary: SummaryDto,
+    /// 参数网格执行情况（请求了几档、实际跑了几档、哪些被跳过）。
+    pub param_grid: ParamGridDto,
+    /// 各档汇总（便于横向对比不同参数）。
+    pub runs: Vec<RunSummaryDto>,
 }
 
 /// 回测入参。
@@ -255,9 +302,21 @@ pub struct BacktestParams<'a> {
     pub after: Option<i64>,
 }
 
-/// NaN/Inf 清零：`serde_json` 不接受非有限浮点，直接 500。
-fn fin(v: f64) -> f64 {
-    if v.is_finite() { v } else { 0.0 }
+/// 非有限浮点 → `None`（JSON `null`）。
+///
+/// `serde_json` 不接受 NaN/Inf，必须转成别的表示。但**不能归零**：
+/// 指标里的 NaN 是真实语义（零波动 ⇒ 夏普无定义；无亏损 ⇒ 盈利因子无定义），
+/// 归零会让"真的是 0"与"算不出来"在前端无法区分。
+fn fin(v: f64) -> Option<f64> {
+    v.is_finite().then_some(v)
+}
+
+/// vta 的定点金额 → 可空浮点。
+///
+/// vta 侧已把金额换成定点十进制（[`vta::money::Amount`]），回传前端时
+/// 转回 `f64`；转换失败（超出 `f64` 范围）时为 `null`。
+fn fin_amount(v: vta::money::Amount) -> Option<f64> {
+    fin(v.to_f64())
 }
 
 /// vta 的 `equity_curve` 时间戳是 `f64`，回转 `i64`。
@@ -464,9 +523,7 @@ pub fn run_backtest(
     // 2) 语义校验：复用 vta 的策略专属约束（此时网格已限幅，展开安全）。
     validate_params(&cfg).map_err(|e| User(format!("invalid strategy params: {e}")))?;
 
-    let key = format!(
-        "{market_type}/{pair}/{timeframe}/{strategy_toml}/{initial_balance}/{fee_bps}/{slippage_bps}/{before:?}/{after:?}"
-    );
+    let key = cache_key(params);
     if let Some(hit) = state.strategy_cache.get(&key) {
         return Ok(hit);
     }
@@ -476,6 +533,7 @@ pub fn run_backtest(
         .load_columns_filtered(market_type, pair, timeframe, before, after)
         .map_err(|e| match e {
             DataError::NotFound(msg) => StrategyError::NotFound(msg),
+            DataError::InvalidParam(msg) => StrategyError::User(msg),
             other => StrategyError::Internal(other.to_string()),
         })?;
     if cols.is_empty() {
@@ -488,42 +546,109 @@ pub fn run_backtest(
         .next()
         .ok_or_else(|| Internal("strategy factory returned empty".into()))?;
 
-    let signals = strat
-        .generate_signals_full(
+    // 初始资金：vta 侧是定点金额（`Amount`），转不动就报用户错误。
+    let initial = vta::money::Amount::from_f64(initial_balance)
+        .map_err(|e| User(format!("invalid initial_balance: {e}")))?;
+
+    // **跑满整个参数网格**：逐档算信号（vta 内部 rayon 并行），再逐档回测。
+    //
+    // 早先只跑 `param_idx = 0`（网格首档），用户写 range 时拿到的却是"只有
+    // 首档"的结果，且响应里毫无提示 —— 与 vta 离线的全网格口径不一致。
+    // 现在每档都跑，并在 `param_grid` 里如实回报请求/实跑/跳过。
+    let requested = strat.param_count();
+    let batch = strat
+        .generate_signals_batch(
             &cols.open,
             &cols.high,
             &cols.low,
             &cols.close,
             &cols.volume,
             &cols.time,
-            0,
+            0..requested,
         )
         .map_err(|e| Internal(format!("signal error: {e}")))?;
+
     let exec = vta::engine::ExecConfig::from_bps(1, fee_bps, slippage_bps);
-    let sim = vta::engine::simulate_detailed(
-        &cols.time,
-        &cols.close,
-        &cols.open,
-        &signals,
-        initial_balance,
-        vta::strategies::bars_per_year(timeframe),
-        &exec,
-    );
+    let bars_per_year = vta::strategies::bars_per_year(timeframe);
+
+    let mut runs: Vec<GridRun> = Vec::with_capacity(batch.len());
+    let mut skipped: Vec<SkippedParamDto> = Vec::new();
+    for (i, outcome) in batch.iter().enumerate() {
+        let params_id = strat.param_str(i);
+        let signals = match outcome {
+            vta::strategies::ParamOutcome::Signals(signals) => signals,
+            vta::strategies::ParamOutcome::Skipped(reason) => {
+                tracing::warn!(params = %params_id, reason, "param set skipped");
+                skipped.push(SkippedParamDto {
+                    params: params_id,
+                    reason: reason.clone(),
+                });
+                continue;
+            }
+        };
+        let sim = vta::engine::simulate_detailed(
+            &cols.time,
+            &cols.close,
+            &cols.open,
+            signals,
+            initial,
+            bars_per_year,
+            &exec,
+        )
+        .map_err(|e| Internal(format!("simulate error: {e}")))?;
+        runs.push(GridRun {
+            params: params_id,
+            sim,
+        });
+    }
+    if runs.is_empty() {
+        return Err(User(
+            "all parameter sets were skipped (insufficient data)".into(),
+        ));
+    }
 
     let overlays = build_overlays(id, &cfg, &cols);
-    let result = Arc::new(to_dto(id, cols.len(), &sim, overlays));
+    let result = Arc::new(to_dto(id, cols.len(), &runs, overlays, skipped, requested));
     state.strategy_cache.insert(key, result.clone());
     Ok(result)
+}
+
+/// 缓存键：把入参哈希成 `u64`。
+///
+/// 早先把整个 `strategy_toml` 拼进键里，键可能上千字符；哈希后键定长。
+/// 用 `DefaultHasher`（SipHash）即可 —— 缓存只在进程内有效，不需要跨进程稳定。
+fn cache_key(params: &BacktestParams<'_>) -> u64 {
+    use std::hash::{Hash, Hasher};
+
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    params.market_type.hash(&mut h);
+    params.pair.hash(&mut h);
+    params.timeframe.hash(&mut h);
+    params.strategy_toml.hash(&mut h);
+    params.initial_balance.to_bits().hash(&mut h);
+    params.fee_bps.to_bits().hash(&mut h);
+    params.slippage_bps.to_bits().hash(&mut h);
+    params.before.hash(&mut h);
+    params.after.hash(&mut h);
+    h.finish()
+}
+
+/// 参数网格中的一档（信号 → 回测结果）。
+struct GridRun {
+    /// 参数标识（如 `sma_20`）。
+    params: String,
+    /// 该档的回测结果。
+    sim: vta::engine::SimResult,
 }
 
 /// 构造一条指标线（跳过非有限值点）。
 fn overlay_line(label: String, values: &[f64], time: &[i64]) -> OverlayLineDto {
     let mut points = Vec::with_capacity(values.len().min(time.len()));
     for (v, t) in values.iter().zip(time.iter()) {
-        if v.is_finite() {
+        if let Some(value) = fin(*v) {
             points.push(EquityPoint {
                 time: *t,
-                value: *v,
+                value: Some(value),
             });
         }
     }
@@ -892,12 +1017,20 @@ fn build_overlays(id: &str, cfg: &StrategyConfig, cols: &KlineColumns) -> Vec<Ov
 }
 
 /// 引擎结果 → DTO。
+///
+/// 顶层字段（markers/trades/equity/overlays/summary）取**第 0 档**，
+/// 保持与既有前端契约一致；各档汇总另见 `runs`。
 fn to_dto(
     id: &str,
     count: usize,
-    sim: &vta::engine::SimResult,
+    runs: &[GridRun],
     overlays: Vec<OverlayLineDto>,
+    skipped: Vec<SkippedParamDto>,
+    requested: usize,
 ) -> StrategyResult {
+    let first = &runs[0];
+    let sim = &first.sim;
+
     let mut markers = Vec::with_capacity(sim.trades.len() * 2);
     let mut trades = Vec::with_capacity(sim.trades.len());
     for t in &sim.trades {
@@ -920,10 +1053,10 @@ fn to_dto(
             side,
             entry_price: fin(t.entry_price),
             exit_price: fin(t.exit_price),
-            qty: fin(t.qty),
-            pnl: fin(t.pnl),
+            qty: fin_amount(t.qty),
+            pnl: fin_amount(t.pnl),
             pnl_pct: fin(t.pnl_pct),
-            fixed_pnl: fin(t.fixed_pnl),
+            fixed_pnl: fin_amount(t.fixed_pnl),
             bars_held: t.bars_held,
         });
     }
@@ -936,7 +1069,7 @@ fn to_dto(
             value: fin(*eq),
         })
         .collect();
-    let s = &sim.summary;
+
     StrategyResult {
         strategy: id.into(),
         count,
@@ -944,23 +1077,41 @@ fn to_dto(
         trades,
         equity,
         overlays,
-        summary: SummaryDto {
-            num_trades: s.num_trades,
-            win_rate: fin(s.win_rate),
-            total_return_pct: fin(s.total_return_pct),
-            sharpe_ratio: fin(s.sharpe_ratio),
-            sortino_ratio: fin(s.sortino_ratio),
-            max_drawdown_pct: fin(s.max_drawdown_pct),
-            profit_factor: fin(s.profit_factor),
-            expectancy: fin(s.expectancy),
-            final_equity: fin(s.final_equity),
-            turnover_per_year: fin(s.turnover_per_year),
-            fixed_total_return: fin(s.fixed_total_return),
-            fixed_sharpe_ratio: fin(s.fixed_sharpe_ratio),
-            fixed_max_drawdown_pct: fin(s.fixed_max_drawdown_pct),
-            fixed_expectancy_bps: fin(s.fixed_expectancy_bps),
-            fixed_profit_factor: fin(s.fixed_profit_factor),
+        summary: summary_dto(&sim.summary),
+        param_grid: ParamGridDto {
+            requested,
+            ran: runs.len(),
+            params: runs.iter().map(|r| r.params.clone()).collect(),
+            skipped,
         },
+        runs: runs
+            .iter()
+            .map(|r| RunSummaryDto {
+                params: r.params.clone(),
+                summary: summary_dto(&r.sim.summary),
+            })
+            .collect(),
+    }
+}
+
+/// 引擎汇总指标 → DTO（金额类字段经定点 `Amount` 转回 `f64`）。
+fn summary_dto(s: &vta::engine::SummaryMetrics) -> SummaryDto {
+    SummaryDto {
+        num_trades: s.num_trades,
+        win_rate: fin(s.win_rate),
+        total_return_pct: fin(s.total_return_pct),
+        sharpe_ratio: fin(s.sharpe_ratio),
+        sortino_ratio: fin(s.sortino_ratio),
+        max_drawdown_pct: fin(s.max_drawdown_pct),
+        profit_factor: fin(s.profit_factor),
+        expectancy: fin(s.expectancy),
+        final_equity: fin_amount(s.final_equity),
+        turnover_per_year: fin(s.turnover_per_year),
+        fixed_total_return: fin(s.fixed_total_return),
+        fixed_sharpe_ratio: fin(s.fixed_sharpe_ratio),
+        fixed_max_drawdown_pct: fin(s.fixed_max_drawdown_pct),
+        fixed_expectancy_bps: fin(s.fixed_expectancy_bps),
+        fixed_profit_factor: fin(s.fixed_profit_factor),
     }
 }
 
@@ -1071,9 +1222,9 @@ mod tests {
 
     #[test]
     fn fin_sanitizes_non_finite() {
-        assert_eq!(fin(f64::NAN), 0.0);
-        assert_eq!(fin(f64::INFINITY), 0.0);
-        assert_eq!(fin(1.5), 1.5);
+        assert_eq!(fin(f64::NAN), None);
+        assert_eq!(fin(f64::INFINITY), None);
+        assert_eq!(fin(1.5), Some(1.5));
     }
 
     #[test]

@@ -9,6 +9,9 @@ use crate::error::AppError;
 /// 相对 crate 根的配置文件路径。
 const CONFIG_REL_PATH: &str = "config/config.toml";
 
+/// 配置文件路径覆盖环境变量。
+pub const CONFIG_PATH_ENV: &str = "TRADINGVIEW_CONFIG";
+
 /// 服务配置。
 ///
 /// `#[serde(default)]` 让缺失字段回落到 [`Config::default`]，
@@ -24,6 +27,11 @@ pub struct Config {
     pub data_dir: PathBuf,
     /// 前端静态资源目录；缺失时服务降级为纯 API 模式。
     pub frontend_dir: PathBuf,
+    /// 允许的跨域来源（空 = 全放行，仅本地开发）。
+    ///
+    /// 非空时只放行列表内的 origin，并回显匹配的 origin。
+    #[serde(default)]
+    pub cors_origins: Vec<String>,
 }
 
 impl Default for Config {
@@ -33,12 +41,15 @@ impl Default for Config {
             port: 3001,
             data_dir: PathBuf::new(),
             frontend_dir: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("frontend/dist"),
+            cors_origins: Vec::new(),
         }
     }
 }
 
 impl Config {
-    /// 从固定路径 `config/config.toml` 读取配置。
+    /// 从配置文件读取配置。
+    ///
+    /// 路径优先级（见 [`default_config_path`]）。
     ///
     /// # Errors
     /// - 文件不存在或不可读 → [`AppError::ConfigRead`]
@@ -76,8 +87,20 @@ impl Config {
     }
 }
 
-/// 默认配置文件路径（编译期 crate 根 + 固定相对路径）。
+/// 配置文件路径优先级：
+///
+/// 1. `TRADINGVIEW_CONFIG` 环境变量（显式覆盖）；
+/// 2. `./config/config.toml`（相对**当前工作目录** —— 部署时把配置放在
+///    二进制旁边即可，不依赖构建机路径）；
+/// 3. `<crate 根>/config/config.toml`（编译期绝对路径，只在开发机上有效）。
 fn default_config_path() -> PathBuf {
+    if let Some(p) = std::env::var_os(CONFIG_PATH_ENV).filter(|v| !v.is_empty()) {
+        return PathBuf::from(p);
+    }
+    let cwd_rel = PathBuf::from(CONFIG_REL_PATH);
+    if cwd_rel.exists() {
+        return cwd_rel;
+    }
     Path::new(env!("CARGO_MANIFEST_DIR")).join(CONFIG_REL_PATH)
 }
 

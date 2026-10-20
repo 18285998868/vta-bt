@@ -375,24 +375,35 @@ export class App {
 
   private renderStrategyPanel(r: StrategyResult) {
     const s = r.summary;
-    const pct = (v: number, d = 1) => `${v >= 0 ? '+' : ''}${v.toFixed(d)}%`;
+    // null = 该指标算不出来（NaN/Inf），与"真的是 0"区分开，显示为 n/a。
+    const num = (v: number | null, d: number): string => (v === null ? 'n/a' : v.toFixed(d));
+    const pct = (v: number | null, d = 1): string =>
+      v === null ? 'n/a' : `${v >= 0 ? '+' : ''}${v.toFixed(d)}%`;
     const rows: [string, string][] = [
       ['交易笔数', `${s.num_trades}`],
-      ['胜率', `${s.win_rate.toFixed(1)}%`],
+      ['胜率', `${num(s.win_rate, 1)}%`],
       ['总收益', pct(s.total_return_pct)],
-      ['最大回撤', `${s.max_drawdown_pct.toFixed(1)}%`],
-      ['Sharpe', `${s.sharpe_ratio.toFixed(2)}`],
-      ['Sortino', `${s.sortino_ratio.toFixed(2)}`],
-      ['盈亏比', `${s.profit_factor.toFixed(2)}`],
-      ['期望', `${(s.expectancy * 100).toFixed(3)}%`],
-      ['期末权益', `${s.final_equity.toFixed(2)}`],
-      ['年换手', `${s.turnover_per_year.toFixed(1)}`],
+      ['最大回撤', `${num(s.max_drawdown_pct, 1)}%`],
+      ['Sharpe', num(s.sharpe_ratio, 2)],
+      ['Sortino', num(s.sortino_ratio, 2)],
+      ['盈亏比', num(s.profit_factor, 2)],
+      ['期望', s.expectancy === null ? 'n/a' : `${(s.expectancy * 100).toFixed(3)}%`],
+      ['期末权益', num(s.final_equity, 2)],
+      ['年换手', num(s.turnover_per_year, 1)],
       ['固定腿收益', pct(s.fixed_total_return)],
-      ['固定腿Sharpe', `${s.fixed_sharpe_ratio.toFixed(2)}`],
-      ['固定腿回撤', `${s.fixed_max_drawdown_pct.toFixed(1)}%`],
-      ['固定腿单笔期望', `${s.fixed_expectancy_bps.toFixed(1)}bp`],
-      ['固定腿盈亏比', `${s.fixed_profit_factor.toFixed(2)}`],
+      ['固定腿Sharpe', num(s.fixed_sharpe_ratio, 2)],
+      ['固定腿回撤', `${num(s.fixed_max_drawdown_pct, 1)}%`],
+      ['固定腿单笔期望', `${num(s.fixed_expectancy_bps, 1)}bp`],
+      ['固定腿盈亏比', num(s.fixed_profit_factor, 2)],
     ];
+    // 参数网格：请求几档 / 实跑几档 / 哪些被跳过。
+    const g = r.param_grid;
+    if (g && g.requested > 1) {
+      rows.push(['参数档位', `${g.ran}/${g.requested} 档（${g.params.join(', ')}）`]);
+      for (const sk of g.skipped ?? []) {
+        rows.push([`跳过 ${sk.params}`, sk.reason]);
+      }
+    }
     this.strategyPanelName.textContent = `策略绩效 · ${r.strategy} · ${r.count}根`;
     this.strategyPanelBody.innerHTML = rows
       .map(([k, v]) => `<div class="strategy-row"><span>${k}</span><span>${v}</span></div>`)

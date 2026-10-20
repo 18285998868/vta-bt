@@ -28,8 +28,8 @@ vector-ta = { path = "../libs/VectorTA" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", features = ["serde"] }
-# 只开服务端实际用到的能力：多线程 runtime + 宏 + 网络 + 文件 IO。
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "fs", "io-util"] }
+# 只开服务端实际用到的能力：多线程 runtime + 宏 + 网络 + 文件 IO + 信号处理（优雅停机）。
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "fs", "io-util", "signal"] }
 anyhow = "1"
 thiserror = "2"
 tracing = { version = "0.1", features = ["log"] }

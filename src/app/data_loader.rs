@@ -9,7 +9,7 @@ use serde::Serialize;
 use thiserror::Error;
 use tracing::instrument;
 
-use crate::utils::{has_kline_files, timeframe_order};
+use crate::utils::{has_data_files, has_kline_files, timeframe_order};
 
 /// 单个数据集超过该行数时打告警（内存占用提示）。
 const LARGE_DATASET_ROWS: usize = 500_000;
@@ -18,16 +18,37 @@ const LARGE_DATASET_ROWS: usize = 500_000;
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum MarketType {
-    /// U 本位合约（binance `um` daily 布局）。
+    /// binance U 本位合约（`{dir}/binance/data/um/daily/klines/{symbol}/{tf}/*.zip`）。
     #[default]
     Futures,
-    /// 现货（kline-reader 暂无对应数据源）。
+    /// binance 现货（本地暂无对应数据）。
     Spot,
+    /// Dukascopy 外汇/贵金属（`{dir}/dukascopy/{symbol}/{yyyy}/{mm}/{dd}/*.bi5`）。
+    Dukascopy,
 }
 
 impl MarketType {
-    /// 全部市场类型（`/api/market-types` 的数据源）。
-    pub const ALL: [MarketType; 2] = [MarketType::Futures, MarketType::Spot];
+    /// 对外暴露的市场类型（= **本地确有数据源**的那些）。
+    ///
+    /// `Spot` 变体仍可被解析，但本地没有对应数据，故不对外暴露 ——
+    /// 否则前端会列出一个"选了就是空图 / 404"的选项。
+    pub const SUPPORTED: [MarketType; 2] = [MarketType::Futures, MarketType::Dukascopy];
+
+    /// 对应的 kline-reader 数据源。
+    fn source(self) -> kline_reader::DataSource {
+        match self {
+            MarketType::Futures | MarketType::Spot => kline_reader::DataSource::Binance,
+            MarketType::Dukascopy => kline_reader::DataSource::Dukascopy,
+        }
+    }
+
+    /// 数据文件扩展名（binance = zip，dukascopy = bi5）。
+    fn data_ext(self) -> &'static str {
+        match self {
+            MarketType::Futures | MarketType::Spot => "zip",
+            MarketType::Dukascopy => "bi5",
+        }
+    }
 }
 
 impl std::fmt::Display for MarketType {
@@ -35,6 +56,7 @@ impl std::fmt::Display for MarketType {
         match self {
             MarketType::Futures => write!(f, "futures"),
             MarketType::Spot => write!(f, "spot"),
+            MarketType::Dukascopy => write!(f, "dukascopy"),
         }
     }
 }
@@ -47,6 +69,8 @@ impl std::str::FromStr for MarketType {
             Ok(MarketType::Futures)
         } else if s.eq_ignore_ascii_case("spot") {
             Ok(MarketType::Spot)
+        } else if s.eq_ignore_ascii_case("dukascopy") {
+            Ok(MarketType::Dukascopy)
         } else {
             Err(ParseMarketTypeError::new(s))
         }
@@ -84,6 +108,14 @@ pub enum DataError {
     /// 数据目录或数据集不存在。
     #[error("not found: {0}")]
     NotFound(String),
+
+    /// 入参非法（如该数据源不支持此周期）——属于用户错误，映射为 400。
+    #[error("invalid parameter: {0}")]
+    InvalidParam(String),
+
+    /// 后台任务失败（线程池错误 / 任务 panic）。
+    #[error("background task failed: {0}")]
+    Task(String),
 }
 
 /// 单根 K 线（JSON DTO）。
@@ -278,9 +310,12 @@ impl DataLoader {
         }
     }
 
-    /// Futures 复用 kline-reader 的 binance 布局
-    /// (`{dir}/binance/data/um/daily/klines/{symbol}/{tf}/*.zip`)；
-    /// Spot 暂无对应数据源（kline-reader 仅 binance），返回 `None`，调用方按空/404 处理。
+    /// 行情根目录。
+    ///
+    /// - Futures：`{dir}/binance/data/um/daily/klines`（binance um daily 布局，
+    ///   周期是**子目录**）。
+    /// - Dukascopy：`{dir}/dukascopy`（周期不是目录，而是同一批 `.bi5` 的不同聚合粒度）。
+    /// - Spot：本地暂无对应数据源，返回 `None`，调用方按空/404 处理。
     fn base_path(&self, market_type: MarketType) -> Option<PathBuf> {
         match market_type {
             MarketType::Futures => Some(
@@ -292,6 +327,7 @@ impl DataLoader {
                     .join("klines"),
             ),
             MarketType::Spot => None,
+            MarketType::Dukascopy => Some(self.data_dir.join("dukascopy")),
         }
     }
 
@@ -325,12 +361,28 @@ impl DataLoader {
         if !pair_dir.exists() {
             return Ok(vec![]);
         }
-        let mut timeframes: Vec<String> = std::fs::read_dir(&pair_dir)?
-            .filter_map(|e| e.ok())
-            .filter(|e| e.path().is_dir())
-            .filter(|e| has_kline_files(&e.path()))
-            .filter_map(|e| e.file_name().into_string().ok())
-            .collect();
+
+        // binance：周期是子目录，目录里有 zip 即为"有数据"。
+        // dukascopy：同一批 .bi5 可聚合成多个周期，周期由数据源决定，
+        //   故取"该源支持的周期 ∩ 本地确有 .bi5 的品种"。
+        let timeframes: Vec<String> = match market_type {
+            MarketType::Dukascopy => {
+                if !has_data_files(&pair_dir, market_type.data_ext()) {
+                    return Ok(vec![]);
+                }
+                kline_reader::supported_timeframes(market_type.source())
+                    .iter()
+                    .map(|s| (*s).to_string())
+                    .collect()
+            }
+            _ => std::fs::read_dir(&pair_dir)?
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().is_dir())
+                .filter(|e| has_kline_files(&e.path()))
+                .filter_map(|e| e.file_name().into_string().ok())
+                .collect(),
+        };
+        let mut timeframes = timeframes;
         timeframes.sort_by_key(|a| timeframe_order(a));
         Ok(timeframes)
     }
@@ -387,36 +439,42 @@ impl DataLoader {
         }
         tracing::debug!(?key, "cache miss — reading kline files");
 
-        let Some(tf_dir) = self
-            .base_path(market_type)
-            .map(|base| base.join(pair).join(timeframe))
-        else {
+        // 周期合法性由数据源裁定：不同源的可用周期不同（binance 1m..1d，
+        // dukascopy M1/H1/D1/1m/1h/1d），由 kline-reader 判定才能给出
+        // "该源支持哪些"的准确信息；用户输错属于 400 而非 500。
+        if let Err(e) = kline_reader::Timeframe::parse(market_type.source(), timeframe) {
+            return Err(DataError::InvalidParam(e.to_string()));
+        }
+
+        let Some(base) = self.base_path(market_type) else {
             tracing::warn!("market not backed by kline-reader yet");
             return Err(DataError::NotFound(format!(
                 "market not supported: {pair}/{timeframe}"
             )));
         };
-        if !tf_dir.exists() {
-            tracing::warn!(path = %tf_dir.display(), "kline directory not found");
-            return Err(DataError::NotFound(tf_dir.display().to_string()));
+        let source = market_type.source();
+        let ext = market_type.data_ext();
+
+        // binance：周期是子目录；dukascopy：品种目录下直接是年/月/日。
+        let probe_dir = match market_type {
+            MarketType::Dukascopy => base.join(pair),
+            _ => base.join(pair).join(timeframe),
+        };
+        if !probe_dir.exists() {
+            tracing::warn!(path = %probe_dir.display(), "kline directory not found");
+            return Err(DataError::NotFound(probe_dir.display().to_string()));
         }
 
-        if !has_kline_files(&tf_dir) {
-            tracing::warn!(path = %tf_dir.display(), "no kline zip files");
+        if !has_data_files(&probe_dir, ext) {
+            tracing::warn!(path = %probe_dir.display(), ext, "no kline data files");
             return Err(DataError::NotFound(format!(
-                "no kline zip files in {}",
-                tf_dir.display()
+                "no {ext} data files in {}",
+                probe_dir.display()
             )));
         }
 
-        let cfg = kline_reader::DataConfig::new(
-            kline_reader::DataSource::Binance,
-            &self.data_dir,
-            pair,
-            timeframe,
-            None,
-            None,
-        )?;
+        let cfg =
+            kline_reader::DataConfig::new(source, &self.data_dir, pair, timeframe, None, None)?;
         let raw = kline_reader::load_columns(&cfg)?;
         if raw.is_empty() {
             return Err(DataError::NotFound(format!(
@@ -921,5 +979,75 @@ mod tests {
                 });
             }
         });
+    }
+
+    // ---- Dukascopy 数据源 ----
+
+    /// 造一个 dukascopy 目录树：`{dir}/dukascopy/{symbol}/{yyyy}/{mm}/{dd}/*.bi5`。
+    fn write_dukascopy_tree(dir: &Path, symbol: &str) {
+        let d = dir
+            .join("dukascopy")
+            .join(symbol)
+            .join("2025")
+            .join("01")
+            .join("02");
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("BID_candles_min_1.bi5"), b"stub").unwrap();
+    }
+
+    #[test]
+    fn test_dukascopy_lists_pairs() {
+        let dir = TempDir::new().unwrap();
+        write_dukascopy_tree(dir.path(), "EURUSD");
+        write_dukascopy_tree(dir.path(), "XAUUSD");
+
+        let loader = DataLoader::new(dir.path());
+        let pairs = loader.list_pairs(MarketType::Dukascopy).unwrap();
+        assert_eq!(pairs, vec!["EURUSD", "XAUUSD"]);
+    }
+
+    #[test]
+    fn test_dukascopy_lists_source_supported_timeframes() {
+        let dir = TempDir::new().unwrap();
+        write_dukascopy_tree(dir.path(), "EURUSD");
+
+        let loader = DataLoader::new(dir.path());
+        let tfs = loader
+            .list_timeframes(MarketType::Dukascopy, "EURUSD")
+            .unwrap();
+        // 周期由数据源决定（同一批 .bi5 的不同聚合粒度），不是子目录。
+        assert!(tfs.contains(&"1h".to_string()));
+        assert!(tfs.contains(&"D1".to_string()));
+        assert!(!tfs.contains(&"3m".to_string())); // dukascopy 不支持 3m
+    }
+
+    #[test]
+    fn test_dukascopy_rejects_unsupported_timeframe() {
+        let dir = TempDir::new().unwrap();
+        write_dukascopy_tree(dir.path(), "EURUSD");
+
+        let loader = DataLoader::new(dir.path());
+        let err = loader
+            .load_klines_filtered(MarketType::Dukascopy, "EURUSD", "3m", None, None, None)
+            .unwrap_err();
+        // 周期不合法是**用户错误**（400），不是 500。
+        assert!(matches!(err, DataError::InvalidParam(_)));
+    }
+
+    #[test]
+    fn test_spot_is_not_advertised() {
+        // Spot 变体仍可解析，但本地无数据源 ⇒ 不进 SUPPORTED 列表。
+        assert!(!MarketType::SUPPORTED.contains(&MarketType::Spot));
+        assert!(MarketType::SUPPORTED.contains(&MarketType::Futures));
+        assert!(MarketType::SUPPORTED.contains(&MarketType::Dukascopy));
+    }
+
+    #[test]
+    fn test_market_type_dukascopy_display_and_parse() {
+        assert_eq!(MarketType::Dukascopy.to_string(), "dukascopy");
+        assert_eq!(
+            "Dukascopy".parse::<MarketType>().unwrap(),
+            MarketType::Dukascopy
+        );
     }
 }

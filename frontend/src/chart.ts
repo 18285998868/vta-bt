@@ -215,8 +215,8 @@ export function createChartManager(
       });
       s.setData(
         ov.points
-          .filter((p) => inWindow(p.time))
-          .map((p) => ({ time: (p.time / 1000) as UTCTimestamp, value: p.value })),
+          .filter((p) => inWindow(p.time) && p.value !== null)
+          .map((p) => ({ time: (p.time / 1000) as UTCTimestamp, value: p.value! })),
       );
       strategyOverlaySeries.push(s);
     });

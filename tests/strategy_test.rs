@@ -81,7 +81,7 @@ fn test_bbrk_end_to_end_markers_equity_summary() {
     assert!(result.markers[0].time < result.markers[1].time);
     // 资金曲线与 bar 对齐。
     assert_eq!(result.equity.len(), 40);
-    assert!(result.summary.final_equity > 10_000.0);
+    assert!(result.summary.final_equity.is_some_and(|v| v > 10_000.0));
     assert_eq!(result.summary.num_trades, 1);
 }
 
@@ -158,4 +158,61 @@ fn test_missing_pair_returns_not_found() {
     p.pair = "NOPEUSDT";
     let err = tradingview_backend::app::strategy::run_backtest(&state, &p).unwrap_err();
     assert!(matches!(err, StrategyError::NotFound(_)));
+}
+
+#[test]
+fn test_param_grid_runs_every_point() {
+    let dir = TempDir::new().unwrap();
+    write_trend_zip(dir.path());
+
+    let state = AppState::new(dir.path());
+    // 3 档：period 5 / 15 / 25
+    let result = tradingview_backend::app::strategy::run_backtest(
+        &state,
+        &params("type = \"sma\"\nperiod = { start = 5, end = 25, step = 10 }"),
+    )
+    .unwrap();
+
+    assert_eq!(result.param_grid.requested, 3);
+    assert_eq!(result.param_grid.ran, 3);
+    assert_eq!(result.param_grid.params.len(), 3);
+    assert_eq!(result.runs.len(), 3);
+    assert!(result.param_grid.skipped.is_empty());
+    // 每档都给出自己的汇总，便于横向对比。
+    assert_eq!(result.runs[0].summary.num_trades, result.summary.num_trades);
+}
+
+#[test]
+fn test_param_grid_reports_skipped() {
+    let dir = TempDir::new().unwrap();
+    write_trend_zip(dir.path());
+
+    let state = AppState::new(dir.path());
+    // period 30 > 40 根 bar 时，sma 仍可算；但 period 100 超出数据长度 ⇒ 该档不可算。
+    let result = tradingview_backend::app::strategy::run_backtest(
+        &state,
+        &params("type = \"sma\"\nperiod = { start = 5, end = 45, step = 20 }"),
+    )
+    .unwrap();
+
+    assert_eq!(result.param_grid.requested, 3);
+    // 至少有一档因数据不足被跳过。
+    assert!(result.param_grid.ran < result.param_grid.requested);
+    assert!(!result.param_grid.skipped.is_empty());
+    assert!(!result.param_grid.skipped[0].reason.is_empty());
+}
+
+#[test]
+fn test_param_grid_too_large_rejected() {
+    let dir = TempDir::new().unwrap();
+    write_trend_zip(dir.path());
+
+    let state = AppState::new(dir.path());
+    let err = tradingview_backend::app::strategy::run_backtest(
+        &state,
+        &params("type = \"sma\"\nperiod = { start = 1, end = 1000, step = 1 }"),
+    )
+    .unwrap_err();
+    assert!(matches!(err, StrategyError::User(_)));
+    assert!(err.to_string().contains("param grid"));
 }

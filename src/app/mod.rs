@@ -1,4 +1,4 @@
-//! 服务编排：校验 → 状态 → 路由 → 监听。
+//! 服务编排：校验 → 状态 → 路由 → 监听 → 优雅停机。
 
 pub mod data_loader;
 pub mod routes;
@@ -13,13 +13,60 @@ use tower_http::services::ServeDir;
 use crate::config::Config;
 use crate::error::AppError;
 
-/// CORS 层（全放行，仅供本地开发）。
-fn setup_cors() -> CorsLayer {
-    tracing::warn!("CORS allows all origins — configure a specific origin for production use");
-    CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any)
+/// CORS 层。
+///
+/// `origins` 为空 = 全放行（仅本地开发，会打 warn）；非空 = 只放行列表内的
+/// origin，并回显匹配的 origin。
+fn setup_cors(origins: &[String]) -> CorsLayer {
+    let layer = CorsLayer::new().allow_methods(Any).allow_headers(Any);
+    if origins.is_empty() {
+        tracing::warn!("CORS allows all origins — set `cors_origins` in config for production use");
+        return layer.allow_origin(Any);
+    }
+
+    let mut allowed: Vec<axum::http::HeaderValue> = Vec::with_capacity(origins.len());
+    for origin in origins {
+        match axum::http::HeaderValue::from_str(origin) {
+            Ok(v) => allowed.push(v),
+            Err(e) => tracing::error!(origin, error = %e, "invalid CORS origin, ignored"),
+        }
+    }
+    tracing::info!(
+        count = allowed.len(),
+        "CORS restricted to configured origins"
+    );
+    layer.allow_origin(allowed)
+}
+
+/// 等待停机信号（Ctrl-C / SIGTERM）。
+///
+/// 收到信号后**不立刻退出**：axum 会停止接受新连接，并等在途请求处理完
+/// （`with_graceful_shutdown`），避免把正在跑的回测/下载硬切断。
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(e) = tokio::signal::ctrl_c().await {
+            tracing::error!(error = %e, "failed to install ctrl_c handler");
+        }
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sig) => {
+                sig.recv().await;
+            }
+            Err(e) => tracing::error!(error = %e, "failed to install SIGTERM handler"),
+        }
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = terminate => {}
+    }
+    tracing::info!("shutdown signal received, draining in-flight requests");
 }
 
 /// 启动 HTTP 服务并常驻。
@@ -46,7 +93,7 @@ pub async fn run(config: &Config) -> Result<(), AppError> {
     }
 
     let app: Router = routes::create_router(app_state)
-        .layer(setup_cors())
+        .layer(setup_cors(&config.cors_origins))
         .fallback_service(ServeDir::new(&frontend_dir).append_index_html_on_directories(true));
 
     let addr_str = format!("{}:{}", config.host, config.port);
@@ -63,6 +110,8 @@ pub async fn run(config: &Config) -> Result<(), AppError> {
     tracing::info!(path = %frontend_dir.display(), "Frontend dir");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
     Ok(())
 }

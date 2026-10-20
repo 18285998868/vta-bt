@@ -4,8 +4,13 @@ use std::path::Path;
 
 /// 交易对允许字符集（大写字母 / 数字 / `_`）。
 const PAIR_ALLOWED: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_";
-/// 周期允许字符集（小写字母 / 数字 / `_`）。
-const TIMEFRAME_ALLOWED: &str = "0123456789abcdefghijklmnopqrstuvwxyz_";
+/// 周期允许字符集（字母 / 数字 / `_`）。
+///
+/// 含大写字母：dukascopy 的周期写作 `M1` / `H1` / `D1`。
+/// 本函数只管**安全**（字符集 + 长度，防目录穿越），不管**合法**
+/// （该周期是否被数据源支持）——合法性由 kline-reader 裁定，能给出
+/// "该源支持哪些周期"的准确信息。
+const TIMEFRAME_ALLOWED: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_";
 
 /// 交易对最大长度（防御超长路径分量）。
 const MAX_PAIR_LEN: usize = 32;
@@ -22,7 +27,7 @@ pub fn valid_pair(s: &str) -> bool {
     is_allowed(s, PAIR_ALLOWED, MAX_PAIR_LEN)
 }
 
-/// 周期白名单校验（小写字母/数字/`_`，防目录穿越）。
+/// 周期白名单校验（字母/数字/`_`，防目录穿越）。
 pub fn valid_timeframe(s: &str) -> bool {
     is_allowed(s, TIMEFRAME_ALLOWED, MAX_TIMEFRAME_LEN)
 }
@@ -40,23 +45,45 @@ pub fn has_kline_files(dir: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// 递归查找目录下**第一个**具有指定扩展名的文件（找到即停）。
+///
+/// binance 的 zip 直接躺在周期目录里（用 [`has_kline_files`] 即可），
+/// dukascopy 的 `.bi5` 却嵌在 `年/月/日` 多层目录里，故需要递归。
+/// 目录不可读时按 `false` 处理。
+pub fn has_data_files(dir: &Path, ext: &str) -> bool {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    for entry in rd.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if has_data_files(&path, ext) {
+                return true;
+            }
+        } else if path.extension().and_then(|e| e.to_str()) == Some(ext) {
+            return true;
+        }
+    }
+    false
+}
+
 /// 周期排序权重（未知周期沉底）。
 pub fn timeframe_order(tf: &str) -> u32 {
     match tf {
         "1s" => 1,
         "5s" => 2,
-        "1m" => 10,
+        "1m" | "M1" => 10,
         "3m" => 11,
         "5m" => 12,
         "15m" => 13,
         "30m" => 14,
-        "1h" => 20,
+        "1h" | "H1" => 20,
         "2h" => 21,
         "4h" => 22,
         "6h" => 23,
         "8h" => 24,
         "12h" => 25,
-        "1d" => 30,
+        "1d" | "D1" => 30,
         "3d" => 31,
         "1w" => 32,
         "1M" => 33,
@@ -88,7 +115,12 @@ mod tests {
         assert!(!valid_timeframe(".."));
         assert!(!valid_timeframe("1/h"));
         assert!(!valid_timeframe("1h "));
-        assert!(!valid_timeframe("1H"));
+        // 大写允许：dukascopy 的周期写作 M1 / H1 / D1。
+        // （本函数只管"安全"，不管"合法"——合法性由数据源裁定。）
+        assert!(valid_timeframe("M1"));
+        assert!(valid_timeframe("H1"));
+        assert!(valid_timeframe("D1"));
+        assert!(valid_timeframe("1H"));
     }
 
     #[test]

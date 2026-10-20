@@ -23,7 +23,12 @@ const MAX_STRATEGY_TOML_BYTES: usize = 4_096;
 #[derive(Clone)]
 pub struct AppState {
     pub(crate) data_loader: Arc<DataLoader>,
-    pub(crate) strategy_cache: moka::sync::Cache<String, Arc<super::strategy::StrategyResult>>,
+    pub(crate) strategy_cache: moka::sync::Cache<u64, Arc<super::strategy::StrategyResult>>,
+    /// 回测并发闸门：同时在跑的回测数上限。
+    ///
+    /// 回测是重 CPU 活（59k 根 ≈ 134ms），且每档网格还要再乘一遍。
+    /// 不设闸门时，一个请求能吃满几百 MB 内存。
+    pub(crate) strategy_gate: Arc<tokio::sync::Semaphore>,
 }
 
 impl AppState {
@@ -35,9 +40,13 @@ impl AppState {
                 .max_capacity(100)
                 .time_to_live(std::time::Duration::from_secs(300))
                 .build(),
+            strategy_gate: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_BACKTESTS)),
         }
     }
 }
+
+/// 同时在跑的回测数上限。
+const MAX_CONCURRENT_BACKTESTS: usize = 4;
 
 /// 统一响应体：成功时 `data` 有值，失败时 `error` 有值。
 #[derive(Serialize)]
@@ -164,7 +173,10 @@ async fn market_types_handler() -> impl IntoResponse {
     (
         StatusCode::OK,
         Json(ApiResponse::ok(MarketTypesResponse {
-            types: MarketType::ALL.iter().map(|m| m.to_string()).collect(),
+            types: MarketType::SUPPORTED
+                .iter()
+                .map(|m| m.to_string())
+                .collect(),
         })),
     )
 }
@@ -175,6 +187,13 @@ fn handle_data_error(e: DataError) -> ErrorResponse {
         DataError::NotFound(_) => {
             tracing::warn!(error = %e, "resource not found");
             (StatusCode::NOT_FOUND, Json(ApiResponse::err(e.to_string())))
+        }
+        DataError::InvalidParam(_) => {
+            tracing::warn!(error = %e, "invalid parameter");
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ApiResponse::err(e.to_string())),
+            )
         }
         _ => {
             tracing::error!(error = %e, "request failed");
@@ -197,15 +216,22 @@ async fn pairs_handler(
         Err(resp) => return resp,
     };
 
-    match state.data_loader.list_pairs(market_type) {
-        Ok(pairs) => (
+    let joined = tokio::task::spawn_blocking({
+        let loader = state.data_loader.clone();
+        move || loader.list_pairs(market_type)
+    })
+    .await;
+
+    match joined {
+        Ok(Ok(pairs)) => (
             StatusCode::OK,
             Json(ApiResponse::ok(serde_json::json!({
                 "market_type": market_type.to_string(),
                 "pairs": pairs
             }))),
         ),
-        Err(e) => handle_data_error(e),
+        Ok(Err(e)) => handle_data_error(e),
+        Err(e) => handle_data_error(DataError::Task(format!("list pairs task: {e}"))),
     }
 }
 
@@ -224,8 +250,15 @@ async fn timeframes_handler(
         return bad_request("invalid pair");
     }
 
-    match state.data_loader.list_timeframes(market_type, &query.pair) {
-        Ok(timeframes) => (
+    let joined = tokio::task::spawn_blocking({
+        let loader = state.data_loader.clone();
+        let pair = query.pair.clone();
+        move || loader.list_timeframes(market_type, &pair)
+    })
+    .await;
+
+    match joined {
+        Ok(Ok(timeframes)) => (
             StatusCode::OK,
             Json(ApiResponse::ok(serde_json::json!({
                 "market_type": market_type.to_string(),
@@ -233,7 +266,8 @@ async fn timeframes_handler(
                 "timeframes": timeframes
             }))),
         ),
-        Err(e) => handle_data_error(e),
+        Ok(Err(e)) => handle_data_error(e),
+        Err(e) => handle_data_error(DataError::Task(format!("list timeframes task: {e}"))),
     }
 }
 
@@ -258,15 +292,21 @@ async fn klines_handler(
         return bad_request(format!("limit too large (max {MAX_KLINE_LIMIT})"));
     }
 
-    match state.data_loader.load_klines_filtered(
-        market_type,
-        &query.pair,
-        &query.timeframe,
-        query.before,
-        query.after,
-        query.limit,
-    ) {
-        Ok(klines) => (
+    // 读盘 + 解析是重同步 IO：放 blocking 线程池，别占住 tokio worker。
+    // 闭包必须是 'static ⇒ 先把要用��的值拷出来再 move。
+    let before = query.before;
+    let after = query.after;
+    let limit = query.limit;
+    let joined = tokio::task::spawn_blocking({
+        let loader = state.data_loader.clone();
+        let pair = query.pair.clone();
+        let timeframe = query.timeframe.clone();
+        move || loader.load_klines_filtered(market_type, &pair, &timeframe, before, after, limit)
+    })
+    .await;
+
+    match joined {
+        Ok(Ok(klines)) => (
             StatusCode::OK,
             Json(ApiResponse::ok(serde_json::json!({
                 "market_type": market_type.to_string(),
@@ -276,7 +316,8 @@ async fn klines_handler(
                 "klines": klines
             }))),
         ),
-        Err(e) => handle_data_error(e),
+        Ok(Err(e)) => handle_data_error(e),
+        Err(e) => handle_data_error(DataError::Task(format!("kline load task: {e}"))),
     }
 }
 
@@ -334,20 +375,47 @@ async fn strategy_handler(
         ));
     }
 
-    let params = BacktestParams {
-        market_type,
-        pair: &query.pair,
-        timeframe: &query.timeframe,
-        strategy_toml: &query.strategy_toml,
-        initial_balance: query.initial_balance.unwrap_or(10_000.0),
-        fee_bps: query.fee_bps.unwrap_or(0.0),
-        slippage_bps: query.slippage_bps.unwrap_or(0.0),
-        before: query.before,
-        after: query.after,
+    let initial_balance = query.initial_balance.unwrap_or(10_000.0);
+    let fee_bps = query.fee_bps.unwrap_or(0.0);
+    let slippage_bps = query.slippage_bps.unwrap_or(0.0);
+    let before = query.before;
+    let after = query.after;
+
+    // 回测是重 CPU 活（59k 根 ≈ 134ms/档）：放 blocking 线程池，别占住 tokio worker。
+    //
+    // 并发闸门：同时在跑的回测数封顶，否则内存与 CPU 都会被单个请求吃光
+    // （每个回测持有一份 59k×6 的列 + 信号 + 资金曲线）。
+    // `_permit` 活到函数结束 ⇒ 响应构造完才释放名额。
+    let _permit = match state.strategy_gate.clone().acquire_owned().await {
+        Ok(p) => p,
+        Err(_) => return strategy_error(StrategyError::Internal("backtest gate closed".into())),
     };
 
-    match super::strategy::run_backtest(&state, &params) {
-        Ok(result) => (
+    // 闭包必须 'static ⇒ 查询串要先 own 住（`BacktestParams` 借用它们）。
+    let joined = tokio::task::spawn_blocking({
+        let state = state.clone();
+        let pair = query.pair.clone();
+        let timeframe = query.timeframe.clone();
+        let strategy_toml = query.strategy_toml.clone();
+        move || {
+            let params = BacktestParams {
+                market_type,
+                pair: &pair,
+                timeframe: &timeframe,
+                strategy_toml: &strategy_toml,
+                initial_balance,
+                fee_bps,
+                slippage_bps,
+                before,
+                after,
+            };
+            super::strategy::run_backtest(&state, &params)
+        }
+    })
+    .await;
+
+    match joined {
+        Ok(Ok(result)) => (
             StatusCode::OK,
             Json(ApiResponse::ok(serde_json::json!({
                 "market_type": market_type.to_string(),
@@ -359,10 +427,13 @@ async fn strategy_handler(
                 "trades": result.trades,
                 "equity": result.equity,
                 "overlays": result.overlays,
-                "summary": result.summary
+                "summary": result.summary,
+                "param_grid": result.param_grid,
+                "runs": result.runs
             }))),
         ),
-        Err(e) => strategy_error(e),
+        Ok(Err(e)) => strategy_error(e),
+        Err(e) => strategy_error(StrategyError::Internal(format!("backtest task: {e}"))),
     }
 }
 
@@ -479,7 +550,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_market_types_lists_enum_variants() {
+    async fn test_market_types_lists_supported_variants() {
         let app = test_app();
         let res = app
             .oneshot(
@@ -495,8 +566,10 @@ mod tests {
             .await
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        // 只暴露**本地确有数据源**的类型：spot 无数据，不对外列。
         assert_eq!(json["data"]["types"][0], "futures");
-        assert_eq!(json["data"]["types"][1], "spot");
+        assert_eq!(json["data"]["types"][1], "dukascopy");
+        assert_eq!(json["data"]["types"].as_array().unwrap().len(), 2);
     }
 
     #[tokio::test]
