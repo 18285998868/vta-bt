@@ -1,3 +1,5 @@
+//! HTTP 路由：参数校验 → 数据加载 → 统一响应体。
+
 use axum::{
     Json, Router,
     extract::{Query, State},
@@ -9,17 +11,24 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use super::data_loader::{DataError, DataLoader, MarketType, ParseMarketTypeError};
-use super::strategy::{StrategyError, StrategyResult};
+use super::strategy::{BacktestParams, StrategyError};
 use crate::utils::{valid_pair, valid_timeframe};
 
+/// 单次 `/api/klines` 返回的最大 bar 数（防御超大响应体）。
+const MAX_KLINE_LIMIT: usize = 10_000;
+/// 单次 `/api/strategy` 允许的策略 TOML 字节数（防御超大解析输入）。
+const MAX_STRATEGY_TOML_BYTES: usize = 4_096;
+
+/// 服务共享状态。
 #[derive(Clone)]
 pub struct AppState {
     pub(crate) data_loader: Arc<DataLoader>,
-    pub(crate) strategy_cache: moka::sync::Cache<String, Arc<StrategyResult>>,
+    pub(crate) strategy_cache: moka::sync::Cache<String, Arc<super::strategy::StrategyResult>>,
 }
 
 impl AppState {
-    pub fn new(data_dir: PathBuf) -> Self {
+    /// 构造服务状态。
+    pub fn new(data_dir: impl Into<PathBuf>) -> Self {
         Self {
             data_loader: Arc::new(DataLoader::new(data_dir)),
             strategy_cache: moka::sync::Cache::builder()
@@ -30,15 +39,16 @@ impl AppState {
     }
 }
 
+/// 统一响应体：成功时 `data` 有值，失败时 `error` 有值。
 #[derive(Serialize)]
-struct ApiResponse<T: Serialize> {
+struct ApiResponse<T> {
     success: bool,
     data: Option<T>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
 }
 
-impl<T: Serialize> ApiResponse<T> {
+impl<T> ApiResponse<T> {
     fn ok(data: T) -> Self {
         Self {
             success: true,
@@ -56,57 +66,88 @@ impl<T: Serialize> ApiResponse<T> {
     }
 }
 
+/// 错误响应（`data` 恒为 `null`）。
+type ErrorResponse = (StatusCode, Json<ApiResponse<serde_json::Value>>);
+
+/// 市场类型列表响应。
 #[derive(Serialize)]
 struct MarketTypesResponse {
     types: Vec<String>,
 }
 
+/// `/api/pairs` 查询参数。
 #[derive(Debug, Deserialize)]
 pub struct PairsQuery {
+    /// 市场类型（缺省为 `futures`）。
     pub market_type: Option<String>,
 }
 
+/// `/api/timeframes` 查询参数。
 #[derive(Debug, Deserialize)]
 pub struct TimeframesQuery {
+    /// 市场类型（缺省为 `futures`）。
     pub market_type: Option<String>,
+    /// 交易对。
     pub pair: String,
 }
 
+/// `/api/klines` 查询参数。
 #[derive(Debug, Deserialize)]
 pub struct KlinesQuery {
+    /// 市场类型（缺省为 `futures`）。
     pub market_type: Option<String>,
+    /// 交易对。
     pub pair: String,
+    /// 周期。
     pub timeframe: String,
+    /// 最多返回的 bar 数（取窗口内最后 N 根）。
     pub limit: Option<usize>,
+    /// 时间窗口上界（不含，毫秒时间戳）。
     pub before: Option<i64>,
+    /// 时间窗口下界（不含，毫秒时间戳）。
     pub after: Option<i64>,
 }
 
+/// `/api/strategy` 查询参数。
 #[derive(Debug, Deserialize)]
 pub struct StrategyQuery {
+    /// 市场类型（缺省为 `futures`）。
     pub market_type: Option<String>,
+    /// 交易对。
     pub pair: String,
+    /// 周期。
     pub timeframe: String,
+    /// 策略 TOML 片段。
     pub strategy_toml: String,
+    /// 初始资金（缺省 10000）。
     pub initial_balance: Option<f64>,
+    /// 单边手续费（基点，缺省 0）。
     pub fee_bps: Option<f64>,
+    /// 单边滑点（基点，缺省 0）。
     pub slippage_bps: Option<f64>,
+    /// 时间窗口上界（不含，毫秒时间戳）。
     pub before: Option<i64>,
+    /// 时间窗口下界（不含，毫秒时间戳）。
     pub after: Option<i64>,
 }
 
-fn parse_market_type(market_type: &Option<String>) -> Result<MarketType, ParseMarketTypeError> {
-    market_type
-        .as_ref()
-        .map_or(Ok(MarketType::default()), |s| s.parse())
+/// 解析市场类型（缺省 `futures`）。
+fn parse_market_type(market_type: Option<&str>) -> Result<MarketType, ParseMarketTypeError> {
+    market_type.map_or(Ok(MarketType::default()), str::parse)
 }
 
-fn require_market_type(
-    market_type: &Option<String>,
-) -> Result<MarketType, (StatusCode, Json<ApiResponse<serde_json::Value>>)> {
+/// 解析市场类型，失败转 400 响应。
+fn require_market_type(market_type: Option<&str>) -> Result<MarketType, ErrorResponse> {
     parse_market_type(market_type).map_err(|e| bad_request(e.to_string()))
 }
 
+/// 构造 400 响应。
+fn bad_request(msg: impl Into<String>) -> ErrorResponse {
+    (StatusCode::BAD_REQUEST, Json(ApiResponse::err(msg)))
+}
+
+/// 健康检查。
+#[tracing::instrument(skip_all)]
 async fn health_handler() -> impl IntoResponse {
     (
         StatusCode::OK,
@@ -117,23 +158,26 @@ async fn health_handler() -> impl IntoResponse {
     )
 }
 
+/// 市场类型列表。
+#[tracing::instrument(skip_all)]
 async fn market_types_handler() -> impl IntoResponse {
     (
         StatusCode::OK,
         Json(ApiResponse::ok(MarketTypesResponse {
-            types: vec!["futures".to_string(), "spot".to_string()],
+            types: MarketType::ALL.iter().map(|m| m.to_string()).collect(),
         })),
     )
 }
 
-fn handle_data_error(e: DataError) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
+/// 数据错误 → HTTP 响应（500 一律脱敏，不外泄内部细节）。
+fn handle_data_error(e: DataError) -> ErrorResponse {
     match &e {
         DataError::NotFound(_) => {
-            tracing::warn!(error = ?e, "resource not found");
+            tracing::warn!(error = %e, "resource not found");
             (StatusCode::NOT_FOUND, Json(ApiResponse::err(e.to_string())))
         }
         _ => {
-            tracing::error!(error = ?e, "request failed");
+            tracing::error!(error = %e, "request failed");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ApiResponse::err("internal error")),
@@ -142,15 +186,13 @@ fn handle_data_error(e: DataError) -> (StatusCode, Json<ApiResponse<serde_json::
     }
 }
 
-fn bad_request(msg: impl Into<String>) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
-    (StatusCode::BAD_REQUEST, Json(ApiResponse::err(msg)))
-}
-
+/// `/api/pairs`：列出交易对。
+#[tracing::instrument(skip_all)]
 async fn pairs_handler(
     State(state): State<AppState>,
     Query(query): Query<PairsQuery>,
 ) -> impl IntoResponse {
-    let market_type = match require_market_type(&query.market_type) {
+    let market_type = match require_market_type(query.market_type.as_deref()) {
         Ok(mt) => mt,
         Err(resp) => return resp,
     };
@@ -167,11 +209,13 @@ async fn pairs_handler(
     }
 }
 
+/// `/api/timeframes`：列出某交易对下的周期。
+#[tracing::instrument(skip_all)]
 async fn timeframes_handler(
     State(state): State<AppState>,
     Query(query): Query<TimeframesQuery>,
 ) -> impl IntoResponse {
-    let market_type = match require_market_type(&query.market_type) {
+    let market_type = match require_market_type(query.market_type.as_deref()) {
         Ok(mt) => mt,
         Err(resp) => return resp,
     };
@@ -193,11 +237,13 @@ async fn timeframes_handler(
     }
 }
 
+/// `/api/klines`：取 K 线。
+#[tracing::instrument(skip_all, fields(pair = %query.pair, timeframe = %query.timeframe))]
 async fn klines_handler(
     State(state): State<AppState>,
     Query(query): Query<KlinesQuery>,
 ) -> impl IntoResponse {
-    let market_type = match require_market_type(&query.market_type) {
+    let market_type = match require_market_type(query.market_type.as_deref()) {
         Ok(mt) => mt,
         Err(resp) => return resp,
     };
@@ -207,6 +253,9 @@ async fn klines_handler(
     }
     if !valid_timeframe(&query.timeframe) {
         return bad_request("invalid timeframe");
+    }
+    if query.limit.is_some_and(|n| n > MAX_KLINE_LIMIT) {
+        return bad_request(format!("limit too large (max {MAX_KLINE_LIMIT})"));
     }
 
     match state.data_loader.load_klines_filtered(
@@ -231,12 +280,15 @@ async fn klines_handler(
     }
 }
 
-fn strategy_error(e: StrategyError) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
-    match e {
-        StrategyError::User(msg) => bad_request(msg),
-        StrategyError::NotFound(msg) => (StatusCode::NOT_FOUND, Json(ApiResponse::err(msg))),
+/// 策略错误 → HTTP 响应（500 一律脱敏）。
+fn strategy_error(e: StrategyError) -> ErrorResponse {
+    match &e {
+        StrategyError::User(msg) => bad_request(msg.clone()),
+        StrategyError::NotFound(msg) => {
+            (StatusCode::NOT_FOUND, Json(ApiResponse::err(msg.clone())))
+        }
         StrategyError::Internal(_) => {
-            tracing::error!(error = ?e, "strategy failed");
+            tracing::error!(error = %e, "strategy failed");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ApiResponse::err("internal error")),
@@ -245,23 +297,27 @@ fn strategy_error(e: StrategyError) -> (StatusCode, Json<ApiResponse<serde_json:
     }
 }
 
+/// `/api/strategies`：策略下拉列表。
+#[tracing::instrument(skip_all)]
 async fn strategies_handler() -> impl IntoResponse {
     (
         StatusCode::OK,
         Json(ApiResponse::ok(serde_json::json!({
             "strategies": super::strategy::list_strategies()
-                .iter()
+                .into_iter()
                 .map(|s| s.name)
                 .collect::<Vec<_>>()
         }))),
     )
 }
 
+/// `/api/strategy`：回测。
+#[tracing::instrument(skip_all, fields(pair = %query.pair, timeframe = %query.timeframe))]
 async fn strategy_handler(
     State(state): State<AppState>,
     Query(query): Query<StrategyQuery>,
 ) -> impl IntoResponse {
-    let market_type = match require_market_type(&query.market_type) {
+    let market_type = match require_market_type(query.market_type.as_deref()) {
         Ok(mt) => mt,
         Err(resp) => return resp,
     };
@@ -272,19 +328,25 @@ async fn strategy_handler(
     if !valid_timeframe(&query.timeframe) {
         return bad_request("invalid timeframe");
     }
+    if query.strategy_toml.len() > MAX_STRATEGY_TOML_BYTES {
+        return bad_request(format!(
+            "strategy_toml too large (max {MAX_STRATEGY_TOML_BYTES} bytes)"
+        ));
+    }
 
-    match super::strategy::run_backtest(
-        &state,
+    let params = BacktestParams {
         market_type,
-        &query.pair,
-        &query.timeframe,
-        &query.strategy_toml,
-        query.initial_balance.unwrap_or(10_000.0),
-        query.fee_bps.unwrap_or(0.0),
-        query.slippage_bps.unwrap_or(0.0),
-        query.before,
-        query.after,
-    ) {
+        pair: &query.pair,
+        timeframe: &query.timeframe,
+        strategy_toml: &query.strategy_toml,
+        initial_balance: query.initial_balance.unwrap_or(10_000.0),
+        fee_bps: query.fee_bps.unwrap_or(0.0),
+        slippage_bps: query.slippage_bps.unwrap_or(0.0),
+        before: query.before,
+        after: query.after,
+    };
+
+    match super::strategy::run_backtest(&state, &params) {
         Ok(result) => (
             StatusCode::OK,
             Json(ApiResponse::ok(serde_json::json!({
@@ -304,6 +366,7 @@ async fn strategy_handler(
     }
 }
 
+/// 组装路由。
 pub fn create_router(app_state: AppState) -> Router {
     Router::new()
         .route("/api/health", axum::routing::get(health_handler))
@@ -328,16 +391,13 @@ mod tests {
 
     #[test]
     fn test_parse_market_type_default() {
-        assert_eq!(parse_market_type(&None).unwrap(), MarketType::Futures);
+        assert_eq!(parse_market_type(None).unwrap(), MarketType::Futures);
         assert_eq!(
-            parse_market_type(&Some("futures".to_string())).unwrap(),
+            parse_market_type(Some("futures")).unwrap(),
             MarketType::Futures
         );
-        assert_eq!(
-            parse_market_type(&Some("spot".to_string())).unwrap(),
-            MarketType::Spot
-        );
-        assert!(parse_market_type(&Some("invalid".to_string())).is_err());
+        assert_eq!(parse_market_type(Some("spot")).unwrap(), MarketType::Spot);
+        assert!(parse_market_type(Some("invalid")).is_err());
     }
 
     fn test_app() -> Router {
@@ -387,6 +447,71 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_klines_rejects_oversized_limit() {
+        let app = test_app();
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/klines?market_type=futures&pair=BTCUSDT&timeframe=1h&limit=999999")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_strategy_rejects_oversized_toml() {
+        let app = test_app();
+        let big = "x".repeat(MAX_STRATEGY_TOML_BYTES + 1);
+        let uri = format!(
+            "/api/strategy?market_type=futures&pair=BTCUSDT&timeframe=1h&strategy_toml={big}"
+        );
+        let res = app
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_market_types_lists_enum_variants() {
+        let app = test_app();
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/market-types")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["data"]["types"][0], "futures");
+        assert_eq!(json["data"]["types"][1], "spot");
+    }
+
+    #[tokio::test]
+    async fn test_health_ok() {
+        let app = test_app();
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
     }
 
     #[tokio::test]

@@ -1,3 +1,6 @@
+//! 行情数据加载：binance zip → K 线列 → 内存缓存。
+
+use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -8,11 +11,23 @@ use tracing::instrument;
 
 use crate::utils::{has_kline_files, timeframe_order};
 
+/// 单个数据集超过该行数时打告警（内存占用提示）。
+const LARGE_DATASET_ROWS: usize = 500_000;
+
+/// 行情市场类型。
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum MarketType {
+    /// U 本位合约（binance `um` daily 布局）。
     #[default]
     Futures,
+    /// 现货（kline-reader 暂无对应数据源）。
     Spot,
+}
+
+impl MarketType {
+    /// 全部市场类型（`/api/market-types` 的数据源）。
+    pub const ALL: [MarketType; 2] = [MarketType::Futures, MarketType::Spot];
 }
 
 impl std::fmt::Display for MarketType {
@@ -28,51 +43,234 @@ impl std::str::FromStr for MarketType {
     type Err = ParseMarketTypeError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "futures" => Ok(MarketType::Futures),
-            "spot" => Ok(MarketType::Spot),
-            other => Err(ParseMarketTypeError(other.to_owned())),
+        if s.eq_ignore_ascii_case("futures") {
+            Ok(MarketType::Futures)
+        } else if s.eq_ignore_ascii_case("spot") {
+            Ok(MarketType::Spot)
+        } else {
+            Err(ParseMarketTypeError::new(s))
         }
     }
 }
 
+/// `market_type` 解析失败。
 #[derive(Debug, Clone, Error)]
 #[error("unknown market type: {0}")]
-pub struct ParseMarketTypeError(pub String);
+pub struct ParseMarketTypeError(String);
 
+impl ParseMarketTypeError {
+    /// 构造解析错误。
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    /// 触发解析失败的原始输入。
+    pub fn value(&self) -> &str {
+        &self.0
+    }
+}
+
+/// 行情数据错误。
 #[derive(Debug, Error)]
 pub enum DataError {
-    #[error("I/O error: {0}")]
+    /// 文件系统 IO 失败。
+    #[error("i/o error: {0}")]
     Io(#[from] std::io::Error),
 
+    /// kline-reader 读取/解析失败。
     #[error("kline-reader error: {0}")]
     Reader(#[from] kline_reader::ReaderError),
 
-    #[error("directory not found: {0}")]
+    /// 数据目录或数据集不存在。
+    #[error("not found: {0}")]
     NotFound(String),
 }
 
+/// 单根 K 线（JSON DTO）。
 #[derive(Debug, Clone, Serialize)]
 pub struct Kline {
+    /// bar 开盘时间（毫秒时间戳）。
     pub time: i64,
+    /// 开盘价。
     pub open: f64,
+    /// 最高价。
     pub high: f64,
+    /// 最低价。
     pub low: f64,
+    /// 收盘价。
     pub close: f64,
+    /// 成交量。
     pub volume: f64,
 }
 
+/// 与 bar 对齐的 6 条列（SoA 布局）。
+///
+/// 缓存与回测都直接消费列切片：vta 引擎要的是 `&[f64]`，若中间层存
+/// `Vec<Kline>`（AoS），每次回测都要把结构体再拆成 6 份副本。
+#[derive(Debug, Clone, Default)]
+pub struct KlineColumns {
+    /// bar 开盘时间（毫秒时间戳），升序且无重复。
+    pub time: Vec<i64>,
+    /// 开盘价。
+    pub open: Vec<f64>,
+    /// 最高价。
+    pub high: Vec<f64>,
+    /// 最低价。
+    pub low: Vec<f64>,
+    /// 收盘价。
+    pub close: Vec<f64>,
+    /// 成交量。
+    pub volume: Vec<f64>,
+}
+
+impl KlineColumns {
+    /// 按 bar 数预分配。
+    fn with_capacity(n: usize) -> Self {
+        Self {
+            time: Vec::with_capacity(n),
+            open: Vec::with_capacity(n),
+            high: Vec::with_capacity(n),
+            low: Vec::with_capacity(n),
+            close: Vec::with_capacity(n),
+            volume: Vec::with_capacity(n),
+        }
+    }
+
+    /// 从 kline-reader 的列集构造：丢弃非有限值行、按时间去重（保留首行）。
+    ///
+    /// kline-reader 已保证输出按 `open_time` 升序且已去重，这里再做一次是
+    /// 防御性兜底（数据源换实现时不至于静默产出重复 bar）。
+    fn from_reader(raw: &kline_reader::KlineColumns) -> Self {
+        let (time, open, high, low, close, volume) = (
+            raw.time(),
+            raw.open(),
+            raw.high(),
+            raw.low(),
+            raw.close(),
+            raw.volume(),
+        );
+
+        let mut cols = Self::with_capacity(time.len());
+        let mut last_time: Option<i64> = None;
+        for i in 0..time.len() {
+            let (o, h, l, c, v) = (open[i], high[i], low[i], close[i], volume[i]);
+            if !o.is_finite()
+                || !h.is_finite()
+                || !l.is_finite()
+                || !c.is_finite()
+                || !v.is_finite()
+            {
+                continue;
+            }
+            if last_time == Some(time[i]) {
+                continue;
+            }
+            last_time = Some(time[i]);
+            cols.time.push(time[i]);
+            cols.open.push(o);
+            cols.high.push(h);
+            cols.low.push(l);
+            cols.close.push(c);
+            cols.volume.push(v);
+        }
+        cols
+    }
+
+    /// bar 数。
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.time.len()
+    }
+
+    /// 是否没有 bar。
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.time.is_empty()
+    }
+
+    /// 取区间内的列副本（越界自动收敛到合法范围）。
+    #[must_use]
+    pub fn slice(&self, range: Range<usize>) -> Self {
+        let (start, end) = self.bounds(range);
+        Self {
+            time: self.time[start..end].to_vec(),
+            open: self.open[start..end].to_vec(),
+            high: self.high[start..end].to_vec(),
+            low: self.low[start..end].to_vec(),
+            close: self.close[start..end].to_vec(),
+            volume: self.volume[start..end].to_vec(),
+        }
+    }
+
+    /// 取区间内的 bar 并转成 JSON DTO。
+    #[must_use]
+    pub fn to_klines(&self, range: Range<usize>) -> Vec<Kline> {
+        let (start, end) = self.bounds(range);
+        let mut out = Vec::with_capacity(end - start);
+        for i in start..end {
+            out.push(Kline {
+                time: self.time[i],
+                open: self.open[i],
+                high: self.high[i],
+                low: self.low[i],
+                close: self.close[i],
+                volume: self.volume[i],
+            });
+        }
+        out
+    }
+
+    /// 把区间收敛到 `[0, len]` 内且 `start <= end`。
+    fn bounds(&self, range: Range<usize>) -> (usize, usize) {
+        let len = self.len();
+        let start = range.start.min(len);
+        let end = range.end.clamp(start, len);
+        (start, end)
+    }
+}
+
+/// 计算时间过滤 + 限长后的 bar 区间 `[start, end)`。
+///
+/// `time` 必须升序（kline-reader 保证）。`before`/`after` 是开区间过滤，
+/// `limit` 取窗口内**最后** N 根（与历史行为一致）。
+fn time_window(
+    time: &[i64],
+    before: Option<i64>,
+    after: Option<i64>,
+    limit: Option<usize>,
+) -> Range<usize> {
+    let mut start = match after {
+        Some(t) => time.partition_point(|&x| x <= t),
+        None => 0,
+    };
+    let mut end = match before {
+        Some(t) => time.partition_point(|&x| x < t),
+        None => time.len(),
+    };
+    end = end.max(start);
+    if let Some(l) = limit {
+        // 取窗口末尾 N 根：起点右移，而不是把终点左移。
+        start = end.saturating_sub(l).max(start);
+    }
+    start..end
+}
+
+/// 缓存键：市场类型 + 交易对 + 周期。
 type CacheKey = (MarketType, String, String);
 
+/// 行情数据加载器。
+///
+/// 读到的列集以 `Arc` 共享并进 moka 缓存，命中时零拷贝。
 pub struct DataLoader {
     data_dir: PathBuf,
-    klines_cache: moka::sync::Cache<CacheKey, Arc<Vec<Kline>>>,
+    klines_cache: moka::sync::Cache<CacheKey, Arc<KlineColumns>>,
 }
 
 impl DataLoader {
-    pub fn new(data_dir: PathBuf) -> Self {
+    /// 构造加载器。
+    pub fn new(data_dir: impl Into<PathBuf>) -> Self {
         Self {
-            data_dir,
+            data_dir: data_dir.into(),
             klines_cache: moka::sync::Cache::builder()
                 .max_capacity(200)
                 .time_to_live(Duration::from_secs(300))
@@ -97,6 +295,7 @@ impl DataLoader {
         }
     }
 
+    /// 列出可用交易对（字典序）。
     pub fn list_pairs(&self, market_type: MarketType) -> Result<Vec<String>, DataError> {
         let Some(base) = self.base_path(market_type) else {
             return Ok(vec![]);
@@ -113,6 +312,7 @@ impl DataLoader {
         Ok(pairs)
     }
 
+    /// 列出某交易对下有数据的周期（按周期大小排序）。
     pub fn list_timeframes(
         &self,
         market_type: MarketType,
@@ -135,6 +335,9 @@ impl DataLoader {
         Ok(timeframes)
     }
 
+    /// 取过滤后的 K 线（JSON DTO）。
+    ///
+    /// `before`/`after` 为开区间过滤，`limit` 取窗口内最后 N 根。
     pub fn load_klines_filtered(
         &self,
         market_type: MarketType,
@@ -144,29 +347,39 @@ impl DataLoader {
         after: Option<i64>,
         limit: Option<usize>,
     ) -> Result<Vec<Kline>, DataError> {
-        let klines = self.load_all_klines(market_type, pair, timeframe)?;
-
-        let iter = klines
-            .iter()
-            .filter(|k| before.is_none_or(|t| k.time < t))
-            .filter(|k| after.is_none_or(|t| k.time > t));
-
-        let mut result: Vec<Kline> = iter.cloned().collect();
-        if let Some(n) = limit {
-            let start = result.len().saturating_sub(n);
-            result = result.split_off(start);
-        }
-
-        Ok(result)
+        let all = self.load_all_klines(market_type, pair, timeframe)?;
+        let range = time_window(&all.time, before, after, limit);
+        Ok(all.to_klines(range))
     }
 
+    /// 取过滤后的列集（供回测直接消费）。
+    ///
+    /// 与 [`DataLoader::load_klines_filtered`] 的区别：不构造 JSON DTO，
+    /// 直接给回测引擎喂列切片，省掉一次结构体拷贝。
+    pub fn load_columns_filtered(
+        &self,
+        market_type: MarketType,
+        pair: &str,
+        timeframe: &str,
+        before: Option<i64>,
+        after: Option<i64>,
+    ) -> Result<Arc<KlineColumns>, DataError> {
+        let all = self.load_all_klines(market_type, pair, timeframe)?;
+        let range = time_window(&all.time, before, after, None);
+        if range.start == 0 && range.end == all.len() {
+            return Ok(all);
+        }
+        Ok(Arc::new(all.slice(range)))
+    }
+
+    /// 读取全部 K 线列（带缓存）。
     #[instrument(skip(self))]
     fn load_all_klines(
         &self,
         market_type: MarketType,
         pair: &str,
         timeframe: &str,
-    ) -> Result<Arc<Vec<Kline>>, DataError> {
+    ) -> Result<Arc<KlineColumns>, DataError> {
         let key = (market_type, pair.to_owned(), timeframe.to_owned());
         if let Some(cached) = self.klines_cache.get(&key) {
             tracing::debug!(?key, "cache hit");
@@ -185,14 +398,14 @@ impl DataLoader {
         };
         if !tf_dir.exists() {
             tracing::warn!(path = %tf_dir.display(), "kline directory not found");
-            return Err(DataError::NotFound(format!("{:?}", tf_dir)));
+            return Err(DataError::NotFound(tf_dir.display().to_string()));
         }
 
         if !has_kline_files(&tf_dir) {
             tracing::warn!(path = %tf_dir.display(), "no kline zip files");
             return Err(DataError::NotFound(format!(
-                "no kline zip files in {:?}",
-                tf_dir
+                "no kline zip files in {}",
+                tf_dir.display()
             )));
         }
 
@@ -204,48 +417,27 @@ impl DataLoader {
             None,
             None,
         )?;
-        let cols = kline_reader::load_columns(&cfg)?;
-        if cols.is_empty() {
+        let raw = kline_reader::load_columns(&cfg)?;
+        if raw.is_empty() {
             return Err(DataError::NotFound(format!(
                 "no klines loaded for {pair}/{timeframe}"
             )));
         }
-        if cols.len() > 500_000 {
+        if raw.len() > LARGE_DATASET_ROWS {
             tracing::warn!(
-                rows = cols.len(),
+                rows = raw.len(),
                 "large kline dataset loaded — consider using before/after filters to reduce memory"
             );
         }
 
-        let mut klines = Vec::with_capacity(cols.len());
-        for i in 0..cols.len() {
-            let (o, h, l, c, v) = (
-                cols.open()[i],
-                cols.high()[i],
-                cols.low()[i],
-                cols.close()[i],
-                cols.volume()[i],
-            );
-            if o.is_nan() || h.is_nan() || l.is_nan() || c.is_nan() || v.is_nan() {
-                continue;
-            }
-            klines.push(Kline {
-                time: cols.time()[i],
-                open: o,
-                high: h,
-                low: l,
-                close: c,
-                volume: v,
-            });
-        }
-
-        klines.dedup_by_key(|k| k.time);
-        tracing::debug!(count = klines.len(), "klines after dedup");
-        let result = Arc::new(klines);
+        let cols = KlineColumns::from_reader(&raw);
+        tracing::debug!(count = cols.len(), "klines after clean");
+        let result = Arc::new(cols);
         self.klines_cache.insert(key, result.clone());
         Ok(result)
     }
 
+    /// 清空 K 线缓存。
     pub fn invalidate_cache(&self) {
         self.klines_cache.invalidate_all();
     }
@@ -324,15 +516,25 @@ mod tests {
     }
 
     #[test]
+    fn test_market_type_from_str_is_case_insensitive() {
+        assert_eq!(
+            "FUTURES".parse::<MarketType>().unwrap(),
+            MarketType::Futures
+        );
+        assert_eq!("Spot".parse::<MarketType>().unwrap(), MarketType::Spot);
+    }
+
+    #[test]
     fn test_parse_market_type_error_display() {
-        let e = ParseMarketTypeError("bad".into());
+        let e = ParseMarketTypeError::new("bad");
         assert_eq!(e.to_string(), "unknown market type: bad");
+        assert_eq!(e.value(), "bad");
     }
 
     #[test]
     fn test_list_pairs_empty_dir() {
         let dir = TempDir::new().unwrap();
-        let loader = DataLoader::new(dir.path().to_path_buf());
+        let loader = DataLoader::new(dir.path());
         let pairs = loader.list_pairs(MarketType::Futures).unwrap();
         assert!(pairs.is_empty());
     }
@@ -355,7 +557,7 @@ mod tests {
             &test_rows(),
         );
 
-        let loader = DataLoader::new(dir.path().to_path_buf());
+        let loader = DataLoader::new(dir.path());
         let pairs = loader.list_pairs(MarketType::Futures).unwrap();
         assert_eq!(pairs, vec!["BTCUSDT", "ETHUSDT"]);
     }
@@ -380,7 +582,7 @@ mod tests {
         let empty_dir = binance_tf_dir(dir.path(), "BTCUSDT", "1w");
         std::fs::create_dir_all(&empty_dir).unwrap();
 
-        let loader = DataLoader::new(dir.path().to_path_buf());
+        let loader = DataLoader::new(dir.path());
         let tfs = loader
             .list_timeframes(MarketType::Futures, "BTCUSDT")
             .unwrap();
@@ -390,7 +592,7 @@ mod tests {
     #[test]
     fn test_spot_not_supported_yet() {
         let dir = TempDir::new().unwrap();
-        let loader = DataLoader::new(dir.path().to_path_buf());
+        let loader = DataLoader::new(dir.path());
         assert!(loader.list_pairs(MarketType::Spot).unwrap().is_empty());
         assert!(
             loader
@@ -410,7 +612,7 @@ mod tests {
             &test_rows(),
         );
 
-        let loader = DataLoader::new(dir.path().to_path_buf());
+        let loader = DataLoader::new(dir.path());
         let klines = loader
             .load_klines_filtered(MarketType::Futures, "BTCUSDT", "1h", None, None, None)
             .unwrap();
@@ -428,7 +630,7 @@ mod tests {
             &test_rows(),
         );
 
-        let loader = DataLoader::new(dir.path().to_path_buf());
+        let loader = DataLoader::new(dir.path());
         let klines = loader
             .load_klines_filtered(
                 MarketType::Futures,
@@ -440,6 +642,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(klines.len(), 2);
+        assert_eq!(klines[0].time, 1_000_000);
     }
 
     #[test]
@@ -453,7 +656,7 @@ mod tests {
             &test_rows(),
         );
 
-        let loader = DataLoader::new(dir.path().to_path_buf());
+        let loader = DataLoader::new(dir.path());
         let klines = loader
             .load_klines_filtered(
                 MarketType::Futures,
@@ -465,6 +668,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(klines.len(), 2);
+        assert_eq!(klines[0].time, 2_000_000);
     }
 
     #[test]
@@ -478,12 +682,56 @@ mod tests {
             &test_rows(),
         );
 
-        let loader = DataLoader::new(dir.path().to_path_buf());
+        let loader = DataLoader::new(dir.path());
         let klines = loader
             .load_klines_filtered(MarketType::Futures, "BTCUSDT", "1h", None, None, Some(2))
             .unwrap();
         assert_eq!(klines.len(), 2);
         assert_eq!(klines[0].time, 2_000_000);
+    }
+
+    #[test]
+    fn test_load_klines_filtered_limit_exceeds_available() {
+        let dir = TempDir::new().unwrap();
+        write_test_zip(
+            dir.path(),
+            "BTCUSDT",
+            "1h",
+            "BTCUSDT-1h-2024-01-01.zip",
+            &test_rows(),
+        );
+
+        let loader = DataLoader::new(dir.path());
+        let klines = loader
+            .load_klines_filtered(MarketType::Futures, "BTCUSDT", "1h", None, None, Some(999))
+            .unwrap();
+        assert_eq!(klines.len(), 3);
+    }
+
+    #[test]
+    fn test_load_klines_filtered_empty_window() {
+        let dir = TempDir::new().unwrap();
+        write_test_zip(
+            dir.path(),
+            "BTCUSDT",
+            "1h",
+            "BTCUSDT-1h-2024-01-01.zip",
+            &test_rows(),
+        );
+
+        let loader = DataLoader::new(dir.path());
+        // before <= after ⇒ 窗口为空
+        let klines = loader
+            .load_klines_filtered(
+                MarketType::Futures,
+                "BTCUSDT",
+                "1h",
+                Some(1_000_000),
+                Some(2_000_000),
+                None,
+            )
+            .unwrap();
+        assert!(klines.is_empty());
     }
 
     #[test]
@@ -502,7 +750,7 @@ mod tests {
             &rows,
         );
 
-        let loader = DataLoader::new(dir.path().to_path_buf());
+        let loader = DataLoader::new(dir.path());
         let klines = loader
             .load_klines_filtered(MarketType::Futures, "BTCUSDT", "1h", None, None, None)
             .unwrap();
@@ -527,7 +775,7 @@ mod tests {
             &test_rows(),
         );
 
-        let loader = DataLoader::new(dir.path().to_path_buf());
+        let loader = DataLoader::new(dir.path());
         let klines = loader
             .load_klines_filtered(MarketType::Futures, "BTCUSDT", "1h", None, None, None)
             .unwrap();
@@ -545,7 +793,7 @@ mod tests {
             &test_rows(),
         );
 
-        let loader = DataLoader::new(dir.path().to_path_buf());
+        let loader = DataLoader::new(dir.path());
 
         let klines1 = loader
             .load_klines_filtered(MarketType::Futures, "BTCUSDT", "1h", None, None, None)
@@ -562,7 +810,7 @@ mod tests {
     #[test]
     fn test_load_klines_not_found() {
         let dir = TempDir::new().unwrap();
-        let loader = DataLoader::new(dir.path().to_path_buf());
+        let loader = DataLoader::new(dir.path());
         let result =
             loader.load_klines_filtered(MarketType::Futures, "NONEXISTENT", "1h", None, None, None);
         assert!(result.is_err());
@@ -579,7 +827,7 @@ mod tests {
             &test_rows(),
         );
 
-        let loader = DataLoader::new(dir.path().to_path_buf());
+        let loader = DataLoader::new(dir.path());
         loader
             .load_klines_filtered(MarketType::Futures, "BTCUSDT", "1h", None, None, None)
             .unwrap();
@@ -589,6 +837,57 @@ mod tests {
         let result =
             loader.load_klines_filtered(MarketType::Futures, "BTCUSDT", "1h", None, None, None);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_load_columns_filtered_matches_klines() {
+        let dir = TempDir::new().unwrap();
+        write_test_zip(
+            dir.path(),
+            "BTCUSDT",
+            "1h",
+            "BTCUSDT-1h-2024-01-01.zip",
+            &test_rows(),
+        );
+
+        let loader = DataLoader::new(dir.path());
+        let cols = loader
+            .load_columns_filtered(MarketType::Futures, "BTCUSDT", "1h", None, Some(1_500_000))
+            .unwrap();
+        assert_eq!(cols.len(), 2);
+        assert_eq!(cols.time, vec![2_000_000, 3_000_000]);
+        assert_eq!(cols.close, vec![104.0, 106.0]);
+        assert_eq!(cols.len(), cols.open.len());
+        assert_eq!(cols.len(), cols.volume.len());
+    }
+
+    #[test]
+    fn test_load_columns_filtered_unfiltered_shares_cache() {
+        let dir = TempDir::new().unwrap();
+        write_test_zip(
+            dir.path(),
+            "BTCUSDT",
+            "1h",
+            "BTCUSDT-1h-2024-01-01.zip",
+            &test_rows(),
+        );
+
+        let loader = DataLoader::new(dir.path());
+        let cols = loader
+            .load_columns_filtered(MarketType::Futures, "BTCUSDT", "1h", None, None)
+            .unwrap();
+        assert_eq!(cols.len(), 3);
+    }
+
+    #[test]
+    fn test_time_window_bounds() {
+        let time = [10i64, 20, 30, 40];
+        assert_eq!(time_window(&time, None, None, None), 0..4);
+        assert_eq!(time_window(&time, Some(30), None, None), 0..2);
+        assert_eq!(time_window(&time, None, Some(20), None), 2..4);
+        assert_eq!(time_window(&time, Some(30), Some(10), None), 1..2);
+        assert_eq!(time_window(&time, None, None, Some(2)), 2..4);
+        assert_eq!(time_window(&time, Some(10), None, None), 0..0);
     }
 
     #[test]
@@ -602,7 +901,7 @@ mod tests {
             &test_rows(),
         );
 
-        let loader = Arc::new(DataLoader::new(dir.path().to_path_buf()));
+        let loader = Arc::new(DataLoader::new(dir.path()));
 
         std::thread::scope(|s| {
             for _ in 0..10 {

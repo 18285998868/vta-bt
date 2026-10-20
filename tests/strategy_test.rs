@@ -1,7 +1,9 @@
 use std::path::Path;
 
 use tempfile::TempDir;
+use tradingview_backend::app::data_loader::MarketType;
 use tradingview_backend::app::routes::AppState;
+use tradingview_backend::app::strategy::{BacktestParams, MarkerKind, StrategyError, TradeSide};
 
 /// 20 根 100 横盘 + 20 根上行（110→200）：BBRK 应在突破处开多并持有到末尾。
 fn write_trend_zip(dir: &Path) {
@@ -42,23 +44,29 @@ fn write_trend_zip(dir: &Path) {
     zip.finish().unwrap();
 }
 
+fn params(strategy_toml: &str) -> BacktestParams<'_> {
+    BacktestParams {
+        market_type: MarketType::Futures,
+        pair: "SYNUSDT",
+        timeframe: "1h",
+        strategy_toml,
+        initial_balance: 10_000.0,
+        fee_bps: 0.0,
+        slippage_bps: 0.0,
+        before: None,
+        after: None,
+    }
+}
+
 #[test]
 fn test_bbrk_end_to_end_markers_equity_summary() {
     let dir = TempDir::new().unwrap();
     write_trend_zip(dir.path());
 
-    let state = AppState::new(dir.path().to_path_buf());
+    let state = AppState::new(dir.path());
     let result = tradingview_backend::app::strategy::run_backtest(
         &state,
-        tradingview_backend::app::data_loader::MarketType::Futures,
-        "SYNUSDT",
-        "1h",
-        "type = \"bbrk\"\nsigma = 2.0",
-        10_000.0,
-        0.0,
-        0.0,
-        None,
-        None,
+        &params("type = \"bbrk\"\nsigma = 2.0"),
     )
     .unwrap();
 
@@ -67,9 +75,9 @@ fn test_bbrk_end_to_end_markers_equity_summary() {
     // 1 笔多单：entry + exit 两个 marker，且时间对齐某根 bar。
     assert_eq!(result.trades.len(), 1);
     assert_eq!(result.markers.len(), 2);
-    assert_eq!(result.markers[0].kind, "entry");
-    assert_eq!(result.markers[0].side, "long");
-    assert_eq!(result.markers[1].kind, "exit");
+    assert_eq!(result.markers[0].kind, MarkerKind::Entry);
+    assert_eq!(result.markers[0].side, TradeSide::Long);
+    assert_eq!(result.markers[1].kind, MarkerKind::Exit);
     assert!(result.markers[0].time < result.markers[1].time);
     // 资金曲线与 bar 对齐。
     assert_eq!(result.equity.len(), 40);
@@ -82,22 +90,72 @@ fn test_blocked_strategy_returns_user_error() {
     let dir = TempDir::new().unwrap();
     write_trend_zip(dir.path());
 
-    let state = AppState::new(dir.path().to_path_buf());
+    let state = AppState::new(dir.path());
     let err = tradingview_backend::app::strategy::run_backtest(
         &state,
-        tradingview_backend::app::data_loader::MarketType::Futures,
-        "SYNUSDT",
-        "1h",
-        "type = \"turtle\"\nentry = 20\nexit = 10",
-        10_000.0,
-        0.0,
-        0.0,
-        None,
-        None,
+        &params("type = \"turtle\"\nentry = 20\nexit = 10"),
     )
     .unwrap_err();
+    assert!(matches!(err, StrategyError::User(_)));
+}
+
+#[test]
+fn test_rejects_invalid_balance_and_fees() {
+    let dir = TempDir::new().unwrap();
+    write_trend_zip(dir.path());
+
+    let state = AppState::new(dir.path());
+
+    let mut p = params("type = \"bbrk\"\nsigma = 2.0");
+    p.initial_balance = 0.0;
     assert!(matches!(
-        err,
-        tradingview_backend::app::strategy::StrategyError::User(_)
+        tradingview_backend::app::strategy::run_backtest(&state, &p).unwrap_err(),
+        StrategyError::User(_)
     ));
+
+    let mut p = params("type = \"bbrk\"\nsigma = 2.0");
+    p.fee_bps = -1.0;
+    assert!(matches!(
+        tradingview_backend::app::strategy::run_backtest(&state, &p).unwrap_err(),
+        StrategyError::User(_)
+    ));
+}
+
+#[test]
+fn test_rejects_out_of_range_sigma() {
+    let dir = TempDir::new().unwrap();
+    write_trend_zip(dir.path());
+
+    let state = AppState::new(dir.path());
+    let err = tradingview_backend::app::strategy::run_backtest(
+        &state,
+        &params("type = \"bbrk\"\nsigma = 100.0"),
+    )
+    .unwrap_err();
+    assert!(matches!(err, StrategyError::User(_)));
+}
+
+#[test]
+fn test_time_window_filters_bars() {
+    let dir = TempDir::new().unwrap();
+    write_trend_zip(dir.path());
+
+    let state = AppState::new(dir.path());
+    let mut p = params("type = \"bbrk\"\nsigma = 2.0");
+    p.after = Some(1_700_000_000_000 + 10 * 3_600_000);
+    let result = tradingview_backend::app::strategy::run_backtest(&state, &p).unwrap();
+    // after 为开区间 ⇒ 起点那根被排除 ⇒ 剩 29 根。
+    assert_eq!(result.count, 29);
+}
+
+#[test]
+fn test_missing_pair_returns_not_found() {
+    let dir = TempDir::new().unwrap();
+    write_trend_zip(dir.path());
+
+    let state = AppState::new(dir.path());
+    let mut p = params("type = \"bbrk\"\nsigma = 2.0");
+    p.pair = "NOPEUSDT";
+    let err = tradingview_backend::app::strategy::run_backtest(&state, &p).unwrap_err();
+    assert!(matches!(err, StrategyError::NotFound(_)));
 }
