@@ -71,6 +71,7 @@ pub fn turtle_signals(
     sig
 }
 
+#[must_use]
 fn signals_from_ohlc(
     high: &[f64],
     low: &[f64],

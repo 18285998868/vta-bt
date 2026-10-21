@@ -1,7 +1,7 @@
 use crate::error::AppError;
 use serde::Deserialize;
 
-use crate::config::F64Param;
+use crate::config::{F64Param, PeriodParam};
 
 /// BBRK+HMA regime门（入场验证#6）：SMA门嫌滞后，换 Hull 均线
 /// （平滑+低滞后，vector-ta 现成指标直接用）。
@@ -14,22 +14,33 @@ pub struct BbrkZlemaEmaConfig {
     /// 布林带标准差倍数(通道宽度)。
     pub sigma: F64Param,
     /// ZLEMA regime 周期。
-    pub zlemareg: F64Param,
+    pub zlemareg: PeriodParam,
+    /// BB 周期(缺省 20＝旧串语义: 此前该策略把 BB 周期写死为 20)。
+    #[serde(default = "default_bblen")]
+    pub bblen: PeriodParam,
+}
+
+fn default_bblen() -> PeriodParam {
+    PeriodParam::Single(20)
 }
 
 impl BbrkZlemaEmaConfig {
     /// 展开后的参数组合(按策略的笛卡尔积顺序)。
     #[must_use]
-    pub fn pairs(&self) -> Vec<(f64, usize)> {
+    pub fn pairs(&self) -> Vec<(f64, usize, usize)> {
         let ss = self.sigma.values();
+        let bs = self.bblen.values();
         let ls = self.zlemareg.values();
         // 网格规模 = 各维度长度之积(可预知), 一次分配到位(`mem-with-capacity`)。
-        // `saturating_mul`: 笛卡尔积理论上无界, 普通 `*` 在 debug 下会溢出 panic。
-        let cap = ss.len().saturating_mul(ls.len());
-        let mut out = Vec::with_capacity(cap.min(crate::strategies::MAX_GRID_PREALLOC));
+        // 乘积的 `saturating_mul` 与封顶逻辑集中在 `grid_prealloc` 一处
+        // (笛卡尔积理论上无界, 普通 `*` 在 debug 下会溢出 panic)。
+        let cap = crate::strategies::grid_prealloc(&[ss.len(), bs.len(), ls.len()]);
+        let mut out = Vec::with_capacity(cap);
         for &s in &ss {
-            for &l in &ls {
-                out.push((s, l.round() as usize));
+            for &b in &bs {
+                for &l in &ls {
+                    out.push((s, b, l));
+                }
             }
         }
         out
@@ -47,7 +58,7 @@ impl BbrkZlemaEmaConfig {
         self.sigma
             .validate_range("bbrk_zlema_ema.sigma", 0.1, 10.0)?;
         self.zlemareg
-            .validate_range("bbrk_zlema_ema.zlemareg", 2.0, 2000.0)?;
+            .validate_range("bbrk_zlema_ema.zlemareg", 2, 2000)?;
         if self.pairs().is_empty() {
             return Err(AppError::Msg("bbrk_zlema_ema 参数组合为空".into()));
         }
@@ -65,12 +76,13 @@ mod tests {
     fn pairs_cartesian() {
         let c = BbrkZlemaEmaConfig {
             sigma: F64Param::Single(2.5),
-            zlemareg: F64Param::Range(RangeParam {
-                start: 50.0,
-                end: 100.0,
-                step: 50.0,
+            zlemareg: PeriodParam::Range(RangeParam {
+                start: 50,
+                end: 100,
+                step: 50,
             }),
+            bblen: crate::config::PeriodParam::Single(20),
         };
-        assert_eq!(c.pairs(), vec![(2.5, 50), (2.5, 100)]);
+        assert_eq!(c.pairs(), vec![(2.5, 20, 50), (2.5, 20, 100)]);
     }
 }

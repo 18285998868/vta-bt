@@ -6,7 +6,7 @@ use vector_ta::indicators::moving_averages::ema::{EmaInput, EmaParams, ema};
 use vector_ta::indicators::moving_averages::linreg::{LinRegInput, LinRegParams, linreg};
 use vector_ta::indicators::moving_averages::sma::{SmaInput, SmaParams, sma};
 
-use crate::strategies::{Signal, Strategy, rolling_highest, rolling_lowest};
+use crate::strategies::{ParamOutcome, Signal, Strategy, rolling_highest, rolling_lowest};
 
 use super::config::BbrkTtmFireConfig;
 
@@ -20,7 +20,7 @@ const MOM_LEN: usize = 20;
 /// ＋ 动量同向（多头hist>0且rising，空头hist<0且falling）→ Buy/Sell；
 /// 持仓后中线离场（与 BBRK/v1 相同）。任一输入 NaN → 不开仓（P7）。
 pub struct BbrkTtmFireStrategy {
-    pairs: Vec<(f64, f64)>,
+    pairs: Vec<(f64, usize, f64)>,
 }
 
 impl BbrkTtmFireStrategy {
@@ -88,6 +88,7 @@ pub fn bbrk_ttm_fire_signals(
 
 /// StockCharts口径动量柱：Donchian中轴(20)与SMA20取平均得重心，
 /// delta=close−重心，linreg(20)平滑。NaN（预热）向上传。
+#[must_use]
 fn momentum(high: &[f64], low: &[f64], close: &[f64]) -> Vec<f64> {
     let n = close.len();
     let hh = rolling_highest(high, MOM_LEN);
@@ -127,12 +128,13 @@ fn compute(
     low: &[f64],
     close: &[f64],
     sigma: f64,
+    bblen: usize,
     kc_mult: f64,
 ) -> crate::error::Result<Vec<Signal>> {
     let bb = match bollinger_bands(&BollingerBandsInput::from_slice(
         close,
         BollingerBandsParams {
-            period: Some(20),
+            period: Some(bblen),
             devup: Some(sigma),
             devdn: Some(sigma),
             matype: Some("sma".to_string()),
@@ -140,7 +142,7 @@ fn compute(
         },
     )) {
         Ok(v) => v,
-        Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+        Err(e) => return Err(crate::strategies::param_skipped(e)),
     };
     let basis = match ema(&EmaInput::from_slice(
         close,
@@ -149,7 +151,7 @@ fn compute(
         },
     )) {
         Ok(v) => v.values,
-        Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+        Err(e) => return Err(crate::strategies::param_skipped(e)),
     };
     let atr_vals = match atr(&AtrInput::from_slices(
         high,
@@ -160,7 +162,7 @@ fn compute(
         },
     )) {
         Ok(v) => v.values,
-        Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+        Err(e) => return Err(crate::strategies::param_skipped(e)),
     };
     let n = close.len();
     let mut sqz = vec![false; n];
@@ -189,8 +191,8 @@ impl Strategy for BbrkTtmFireStrategy {
     }
 
     fn param_str(&self, idx: usize) -> String {
-        let (s, k) = self.pairs[idx];
-        format!("sigma={s},kc={k}")
+        let (s, b, k) = self.pairs[idx];
+        format!("sigma={s},bblen={b},kc={k}")
     }
 
     fn generate_signals_full(
@@ -203,8 +205,8 @@ impl Strategy for BbrkTtmFireStrategy {
         _time: &[i64],
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
-        let (s, k) = self.pairs[param_idx];
-        compute(high, low, close, s, k)
+        let (s, b, k) = self.pairs[param_idx];
+        compute(high, low, close, s, b, k)
     }
 
     /// 批量版：动量柱/EMA基线/ATR14 与参数无关各算一次，
@@ -219,7 +221,7 @@ impl Strategy for BbrkTtmFireStrategy {
         _volume: &[f64],
         _time: &[i64],
         range: std::ops::Range<usize>,
-    ) -> crate::error::Result<Vec<Vec<Signal>>> {
+    ) -> crate::error::Result<Vec<ParamOutcome>> {
         use rayon::prelude::*;
         use std::collections::HashMap;
         use vector_ta::indicators::bollinger_bands::{
@@ -244,14 +246,16 @@ impl Strategy for BbrkTtmFireStrategy {
         ))
         .ok()
         .map(|v| v.values);
-        let mut bbmap: HashMap<u64, crate::strategies::CachedBands> = HashMap::new();
+        // 缓存键必须含 **BB 周期**: 周期现在也是网格维度, 只按 σ 建键会把
+        // 不同周期的 BB 带**互相覆盖**(取到别的周期的带)。
+        let mut bbmap: HashMap<(u64, usize), crate::strategies::CachedBands> = HashMap::new();
         for idx in range.clone() {
-            let (s, _) = self.pairs[idx];
-            bbmap.entry(s.to_bits()).or_insert_with(|| {
+            let (s, b, _) = self.pairs[idx];
+            bbmap.entry((s.to_bits(), b)).or_insert_with(|| {
                 bollinger_bands(&BollingerBandsInput::from_slice(
                     close,
                     BollingerBandsParams {
-                        period: Some(20),
+                        period: Some(b),
                         devup: Some(s),
                         devdn: Some(s),
                         matype: Some("sma".to_string()),
@@ -265,11 +269,15 @@ impl Strategy for BbrkTtmFireStrategy {
         range
             .into_par_iter()
             .map(|idx| {
-                let (s, k) = self.pairs[idx];
+                let (s, b, k) = self.pairs[idx];
                 let (lower, mid, upper, em, a_all) =
-                    match (bbmap.get(&s.to_bits()), &basis, &atr_vals) {
+                    match (bbmap.get(&(s.to_bits(), b)), &basis, &atr_vals) {
                         (Some(Some((lo, m, up))), Some(em), Some(a_all)) => (lo, m, up, em, a_all),
-                        _ => return Ok(vec![Signal::Hold; close.len()]),
+                        _ => {
+                            return Err(crate::strategies::param_skipped(format!(
+                                "BBRK_TTM_FIRE: 共享指标缺失 (sigma={s}, bblen={b})"
+                            )));
+                        }
                     };
                 let n = close.len().min(lower.len()).min(em.len()).min(a_all.len());
                 let mut sqz = vec![false; n];
@@ -280,7 +288,9 @@ impl Strategy for BbrkTtmFireStrategy {
                     }
                     sqz[i] = upper[i] < em[i] + k * a && lower[i] > em[i] - k * a;
                 }
-                Ok(bbrk_ttm_fire_signals(close, mid, &sqz, &hist))
+                Ok(ParamOutcome::Signals(bbrk_ttm_fire_signals(
+                    close, mid, &sqz, &hist,
+                )))
             })
             .collect()
     }
@@ -368,13 +378,19 @@ mod tests {
         let close: Vec<f64> = base.iter().map(|v| v + 0.5).collect();
         let time: Vec<i64> = (0..n as i64).collect();
         let st = BbrkTtmFireStrategy {
-            pairs: vec![(2.5, 1.5), (2.5, 2.0), (2.0, 1.5)],
+            pairs: vec![(2.5, 20, 1.5), (2.5, 20, 2.0), (2.0, 20, 1.5)],
         };
         let batched = st
             .generate_signals_batch(&open, &high, &low, &close, &[], &time, 0..3)
             .unwrap();
         assert_eq!(batched.len(), 3);
         for (i, sig) in batched.iter().enumerate() {
+            let sig = match sig {
+                crate::strategies::ParamOutcome::Signals(s) => s,
+                crate::strategies::ParamOutcome::Skipped(r) => {
+                    panic!("BBRK_TTM_FIRE param {i} 不该被跳过: {r}")
+                }
+            };
             let one = st
                 .generate_signals_full(&open, &high, &low, &close, &[], &time, i)
                 .unwrap();
@@ -385,9 +401,9 @@ mod tests {
     #[test]
     fn test_name_and_params() {
         let s = BbrkTtmFireStrategy {
-            pairs: vec![(2.5, 1.5)],
+            pairs: vec![(2.5, 20, 1.5)],
         };
         assert_eq!(s.name(), "BBRK_TTM_FIRE");
-        assert_eq!(s.param_str(0), "sigma=2.5,kc=1.5");
+        assert_eq!(s.param_str(0), "sigma=2.5,bblen=20,kc=1.5");
     }
 }

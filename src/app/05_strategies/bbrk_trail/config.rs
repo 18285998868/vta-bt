@@ -1,7 +1,7 @@
 use crate::error::AppError;
 use serde::Deserialize;
 
-use crate::config::F64Param;
+use crate::config::{F64Param, PeriodParam};
 
 /// BBRK+ATR追踪离场(@2)：进场与 BBRK 完全相同（BB突破，纯突破无方向门），
 /// 离场改用 Chandelier 式追踪（多头 close < 近N根最高high − k·ATR 即走，
@@ -16,21 +16,21 @@ pub struct BbrkTrailConfig {
     /// BB周期（缺省20＝旧串语义）。
     #[serde(default = "default_bblen")]
     /// 布林带周期。
-    pub bblen: F64Param,
+    pub bblen: PeriodParam,
     /// ATR周期（缺省14＝旧串语义）。
     #[serde(default = "default_atrlen")]
     /// ATR 周期。
-    pub atrlen: F64Param,
+    pub atrlen: PeriodParam,
     /// 跟踪止损 ATR 倍数。
     pub trailk: F64Param,
 }
 
-fn default_bblen() -> F64Param {
-    F64Param::Single(20.0)
+fn default_bblen() -> PeriodParam {
+    PeriodParam::Single(20)
 }
 
-fn default_atrlen() -> F64Param {
-    F64Param::Single(14.0)
+fn default_atrlen() -> PeriodParam {
+    PeriodParam::Single(14)
 }
 
 impl BbrkTrailConfig {
@@ -42,18 +42,15 @@ impl BbrkTrailConfig {
         let al = self.atrlen.values();
         let ks = self.trailk.values();
         // 网格规模 = 各维度长度之积(可预知), 一次分配到位(`mem-with-capacity`)。
-        // `saturating_mul`: 笛卡尔积理论上无界, 普通 `*` 在 debug 下会溢出 panic。
-        let cap = ss
-            .len()
-            .saturating_mul(bs.len())
-            .saturating_mul(al.len())
-            .saturating_mul(ks.len());
-        let mut out = Vec::with_capacity(cap.min(crate::strategies::MAX_GRID_PREALLOC));
+        // 乘积的 `saturating_mul` 与封顶逻辑集中在 `grid_prealloc` 一处
+        // (笛卡尔积理论上无界, 普通 `*` 在 debug 下会溢出 panic)。
+        let cap = crate::strategies::grid_prealloc(&[ss.len(), bs.len(), al.len(), ks.len()]);
+        let mut out = Vec::with_capacity(cap);
         for &s in &ss {
             for &b in &bs {
                 for &a in &al {
                     for &k in &ks {
-                        out.push((s, b.round() as usize, a.round() as usize, k));
+                        out.push((s, b, a, k));
                     }
                 }
             }
@@ -71,9 +68,8 @@ impl BbrkTrailConfig {
     /// 任一参数越界或展开为空时返回 [`AppError`](crate::error::AppError)。
     pub fn validate(&self) -> crate::error::Result<()> {
         self.sigma.validate_range("bbrk_trail.sigma", 0.1, 10.0)?;
-        self.bblen.validate_range("bbrk_trail.bblen", 2.0, 2000.0)?;
-        self.atrlen
-            .validate_range("bbrk_trail.atrlen", 2.0, 500.0)?;
+        self.bblen.validate_range("bbrk_trail.bblen", 2, 2000)?;
+        self.atrlen.validate_range("bbrk_trail.atrlen", 2, 500)?;
         self.trailk.validate_range("bbrk_trail.trailk", 0.1, 20.0)?;
         if self.pairs().is_empty() {
             return Err(AppError::Msg("bbrk_trail 参数组合为空".into()));
@@ -102,8 +98,8 @@ mod tests {
                 end: 2.5,
                 step: 0.5,
             }),
-            bblen: F64Param::Single(20.0),
-            atrlen: F64Param::Single(14.0),
+            bblen: PeriodParam::Single(20),
+            atrlen: PeriodParam::Single(14),
             trailk: F64Param::Range(RangeParam {
                 start: 2.0,
                 end: 3.0,

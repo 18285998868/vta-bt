@@ -48,7 +48,15 @@ fn test_engine_all_buy_reinvest_allowed() {
     let mut sig = vec![Signal::Hold; 50];
     sig[0] = Signal::Buy;
     sig[10] = Signal::Buy;
-    let m = engine::simulate(&close, &close, &sig, 1000.0, 365.0, &ExecConfig::default());
+    let m = engine::simulate(
+        &close,
+        &close,
+        &sig,
+        vta::money::Amount::from_i64(1000),
+        365.0,
+        &ExecConfig::default(),
+    )
+    .expect("合法回测必须成功");
     assert!(m.total_return_pct > 0.0);
     assert_eq!(m.num_trades, 1);
 }
@@ -59,7 +67,15 @@ fn test_engine_short_profits() {
     let mut sig = vec![Signal::Hold; 50];
     sig[0] = Signal::Sell;
     sig[25] = Signal::Close;
-    let m = engine::simulate(&close, &close, &sig, 1000.0, 365.0, &ExecConfig::default());
+    let m = engine::simulate(
+        &close,
+        &close,
+        &sig,
+        vta::money::Amount::from_i64(1000),
+        365.0,
+        &ExecConfig::default(),
+    )
+    .expect("合法回测必须成功");
     assert!(
         m.total_return_pct > 0.0,
         "short should profit: {}",
@@ -74,7 +90,15 @@ fn test_engine_short_losses() {
     let mut sig = vec![Signal::Hold; 50];
     sig[0] = Signal::Sell;
     sig[30] = Signal::Close;
-    let m = engine::simulate(&close, &close, &sig, 1000.0, 365.0, &ExecConfig::default());
+    let m = engine::simulate(
+        &close,
+        &close,
+        &sig,
+        vta::money::Amount::from_i64(1000),
+        365.0,
+        &ExecConfig::default(),
+    )
+    .expect("合法回测必须成功");
     assert!(
         m.total_return_pct < 0.0,
         "short should lose: {}",
@@ -91,7 +115,15 @@ fn test_engine_buy_sell_cycle() {
     sig[100] = Signal::Close;
     sig[150] = Signal::Buy;
     sig[250] = Signal::Close;
-    let m = engine::simulate(&close, &close, &sig, 1000.0, 365.0, &ExecConfig::default());
+    let m = engine::simulate(
+        &close,
+        &close,
+        &sig,
+        vta::money::Amount::from_i64(1000),
+        365.0,
+        &ExecConfig::default(),
+    )
+    .expect("合法回测必须成功");
     assert_eq!(m.num_trades, 2);
     assert!(m.expectancy.is_finite());
 }
@@ -100,7 +132,15 @@ fn test_engine_buy_sell_cycle() {
 fn test_simulate_all_hold_yields_zero_trades() {
     let close = vec![100.0; 10];
     let sig = vec![Signal::Hold; 10];
-    let m = engine::simulate(&close, &close, &sig, 1000.0, 365.0, &ExecConfig::default());
+    let m = engine::simulate(
+        &close,
+        &close,
+        &sig,
+        vta::money::Amount::from_i64(1000),
+        365.0,
+        &ExecConfig::default(),
+    )
+    .expect("合法回测必须成功");
     assert_eq!(m.num_trades, 0);
 }
 
@@ -111,7 +151,15 @@ fn test_simulate_handles_nan_close() {
     let mut sig = vec![Signal::Hold; 50];
     sig[5] = Signal::Buy;
     sig[30] = Signal::Close;
-    let m = engine::simulate(&close, &close, &sig, 1000.0, 365.0, &ExecConfig::default());
+    let m = engine::simulate(
+        &close,
+        &close,
+        &sig,
+        vta::money::Amount::from_i64(1000),
+        365.0,
+        &ExecConfig::default(),
+    )
+    .expect("合法回测必须成功");
     assert!(m.total_return.is_finite());
     assert!(m.sharpe_ratio.is_finite());
     assert!(m.max_drawdown_pct.is_finite());
@@ -122,7 +170,15 @@ fn test_simulate_truncates_to_shortest() {
     let close = rising_prices(30);
     let mut sig = vec![Signal::Hold; 60];
     sig[0] = Signal::Buy;
-    let m = engine::simulate(&close, &close, &sig, 1000.0, 365.0, &ExecConfig::default());
+    let m = engine::simulate(
+        &close,
+        &close,
+        &sig,
+        vta::money::Amount::from_i64(1000),
+        365.0,
+        &ExecConfig::default(),
+    )
+    .expect("合法回测必须成功");
     assert_eq!(m.num_trades, 1);
 }
 
@@ -133,9 +189,37 @@ fn test_strategy_period_larger_than_window() {
         period: PeriodParam::Single(500),
         poles: PoleCount::Two,
     });
-    let sig = s
+    // 数据短于 period ⇒ 该档**不可计算** ⇒ 显式 `ParamSkipped`,
+    // **不是**静默降级成"全程 Hold"(见 `RunStatus::Invalid` 的文档):
+    // 二者在报告里必须可区分, 否则"算不出来"会被当成"零波动低风险"。
+    let e = s
         .generate_signals_full(&[], &[], &[], &close, &[], &[], 0)
-        .unwrap();
-    assert_eq!(sig.len(), 50);
-    assert!(sig.iter().all(|&s| s == Signal::Hold));
+        .expect_err("period 超过数据长度必须显式跳过");
+    assert!(
+        matches!(e, vta::error::AppError::ParamSkipped { .. }),
+        "必须是 ParamSkipped, 实际: {e}"
+    );
+}
+
+/// **端到端**: 不可计算的参数档位在报告里必须是 `status = "invalid"`,
+/// 且**不中断**同一策略的其余档位。
+#[test]
+fn invalid_param_is_reported_as_invalid_without_aborting_the_batch() {
+    use vta::strategies::{ParamOutcome, Strategy};
+
+    let close = rising_prices(50);
+    let s = SsfStrategy::new(SsfConfig {
+        period: PeriodParam::Single(500),
+        poles: PoleCount::Two,
+    });
+    // 批量入口: 不可计算的那一档是 `Skipped`, 其余档照常。
+    let batch = s
+        .generate_signals_batch(&[], &[], &[], &close, &[], &[], 0..1)
+        .expect("批量入口必须成功返回(不可计算只影响单档)");
+    assert_eq!(batch.len(), 1);
+    assert!(
+        matches!(batch[0], ParamOutcome::Skipped(_)),
+        "不可计算的档位必须是 Skipped, 实际: {:?}",
+        batch[0]
+    );
 }

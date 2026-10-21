@@ -1,4 +1,4 @@
-use crate::config::F64Param;
+use crate::config::{F64Param, PeriodParam};
 use crate::error::AppError;
 use serde::Deserialize;
 
@@ -48,17 +48,17 @@ impl std::fmt::Display for AtrKind {
 #[serde(deny_unknown_fields)]
 pub struct MaSlopeAtrGateConfig {
     /// 均线周期。
-    pub ma: F64Param,
+    pub ma: PeriodParam,
     /// 均线斜率回看窗口(与 `ma` 同周期均线的相对变化率)。
-    pub slope_k: F64Param,
+    pub slope_k: PeriodParam,
     /// ATR 周期(真实波幅均值, 作为波动尺度分母)。
-    pub atr_n: F64Param,
+    pub atr_n: PeriodParam,
     /// ATR 平滑方式: `"sma"`(简单移动平均, 与因子研究侧一致)或
     /// `"wilder"`(RMA, TradingView/通达信等平台的默认定义)。
     #[serde(default)]
     pub atr_kind: AtrKind,
     /// 因子的滚动标准化窗口。
-    pub z_win: F64Param,
+    pub z_win: PeriodParam,
     /// 门控阈值(标准化后的下限)。
     pub th: F64Param,
 }
@@ -76,21 +76,23 @@ impl MaSlopeAtrGateConfig {
         let z_v = self.z_win.values();
         let t_v = self.th.values();
         // 笛卡尔积长度可预知, 一次分配到位(`mem-with-capacity`)。
-        let mut out =
-            Vec::with_capacity(ma_v.len() * k_v.len() * a_v.len() * z_v.len() * t_v.len());
+        // 乘积的 `saturating_mul` 与封顶逻辑集中在 `grid_prealloc` 一处: 本策略
+        // 有**五**个维度, 每维可展开到 `MAX_F64_RANGE` = 10 万档, 直接按积申请
+        // 会触发分配失败 → 进程 abort(不可捕获), 而不是返回一条可读错误。
+        let cap = crate::strategies::grid_prealloc(&[
+            ma_v.len(),
+            k_v.len(),
+            a_v.len(),
+            z_v.len(),
+            t_v.len(),
+        ]);
+        let mut out = Vec::with_capacity(cap);
         for &ma in &ma_v {
             for &k in &k_v {
                 for &a in &a_v {
                     for &z in &z_v {
                         for &t in &t_v {
-                            out.push((
-                                ma.round() as usize,
-                                k.round() as usize,
-                                a.round() as usize,
-                                z.round() as usize,
-                                t,
-                                self.atr_kind,
-                            ));
+                            out.push((ma, k, a, z, t, self.atr_kind));
                         }
                     }
                 }
@@ -105,14 +107,13 @@ impl MaSlopeAtrGateConfig {
     /// 任一参数越界、`slope_k >= ma`(斜率窗口长于均线, 均线尚无值)或展开为空时
     /// 返回 [`AppError`](crate::error::AppError)。
     pub fn validate(&self) -> crate::error::Result<()> {
-        self.ma
-            .validate_range("ma_slope_atr_gate.ma", 2.0, 2000.0)?;
+        self.ma.validate_range("ma_slope_atr_gate.ma", 2, 2000)?;
         self.slope_k
-            .validate_range("ma_slope_atr_gate.slope_k", 1.0, 2000.0)?;
+            .validate_range("ma_slope_atr_gate.slope_k", 1, 2000)?;
         self.atr_n
-            .validate_range("ma_slope_atr_gate.atr_n", 2.0, 500.0)?;
+            .validate_range("ma_slope_atr_gate.atr_n", 2, 500)?;
         self.z_win
-            .validate_range("ma_slope_atr_gate.z_win", 2.0, 2000.0)?;
+            .validate_range("ma_slope_atr_gate.z_win", 2, 2000)?;
         self.th
             .validate_range("ma_slope_atr_gate.th", -10.0, 10.0)?;
         // 网格只展开**一次**并复用: 原实现调了两次 `quints()`,
@@ -139,10 +140,10 @@ mod tests {
 
     fn cfg() -> MaSlopeAtrGateConfig {
         MaSlopeAtrGateConfig {
-            ma: F64Param::Single(100.0),
-            slope_k: F64Param::Single(20.0),
-            atr_n: F64Param::Single(120.0),
-            z_win: F64Param::Single(60.0),
+            ma: PeriodParam::Single(100),
+            slope_k: PeriodParam::Single(20),
+            atr_n: PeriodParam::Single(120),
+            z_win: PeriodParam::Single(60),
             th: F64Param::Single(0.5),
             atr_kind: AtrKind::Sma,
         }
@@ -171,8 +172,8 @@ mod tests {
     #[test]
     fn validate_rejects_slope_k_ge_ma() {
         let c = MaSlopeAtrGateConfig {
-            ma: F64Param::Single(20.0),
-            slope_k: F64Param::Single(20.0),
+            ma: PeriodParam::Single(20),
+            slope_k: PeriodParam::Single(20),
             ..cfg()
         };
         assert!(c.validate().is_err());
@@ -192,10 +193,10 @@ mod tests {
     #[test]
     fn unknown_atr_kind_is_rejected_at_deserialization() {
         let toml = r#"
-ma = 100.0
-slope_k = 20.0
-atr_n = 14.0
-z_win = 60.0
+ma = 100
+slope_k = 20
+atr_n = 14
+z_win = 60
 th = 0.5
 atr_kind = "ewma"
 "#;
@@ -209,7 +210,7 @@ atr_kind = "ewma"
     /// 回归: 合法取值必须能反序列化, 且缺省为 SMA。
     #[test]
     fn atr_kind_deserializes_and_defaults_to_sma() {
-        let base = "ma = 100.0\nslope_k = 20.0\natr_n = 14.0\nz_win = 60.0\nth = 0.5\n";
+        let base = "ma = 100\nslope_k = 20\natr_n = 14\nz_win = 60\nth = 0.5\n";
         let d: MaSlopeAtrGateConfig = toml::from_str(base).expect("缺省应可反序列化");
         assert_eq!(d.atr_kind, AtrKind::Sma);
         let w: MaSlopeAtrGateConfig =

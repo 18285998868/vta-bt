@@ -1,7 +1,7 @@
 use vector_ta::indicators::atr::{AtrInput, AtrParams, atr};
 use vector_ta::indicators::moving_averages::ma::{MaData, ma};
 
-use crate::strategies::{Signal, Strategy};
+use crate::strategies::{ParamOutcome, Signal, Strategy};
 
 use super::config::MaAtrConfig;
 
@@ -94,7 +94,11 @@ fn compute(
 ) -> crate::error::Result<Vec<Signal>> {
     let ma_vals = match ma_atr_ma(close, maname, len) {
         Some(v) => v,
-        None => return Ok(vec![Signal::Hold; close.len()]),
+        None => {
+            return Err(crate::strategies::param_skipped(format!(
+                "MA_ATR: 未知 MA 名 `{maname}`"
+            )));
+        }
     };
     let atr_vals = ma_atr_atr(high, low, close, atrlen);
     Ok(ma_atr_signals(close, &ma_vals, &atr_vals, k))
@@ -133,7 +137,7 @@ impl Strategy for MaAtrStrategy {
         _volume: &[f64],
         _time: &[i64],
         range: std::ops::Range<usize>,
-    ) -> crate::error::Result<Vec<Vec<Signal>>> {
+    ) -> crate::error::Result<Vec<ParamOutcome>> {
         use rayon::prelude::*;
         use std::collections::{HashMap, HashSet};
         let idxs: Vec<usize> = range.collect();
@@ -159,13 +163,16 @@ impl Strategy for MaAtrStrategy {
         for (p, &i) in idxs.iter().enumerate() {
             at.insert(i, p);
         }
-        let mut out: Vec<Vec<Signal>> = vec![Vec::new(); idxs.len()];
+        // 占位初值: 每个下标都会被下面的分组循环覆盖一次。
+        let mut out: Vec<ParamOutcome> = vec![ParamOutcome::Skipped(String::new()); idxs.len()];
         for ((m, l), members) in keys {
             let mv = match ma_atr_ma(close, m, *l) {
                 Some(v) => v,
                 None => {
                     for &i in members {
-                        out[at[&i]] = vec![Signal::Hold; close.len()];
+                        out[at[&i]] = ParamOutcome::Skipped(format!(
+                            "MA_ATR: 共享指标缺失 (ma={m}, len={l})"
+                        ));
                     }
                     continue;
                 }
@@ -188,7 +195,7 @@ impl Strategy for MaAtrStrategy {
                 })
                 .collect::<crate::error::Result<Vec<_>>>()?;
             for (i, sig) in done {
-                out[at[&i]] = sig;
+                out[at[&i]] = ParamOutcome::Signals(sig);
             }
         }
         Ok(out)
@@ -274,7 +281,13 @@ mod tests {
             let single = s
                 .generate_signals_full(&close, &high, &low, &close, &[], &time, i)
                 .unwrap();
-            assert_eq!(*b, single, "param {}", i);
+            let b = match b {
+                crate::strategies::ParamOutcome::Signals(s) => s,
+                crate::strategies::ParamOutcome::Skipped(r) => {
+                    panic!("MA_ATR param {i} 不该被跳过: {r}")
+                }
+            };
+            assert_eq!(*b, single, "param {i}");
         }
     }
 }

@@ -16,13 +16,14 @@ use super::config::SwingFractalConfig;
 /// 用非严格 `>=` 会在平顶平台上连续确认多个同价摆动点, 使 nH/nL 在同价位反复触发。
 ///
 /// 任一窗口越界(`left_max[j-1]` 为 NaN)时比较为 false, 即**不产生摆动点**(P7, 不静默)。
+#[must_use]
 fn swing_high_flags(high: &[f64], left: usize, right: usize) -> Vec<bool> {
     let n = high.len();
     let mut out = vec![false; n];
     if left == 0 || right == 0 {
         return out;
     }
-    let left_max = rolling_highest(high, left); // [j-left+1 ..= j], 故取 [j] 即 [j-left+1..j]
+    let left_max = rolling_highest(high, left); // 窗口 [j-left+1 ..= j]; 严格左侧窗取 [j-1]
     let right_max = rolling_highest(high, right); // [i-right+1 ..= i] = [j+1 ..= j+right]
     for i in right..n {
         let j = i - right;
@@ -37,6 +38,7 @@ fn swing_high_flags(high: &[f64], left: usize, right: usize) -> Vec<bool> {
 }
 
 /// [`swing_high_flags`] 的最低点镜像。
+#[must_use]
 fn swing_low_flags(low: &[f64], left: usize, right: usize) -> Vec<bool> {
     let n = low.len();
     let mut out = vec![false; n];

@@ -65,12 +65,16 @@ impl Strategy for SsfCdStrategy {
                     },
                 )) {
                     Ok(v) => v.values,
-                    Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+                    Err(e) => return Err(crate::strategies::param_skipped(e)),
                 }
             }
             PoleCount::Three => match supersmoother_3_pole(close, period) {
                 Some(v) => v,
-                None => return Ok(vec![Signal::Hold; close.len()]),
+                None => {
+                    return Err(crate::strategies::param_skipped(format!(
+                        "SSF_CD: 3 极超平滑器计算失败 (period={period})"
+                    )));
+                }
             },
         };
         let mut signals = price_cross_signal(&values, close);
@@ -208,13 +212,18 @@ mod tests {
         );
     }
 
+    /// **契约回归**: 数据短于 period 时**必须**返回 `ParamSkipped`,
+    /// 而不是静默降级为全 Hold(见 `RunStatus::Invalid` 的文档)。
     #[test]
-    fn test_ssf_cd_short_data_holds() {
+    fn test_ssf_cd_short_data_is_skipped_not_silently_held() {
         let close = prices(5);
         let open = mixed_open(&close);
-        let sig = SsfCdStrategy::new(cfg(PoleCount::Two))
+        let e = SsfCdStrategy::new(cfg(PoleCount::Two))
             .generate_signals_full(&open, &[], &[], &close, &[], &[], 0)
-            .unwrap();
-        assert!(sig.iter().all(|&x| x == Signal::Hold));
+            .expect_err("数据不足必须显式跳过, 不得静默降级");
+        assert!(
+            matches!(e, crate::error::AppError::ParamSkipped { .. }),
+            "必须是 ParamSkipped, 实际: {e}"
+        );
     }
 }

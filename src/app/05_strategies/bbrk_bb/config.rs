@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-use crate::config::F64Param;
+use crate::config::{F64Param, PeriodParam};
 
 use super::BB_MA_NAMES;
 
@@ -14,7 +14,7 @@ pub struct BbrkBbConfig {
     /// 均线类型名列表(取值见对应策略的 `*_MA_NAMES`)。
     pub ma: Vec<String>,
     /// 布林带周期。
-    pub bblen: F64Param,
+    pub bblen: PeriodParam,
     /// 布林带标准差倍数(通道宽度)。
     pub sigma: F64Param,
 }
@@ -24,17 +24,18 @@ impl BbrkBbConfig {
     #[must_use]
     pub fn triples(&self) -> Vec<(String, usize, f64)> {
         // 网格规模 = 各维度长度之积(可预知), 一次分配到位(`mem-with-capacity`)。
-        // `saturating_mul`: 笛卡尔积理论上无界, 普通 `*` 在 debug 下会溢出 panic。
-        let cap = self
-            .ma
-            .len()
-            .saturating_mul(self.bblen.values().len())
-            .saturating_mul(self.sigma.values().len());
-        let mut out = Vec::with_capacity(cap.min(crate::strategies::MAX_GRID_PREALLOC));
+        // 乘积的 `saturating_mul` 与封顶逻辑集中在 `grid_prealloc` 一处
+        // (笛卡尔积理论上无界, 普通 `*` 在 debug 下会溢出 panic)。
+        let cap = crate::strategies::grid_prealloc(&[
+            self.ma.len(),
+            self.bblen.values().len(),
+            self.sigma.values().len(),
+        ]);
+        let mut out = Vec::with_capacity(cap);
         for name in &self.ma {
             for &l in &self.bblen.values() {
                 for &s in &self.sigma.values() {
-                    out.push((name.clone(), l.round() as usize, s));
+                    out.push((name.clone(), l, s));
                 }
             }
         }
@@ -47,7 +48,7 @@ impl BbrkBbConfig {
     /// 任一参数越界或展开为空时返回 [`AppError`](crate::error::AppError)。
     pub fn validate(&self) -> crate::error::Result<()> {
         // 范围校验(原在 config.rs 的 match 中, 已下沉到本类型)
-        self.bblen.validate_range("bbrk_bb.bblen", 2.0, 2000.0)?;
+        self.bblen.validate_range("bbrk_bb.bblen", 2, 2000)?;
         self.sigma.validate_range("bbrk_bb.sigma", 0.1, 10.0)?;
 
         for name in &self.ma {
@@ -74,10 +75,10 @@ mod tests {
     fn triples_cartesian() {
         let c = BbrkBbConfig {
             ma: vec!["sma".into()],
-            bblen: F64Param::Range(RangeParam {
-                start: 5.0,
-                end: 10.0,
-                step: 5.0,
+            bblen: PeriodParam::Range(RangeParam {
+                start: 5,
+                end: 10,
+                step: 5,
             }),
             sigma: F64Param::Single(2.5),
         };
@@ -91,7 +92,7 @@ mod tests {
     fn unknown_name_rejected() {
         let c = BbrkBbConfig {
             ma: vec!["nope".into()],
-            bblen: F64Param::Single(20.0),
+            bblen: PeriodParam::Single(20),
             sigma: F64Param::Single(2.5),
         };
         assert!(c.validate().is_err()); // 原 validate_names, 已并入 validate

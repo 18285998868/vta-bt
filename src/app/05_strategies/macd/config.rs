@@ -14,7 +14,7 @@ impl MacdConfig {
     /// 展开后的三元参数组合。
     #[must_use]
     pub fn triples(&self) -> Vec<(usize, usize, usize)> {
-        self.groups.iter().map(|g| (g[0], g[1], g[2])).collect()
+        self.groups.iter().map(|[f, s, g]| (*f, *s, *g)).collect()
     }
 }
 

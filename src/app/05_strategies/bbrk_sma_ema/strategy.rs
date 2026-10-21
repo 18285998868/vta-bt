@@ -11,7 +11,7 @@ use super::config::BbrkSmaEmaConfig;
 /// 持仓后中线离场（与 BBRK 相同）。
 /// SMA(L) 预热不足/NaN → 不开仓（P7）。
 pub struct BbrkSmaEmaStrategy {
-    pairs: Vec<(f64, usize)>,
+    pairs: Vec<(f64, usize, usize)>,
 }
 
 impl BbrkSmaEmaStrategy {
@@ -77,6 +77,7 @@ pub fn bbrk_sma_ema_signals(
     sig
 }
 
+#[must_use]
 fn rolling_sma(close: &[f64], len: usize) -> Vec<f64> {
     let n = close.len();
     let mut out = vec![f64::NAN; n];
@@ -102,11 +103,16 @@ fn rolling_sma(close: &[f64], len: usize) -> Vec<f64> {
     out
 }
 
-fn compute(close: &[f64], sigma: f64, reg: usize) -> crate::error::Result<Vec<Signal>> {
+fn compute(
+    close: &[f64],
+    sigma: f64,
+    bblen: usize,
+    reg: usize,
+) -> crate::error::Result<Vec<Signal>> {
     let bb = match bollinger_bands(&BollingerBandsInput::from_slice(
         close,
         BollingerBandsParams {
-            period: Some(20),
+            period: Some(bblen),
             devup: Some(sigma),
             devdn: Some(sigma),
             matype: Some("ema".to_string()),
@@ -114,7 +120,7 @@ fn compute(close: &[f64], sigma: f64, reg: usize) -> crate::error::Result<Vec<Si
         },
     )) {
         Ok(v) => v,
-        Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+        Err(e) => return Err(crate::strategies::param_skipped(e)),
     };
     let sma = rolling_sma(close, reg);
     Ok(bbrk_sma_ema_signals(
@@ -136,8 +142,8 @@ impl Strategy for BbrkSmaEmaStrategy {
     }
 
     fn param_str(&self, idx: usize) -> String {
-        let (s, l) = self.pairs[idx];
-        format!("sigma={s},smareg={l}")
+        let (s, b, l) = self.pairs[idx];
+        format!("sigma={s},bblen={b},smareg={l}")
     }
 
     fn generate_signals_full(
@@ -150,8 +156,8 @@ impl Strategy for BbrkSmaEmaStrategy {
         _time: &[i64],
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
-        let (s, l) = self.pairs[param_idx];
-        compute(close, s, l)
+        let (s, b, l) = self.pairs[param_idx];
+        compute(close, s, b, l)
     }
 }
 
@@ -198,9 +204,9 @@ mod tests {
     #[test]
     fn test_name_and_params() {
         let s = BbrkSmaEmaStrategy {
-            pairs: vec![(2.5, 100)],
+            pairs: vec![(2.5, 20, 100)],
         };
         assert_eq!(s.name(), "BBRK_SMA_EMA");
-        assert_eq!(s.param_str(0), "sigma=2.5,smareg=100");
+        assert_eq!(s.param_str(0), "sigma=2.5,bblen=20,smareg=100");
     }
 }

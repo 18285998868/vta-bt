@@ -41,6 +41,7 @@ impl MaSlopeAtrGateStrategy {
 /// 用两遍法而非 `sum(x^2) - n·mean^2`: 因子的量级可达 ~20, 两项相减会因**灾难性
 /// 抵消**把方差抹成 0(曾导致门控永不开仓)。复杂度 `O(len·n)`, 对本策略的日线规模
 /// (数千根 × 数十窗口)完全够用, 换来数值可靠。
+#[must_use]
 fn rolling_mean_std(data: &[f64], n: usize) -> (Vec<f64>, Vec<f64>) {
     let len = data.len();
     let mut mean = vec![f64::NAN; len];
@@ -260,16 +261,16 @@ fn random_walk(n: usize, drift: f64, vol: f64, seed0: u64) -> Vec<f64> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
-    use crate::config::F64Param;
+    use crate::config::{F64Param, PeriodParam};
 
     use super::*;
 
     fn config() -> MaSlopeAtrGateConfig {
         MaSlopeAtrGateConfig {
-            ma: F64Param::Single(100.0),
-            slope_k: F64Param::Single(20.0),
-            atr_n: F64Param::Single(14.0),
-            z_win: F64Param::Single(60.0),
+            ma: PeriodParam::Single(100),
+            slope_k: PeriodParam::Single(20),
+            atr_n: PeriodParam::Single(14),
+            z_win: PeriodParam::Single(60),
             th: F64Param::Single(0.5),
             atr_kind: AtrKind::Sma,
         }

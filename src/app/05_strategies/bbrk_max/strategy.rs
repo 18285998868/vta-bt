@@ -22,7 +22,7 @@ use super::config::BbrkMaxConfig;
 /// BBRK+通用均线 regime门：与 `bbrk_hma` 同决策逻辑（线上只多线下只空），
 /// 只是 regime 线可换12种均线。σ固定2.5。
 pub struct BbrkMaxStrategy {
-    pairs: Vec<(String, usize)>,
+    pairs: Vec<(String, usize, usize)>,
 }
 
 impl BbrkMaxStrategy {
@@ -35,6 +35,7 @@ impl BbrkMaxStrategy {
     }
 }
 
+#[must_use]
 fn ma_values(name: &str, close: &[f64], period: usize) -> Option<Vec<f64>> {
     let v = match name {
         "sma" => {
@@ -217,11 +218,16 @@ pub fn bbrk_max_signals(
     sig
 }
 
-fn compute(close: &[f64], name: &str, len: usize) -> crate::error::Result<Vec<Signal>> {
+fn compute(
+    close: &[f64],
+    name: &str,
+    len: usize,
+    bblen: usize,
+) -> crate::error::Result<Vec<Signal>> {
     let bb = match bollinger_bands(&BollingerBandsInput::from_slice(
         close,
         BollingerBandsParams {
-            period: Some(20),
+            period: Some(bblen),
             devup: Some(2.5),
             devdn: Some(2.5),
             matype: Some("sma".to_string()),
@@ -229,11 +235,15 @@ fn compute(close: &[f64], name: &str, len: usize) -> crate::error::Result<Vec<Si
         },
     )) {
         Ok(v) => v,
-        Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+        Err(e) => return Err(crate::strategies::param_skipped(e)),
     };
     let ma = match ma_values(name, close, len) {
         Some(v) => v,
-        None => return Ok(vec![Signal::Hold; close.len()]),
+        None => {
+            return Err(crate::strategies::param_skipped(format!(
+                "BBRK_MAX: 未知 MA 名 `{name}`"
+            )));
+        }
     };
     Ok(bbrk_max_signals(
         close,
@@ -254,8 +264,8 @@ impl Strategy for BbrkMaxStrategy {
     }
 
     fn param_str(&self, idx: usize) -> String {
-        let (m, l) = &self.pairs[idx];
-        format!("ma={m},malen={l}")
+        let (m, l, b) = &self.pairs[idx];
+        format!("ma={m},malen={l},bblen={b}")
     }
 
     fn generate_signals_full(
@@ -268,8 +278,8 @@ impl Strategy for BbrkMaxStrategy {
         _time: &[i64],
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
-        let (m, l) = &self.pairs[param_idx];
-        compute(close, m, *l)
+        let (m, l, b) = &self.pairs[param_idx];
+        compute(close, m, *l, *b)
     }
 }
 
@@ -301,9 +311,9 @@ mod tests {
     #[test]
     fn test_name_and_params() {
         let s = BbrkMaxStrategy {
-            pairs: vec![("hma".to_string(), 100)],
+            pairs: vec![("hma".to_string(), 100, 20)],
         };
         assert_eq!(s.name(), "BBRK_MAX");
-        assert_eq!(s.param_str(0), "ma=hma,malen=100");
+        assert_eq!(s.param_str(0), "ma=hma,malen=100,bblen=20");
     }
 }

@@ -32,8 +32,9 @@ pub struct RunResult {
     pub slippage_bps: f64,
     /// delay>0 时 fill bar 取收盘(true)还是开盘(false, 默认)。
     pub fill_close: bool,
-    /// 被动基准(固定名义): 首根 close 买入、末根 close 卖出、无成本的 pnl。
-    pub buy_hold_pnl: f64,
+    /// 被动基准(固定名义): 首根 close 买入、末根 close 卖出、无成本的 pnl
+    /// (**金额**, 定点十进制)。
+    pub buy_hold_pnl: crate::money::Amount,
     /// 被动基准总收益(=pnl/名义)。
     pub buy_hold_return: f64,
     /// 本次求值实际喂给策略的 bar 数。
@@ -70,6 +71,20 @@ pub enum RunStatus {
     NoSignals,
     /// 有非 Hold 信号但一笔未成交(如信号全落在末根, `delay >= 1` 时无未来 fill bar)。
     NoTrades,
+    /// **该参数档位不可计算**(数据/参数不足, 例如 `period` 超过可用 bar 数)。
+    ///
+    /// 与 [`Self::NoSignals`] 的区别是本项目的核心不变量:
+    /// - `NoSignals` = 这一档**跑了**, 但全程 Hold(可能本就无信号);
+    /// - `Invalid` = 这一档**根本没算出来**(指标库返回错误), 被显式跳过。
+    ///
+    /// 引入本状态的原因: 在此之前, 66/67 个策略把"算不出来"**静默**降级为
+    /// 全 Hold, 于是它在报告里长得和"零波动低风险"的真实结论**一模一样**
+    /// (`trades=0 / pnl=0 / sharpe=0`) —— 对参数网格过拟合研究(本项目的 PBO
+    /// 模块)而言, 这正是最该被发现的失败模式, 却无人察觉。
+    ///
+    /// 读表时**必须**把 `Invalid` 单独筛掉: 它不是"策略没信号", 而是"这一档
+    /// 不可用", 把它混进统计会稀释样本并高估/低估胜率。
+    Invalid,
 }
 
 impl RunStatus {
@@ -80,6 +95,7 @@ impl RunStatus {
             Self::Ok => "ok",
             Self::NoSignals => "no_signals",
             Self::NoTrades => "no_trades",
+            Self::Invalid => "invalid",
         }
     }
 
@@ -169,7 +185,10 @@ fn data_fingerprint(cols: &kline_reader::KlineColumns) -> u64 {
 
 fn fnv_bytes_i64(mut h: u64, xs: &[i64]) -> u64 {
     for &x in xs {
-        h = fnv_bytes(h, &x.to_ne_bytes());
+        // `to_le_bytes` 而非 `to_ne_bytes`: 指纹必须**跨机器可复现**。
+        // 用本机字节序会让同一份数据在 x86 与 ARM 上得到不同指纹 → 缓存
+        // 在异构机器间无法复用; 且与相邻 `fnv_bytes_f64` 的编码风格也不一致。
+        h = fnv_bytes(h, &x.to_le_bytes());
     }
     fnv_bytes(h, &[FNV_COL_SEP])
 }
@@ -181,6 +200,38 @@ fn fnv_bytes_f64(mut h: u64, xs: &[f64]) -> u64 {
     fnv_bytes(h, &[FNV_COL_SEP])
 }
 
+/// 本次运行要产出的**文件集**开关。
+///
+/// 进缓存指纹: 产出集不同 ⇒ 缓存身份不同 ⇒ 必须重算(见 [`params_fingerprint`]).
+///
+/// 为什么值得单独成类型: 这两个开关是"**产物集合**"的完整描述, 与"数据/口径"
+/// 属于不同的关注点。合成一个值对象后, 指纹函数的参数个数不超 clippy 上限,
+/// 且"漏传某一个开关"这类错误在类型上更难发生(要漏就得漏两个)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct OutputSet {
+    /// 是否写逐笔交易与权益曲线(`--detail`)。
+    detail: bool,
+    /// 是否写 fixed 腿逐 bar 曲线(`--pbo` 的唯一输入)。
+    fixed_curves: bool,
+}
+
+/// 参与缓存指纹的**代码版本**维度。
+///
+/// 编译期常量, 由 `build.rs` 对 `src/` 与两个 path 依赖的 `src/` 做内容哈希
+/// 后注入(`cargo:rustc-env=VTA_SOURCE_HASH`)。
+///
+/// **为什么必须有它**: 指纹的其余维度都是"输入"(数据/资金/窗口/口径/参数),
+/// 不含"**实现**"。于是改完策略代码再重跑会**全部命中旧缓存**, 报告里仍是
+/// 旧代码的结果 —— 且**无任何提示**。这正是研究工具里最典型的"结论悄悄过期"
+/// 失效模式。
+///
+/// 注入失败(找不到任何源文件)时 build.rs 会给出哨兵值 `unknown` 并告警;
+/// 此时该维度**不随代码变化**, 退化为"没有代码版本维度"。
+#[must_use]
+pub fn source_hash() -> &'static str {
+    env!("VTA_SOURCE_HASH")
+}
+
 /// 参数集合的稳定指纹 (FNV-1a)。写入组合文件名,避免改动参数后误命中旧缓存。
 ///
 /// 混入的每一项都对应一类"改了但结果会变"的输入:
@@ -188,21 +239,72 @@ fn fnv_bytes_f64(mut h: u64, xs: &[f64]) -> u64 {
 /// - `balance`: 资金口径
 /// - `window`: start_date/end_date 字符串
 /// - `exec`: delay / fee / slippage / fill 价(前视乐观与口径差异会整体改写结果)
+/// - `outputs`: 产出文件集(见 [`OutputSet`])
+/// - 实现版本: 代码内容哈希(见 `source_hash`)
+///
+/// **为什么实现版本也必须进指纹**: 改完策略/指标代码后重跑, 若指纹不变则
+/// **全部命中旧缓存** —— 报告里是修复前的结果, 而使用者以为拿到了新结果。
+/// 这是"结论悄悄过期"最隐蔽的一种: 连日志都不会提到缓存命中。
+///
+/// **为什么产出开关也必须进指纹**: 缓存命中会**直接早退**, 根本走不到
+/// detail 分支 —— 而 detail 产物(逐笔交易 / 权益曲线 / fixed 曲线)只由该分支
+/// 写出。若开关不进指纹, 则"先 `detail=false` 跑一次, 再 `detail=true` 跑第二次"
+/// 会**全部命中缓存**, `detail/` 目录一个文件都没有, 而用户以为自己拿到了
+/// detail 数据; 紧接着 `vta --pbo` 报"未找到 *_fixedcurve.parquet" —— 死循环。
+/// 指纹的定义即"这次要产出什么", 产出集不同 ⇒ 身份不同 ⇒ 必然重算。
 fn params_fingerprint(
     strategy: &dyn crate::strategies::Strategy,
     n: usize,
-    balance: f64,
+    balance: crate::money::Amount,
     window: &str,
     data_fp: u64,
     exec: &crate::engine::ExecConfig,
+    outputs: OutputSet,
+) -> u64 {
+    params_fingerprint_with_source(
+        strategy,
+        n,
+        balance,
+        window,
+        data_fp,
+        exec,
+        outputs,
+        source_hash(),
+    )
+}
+
+/// [`params_fingerprint`] 的可测版本: 实现版本维度作为**参数**传入。
+///
+/// 抽出参数是为了让"指纹是否真的含实现版本"这件事**可测**:
+/// 测试可以拿 `""`(空实现版本)算一遍, 断言与真实指纹**不同** ——
+/// 否则"实现版本这一维被漏混进去"无法被任何测试发现。
+#[allow(clippy::too_many_arguments)]
+fn params_fingerprint_with_source(
+    strategy: &dyn crate::strategies::Strategy,
+    n: usize,
+    balance: crate::money::Amount,
+    window: &str,
+    data_fp: u64,
+    exec: &crate::engine::ExecConfig,
+    outputs: OutputSet,
+    source: &str,
 ) -> u64 {
     let mut h = fnv_bytes(FNV_OFFSET, &data_fp.to_le_bytes());
-    h = fnv_bytes(h, &balance.to_bits().to_le_bytes());
+    // 金额混入其**十进制表示**(精确): 若用 `f64` 位模式, 两个不同的 Decimal
+    // 可能映射到同一个 f64 ⇒ 指纹碰撞 ⇒ 误命中旧缓存。
+    h = fnv_bytes(h, balance.decimal().to_string().as_bytes());
     h = fnv_bytes(h, window.as_bytes());
     h = fnv_bytes(h, &(exec.delay() as u64).to_le_bytes());
     h = fnv_bytes(h, &exec.fee_rate.to_bits().to_le_bytes());
     h = fnv_bytes(h, &exec.slip_rate.to_bits().to_le_bytes());
     h = fnv_bytes(h, &[u8::from(exec.fill_close)]);
+    // 产出集开关: detail 决定是否写逐笔交易/权益曲线, fixed_curves 决定是否写
+    // fixed 曲线(`--pbo` 的唯一输入)。两者都改变落盘的文件集合, 故进指纹。
+    h = fnv_bytes(h, &[u8::from(outputs.detail)]);
+    h = fnv_bytes(h, &[u8::from(outputs.fixed_curves)]);
+    // 实现版本: 代码一变, 指纹必变 ⇒ 旧缓存必然不命中。
+    h = fnv_bytes(h, source.as_bytes());
+    h = fnv_bytes(h, &[FNV_COL_SEP]);
     for i in 0..n {
         h = fnv_bytes(h, strategy.param_str(i).as_bytes());
         h = fnv_bytes(h, &[FNV_COL_SEP]);
@@ -222,10 +324,18 @@ fn combo_parquet_path(
 
 /// 单个组合执行所需的运行期上下文: 由 run() 一次性构建, 全部组合共享。
 struct ComboCtx {
-    balance: f64,
+    /// 初始资金(**金额**, 定点十进制)。
+    balance: crate::money::Amount,
     detail: bool,
     fixed_curves: bool,
     overwrite: bool,
+    /// `--no-cache`: **忽略全部缓存**强制重算(逃生门)。
+    ///
+    /// 与 `overwrite` 的区别: `overwrite` 是**配置项**("结果文件要不要覆盖"),
+    /// 本字段是**命令行开关**, 且作用在**组合缓存**(`temps/`)上 ——
+    /// `overwrite=true` 本来就意味着全部重算, 但它写在配置文件里;
+    /// `--no-cache` 让用户在命令行临时强制一次, 不必改配置。
+    no_cache: bool,
     temps_dir: PathBuf,
     detail_dir: PathBuf,
     /// 数据窗口标识 (start_date/end_date), 纳入缓存指纹以区分不同数据区间。
@@ -249,7 +359,7 @@ impl ComboCtx {
         metrics: engine::SummaryMetrics,
         bars_used: usize,
         status: RunStatus,
-        bh_pnl: f64,
+        bh_pnl: crate::money::Amount,
         bh_ret: f64,
     ) -> RunResult {
         RunResult {
@@ -269,6 +379,45 @@ impl ComboCtx {
             bars_used: u32::try_from(bars_used).unwrap_or(u32::MAX),
             status,
         }
+    }
+
+    /// 构造一个**不可计算**档位的报告行。
+    ///
+    /// 与正常行共用 [`Self::run_row`] 这**唯一**构造点(见 README「关键设计
+    /// 约束」第 11 条)—— 区别只在 `status` 与 `metrics`:
+    /// - `status = RunStatus::Invalid`: 明确告知"这一档**没算出来**",
+    ///   而不是"跑了但没信号";
+    /// - `metrics` 全零, 但 `final_equity = balance`(该档未开仓, 权益就是
+    ///   初始资金) —— 若留 0, `final_equity` 会与 `total_return = 0` 自相矛盾。
+    ///
+    /// `buy_hold_*` 与 `bars_used` 仍是**真实值**(基准与数据规模不因该档
+    /// 不可算而改变)。
+    #[allow(clippy::too_many_arguments)]
+    fn invalid_row(
+        &self,
+        symbol: &str,
+        tf: &str,
+        strategy: &dyn crate::strategies::Strategy,
+        params: &str,
+        bars_used: usize,
+        bh_pnl: crate::money::Amount,
+        bh_ret: f64,
+    ) -> RunResult {
+        let metrics = engine::SummaryMetrics {
+            final_equity: self.balance,
+            ..engine::SummaryMetrics::default()
+        };
+        self.run_row(
+            symbol,
+            tf,
+            strategy,
+            params,
+            metrics,
+            bars_used,
+            RunStatus::Invalid,
+            bh_pnl,
+            bh_ret,
+        )
     }
 }
 
@@ -299,10 +448,10 @@ fn validate_columns(cols: &kline_reader::KlineColumns, where_: &str) -> crate::e
         ("close", cols.close().len()),
         ("volume", cols.volume().len()),
     ];
-    let n = lens[4].1;
-    if let Some((name, len)) = lens.iter().find(|(_, l)| *l != n) {
+    let close_len = cols.close().len();
+    if let Some((name, len)) = lens.iter().find(|(_, l)| *l != close_len) {
         return Err(crate::error::AppError::Msg(format!(
-            "{where_}: K 线列长度不一致 —— {name}={len}, close={n}; \
+            "{where_}: K 线列长度不一致 —— {name}={len}, close={close_len}; \
              会导致引擎静默截断少算 bar 或时间戳失真。请重新下载/清洗数据"
         )));
     }
@@ -351,6 +500,8 @@ fn check_batch_len(name: &str, got: usize, want: usize) -> crate::error::Result<
 /// `bpy` 与 `data_fp` 由调用方按当前 (symbol, timeframe) 对提供, 不放在 `ctx` 里:
 /// 两者在策略层循环中是循环不变量(同一条 `cols`), 在这里重算等于把一次
 /// O(全部列字节) 的哈希乘以策略数量(见 `data_fingerprint` 的成本说明)。
+/// 同理, 列合法性检查 [`validate_columns`] 也由调用方**每组只做一次** ——
+/// 它要全量扫描 4 条价格列, 放在这里等于把一次 O(T) 扫描乘以策略数。
 /// 返回 (组合文件路径, 是否本次计算; false 表示命中缓存被跳过)。
 fn run_combo(
     strategy: &dyn crate::strategies::Strategy,
@@ -361,7 +512,6 @@ fn run_combo(
     data_fp: u64,
     ctx: &ComboCtx,
 ) -> crate::error::Result<(PathBuf, bool)> {
-    validate_columns(cols, &format!("{symbol}/{tf}"))?;
     let n = strategy.param_count();
 
     let combo_path = combo_parquet_path(
@@ -369,26 +519,35 @@ fn run_combo(
         symbol,
         tf,
         strategy.name(),
-        params_fingerprint(strategy, n, ctx.balance, &ctx.window, data_fp, &ctx.exec),
+        params_fingerprint(
+            strategy,
+            n,
+            ctx.balance,
+            &ctx.window,
+            data_fp,
+            &ctx.exec,
+            OutputSet {
+                detail: ctx.detail,
+                fixed_curves: ctx.fixed_curves,
+            },
+        ),
     );
 
     // L4: 指纹相同**不保证**文件完整 —— 文件可能被截断/写坏/被旧版本写入。
     // 少行的话下游合并会得到"缺一半参数"的结果而毫无提示, 故行数也必须对得上。
-    if !ctx.overwrite && combo_path.exists() {
-        match output::read_parquet(&combo_path) {
-            Ok(results) if results.len() == n => {
-                tracing::debug!(
-                    "[{}]: 已存在, 跳过 ({} 条结果)",
-                    strategy.name(),
-                    results.len()
-                );
+    if !ctx.overwrite && !ctx.no_cache && combo_path.exists() {
+        // 只读 footer 行数, 不解码整张表: 这条路径每个策略都会走一次, 而缓存命中
+        // 时真正需要的只有"行数是否等于参数数"。完整的 schema/内容校验留给
+        // merge 阶段的 `read_parquet`。
+        match output::parquet_row_count(&combo_path) {
+            Ok(rows) if rows == n => {
+                tracing::debug!("[{}]: 已存在, 跳过 ({rows} 条结果)", strategy.name());
                 return Ok((combo_path, false));
             }
-            Ok(results) => {
+            Ok(rows) => {
                 tracing::warn!(
-                    "  [{}] 缓存行数 {} != 参数数 {n}(文件被截断或指纹碰撞), 判为失效并重算",
-                    strategy.name(),
-                    results.len()
+                    "  [{}] 缓存行数 {rows} != 参数数 {n}(文件被截断或指纹碰撞), 判为失效并重算",
+                    strategy.name()
                 );
             }
             Err(e) => {
@@ -400,7 +559,7 @@ fn run_combo(
     use rayon::prelude::*;
 
     if ctx.detail {
-        let (bh_pnl, bh_ret) = crate::engine::buy_hold_pnl(cols.close(), ctx.balance);
+        let (bh_pnl, bh_ret) = crate::engine::buy_hold_pnl(cols.close(), ctx.balance)?;
         // detail 预检与自适应分块: 曲线(trades+equity+fixed)常驻内存曾导致整机 swap。
         // 单 param 约 T×200B; 峰值钳在 DETAIL_MEM_BUDGET, 超量分批, 单批都装不下则拒绝。
         const DETAIL_MEM_BUDGET: u64 = 4 * 1024 * 1024 * 1024;
@@ -445,33 +604,61 @@ fn run_combo(
                 start..end,
             )?;
             check_batch_len(strategy.name(), batch.len(), end - start)?;
-            let sims: Vec<(String, crate::engine::SimResult, RunStatus)> = batch
+            // 每档独立: `Skipped` = 该档不可计算(记 Invalid, **继续**跑),
+            // `Signals` = 正常回测。
+            let sims: Vec<(String, Option<crate::engine::SimResult>, RunStatus)> = batch
                 .into_par_iter()
                 .enumerate()
-                .map(|(k, signals)| {
+                .map(|(k, outcome)| {
                     let i = start + k;
-                    let sim = crate::engine::simulate_detailed(
-                        cols.time(),
-                        cols.close(),
-                        cols.open(),
-                        &signals,
-                        ctx.balance,
-                        bpy,
-                        &ctx.exec,
-                    );
-                    let status = RunStatus::classify(&signals, sim.summary.num_trades);
-                    Ok((strategy.param_str(i), sim, status))
+                    match outcome {
+                        crate::strategies::ParamOutcome::Signals(signals) => {
+                            let sim = crate::engine::simulate_detailed(
+                                cols.time(),
+                                cols.close(),
+                                cols.open(),
+                                &signals,
+                                ctx.balance,
+                                bpy,
+                                &ctx.exec,
+                            )?;
+                            let status = RunStatus::classify(&signals, sim.summary.num_trades);
+                            Ok((strategy.param_str(i), Some(sim), status))
+                        }
+                        crate::strategies::ParamOutcome::Skipped(reason) => {
+                            tracing::warn!(
+                                "  [{}] 参数档位 {} 不可计算: {reason}(记为 invalid, 继续)",
+                                strategy.name(),
+                                strategy.param_str(i)
+                            );
+                            Ok((strategy.param_str(i), None, RunStatus::Invalid))
+                        }
+                    }
                 })
                 .collect::<crate::error::Result<Vec<_>>>()?;
 
             let mut detail_rows = Vec::with_capacity(end - start);
             for (params, sim, status) in sims {
-                let crate::engine::SimResult {
+                let Some(crate::engine::SimResult {
                     summary,
                     trades,
                     equity_curve,
                     fixed_curve,
-                } = sim;
+                }) = sim
+                else {
+                    // 不可计算的档位**没有**逐笔交易与曲线 → 不产出 detail 产物,
+                    // 但仍写一行 `status = invalid` 的结果行(让报告完整可见)。
+                    run_rows.push(ctx.invalid_row(
+                        symbol,
+                        tf,
+                        strategy,
+                        &params,
+                        cols.len(),
+                        bh_pnl,
+                        bh_ret,
+                    ));
+                    continue;
+                };
                 run_rows.push(ctx.run_row(
                     symbol,
                     tf,
@@ -498,7 +685,7 @@ fn run_combo(
 
         output::write_single_parquet(&run_rows, &combo_path, ctx.balance)?;
     } else {
-        let (bh_pnl, bh_ret) = crate::engine::buy_hold_pnl(cols.close(), ctx.balance);
+        let (bh_pnl, bh_ret) = crate::engine::buy_hold_pnl(cols.close(), ctx.balance)?;
         // 非 detail 也按信号内存分块: 全量 batch 常驻曾 OOM (35k×2.6M)。
         // 单 param 约 T×size_of::<Signal>()B; 峰值钳在 BATCH_MEM_BUDGET, 超量分批。
         const BATCH_MEM_BUDGET: u64 = 4 * 1024 * 1024 * 1024;
@@ -530,31 +717,50 @@ fn run_combo(
             let mut rows: Vec<RunResult> = batch
                 .into_par_iter()
                 .enumerate()
-                .map(|(k, signals)| {
+                .map(|(k, outcome)| {
                     let i = start + k;
-                    let metrics = crate::engine::simulate(
-                        cols.close(),
-                        cols.open(),
-                        &signals,
-                        ctx.balance,
-                        bpy,
-                        &ctx.exec,
-                    );
                     // `param_str` 会为每次调用分配一个 `String`。本分支需要它三次
                     // (params 列 + 两列派生编码), 故只算一次再复用。
                     let params = strategy.param_str(i);
-                    let status = RunStatus::classify(&signals, metrics.num_trades);
-                    Ok(ctx.run_row(
-                        symbol,
-                        tf,
-                        strategy,
-                        &params,
-                        metrics,
-                        cols.len(),
-                        status,
-                        bh_pnl,
-                        bh_ret,
-                    ))
+                    match outcome {
+                        crate::strategies::ParamOutcome::Signals(signals) => {
+                            let metrics = crate::engine::simulate(
+                                cols.close(),
+                                cols.open(),
+                                &signals,
+                                ctx.balance,
+                                bpy,
+                                &ctx.exec,
+                            )?;
+                            let status = RunStatus::classify(&signals, metrics.num_trades);
+                            Ok(ctx.run_row(
+                                symbol,
+                                tf,
+                                strategy,
+                                &params,
+                                metrics,
+                                cols.len(),
+                                status,
+                                bh_pnl,
+                                bh_ret,
+                            ))
+                        }
+                        crate::strategies::ParamOutcome::Skipped(reason) => {
+                            tracing::warn!(
+                                "  [{}] 参数档位 {params} 不可计算: {reason}(记为 invalid, 继续)",
+                                strategy.name()
+                            );
+                            Ok(ctx.invalid_row(
+                                symbol,
+                                tf,
+                                strategy,
+                                &params,
+                                cols.len(),
+                                bh_pnl,
+                                bh_ret,
+                            ))
+                        }
+                    }
                 })
                 .collect::<crate::error::Result<Vec<_>>>()?;
             run_rows.append(&mut rows);
@@ -589,6 +795,28 @@ fn run_combo(
 /// 配置加载/校验失败、参数网格自检失败、数据列非法、策略批量信号长度违反契约,
 /// 或报告合并阶段完全失败时返回 [`crate::error::AppError`]。
 pub fn run(config_path: &std::path::Path) -> crate::error::Result<()> {
+    run_with(config_path, RunOptions::default())
+}
+
+/// [`run`] 的运行期选项(命令行可控)。
+///
+/// 单独成结构体而非给 `run` 加布尔参数: 布尔参数在调用点不可读
+/// (`run(&p, true)` 看不出 `true` 是什么), 且再加开关就得再改签名。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RunOptions {
+    /// **忽略全部缓存**, 强制重算。
+    ///
+    /// 正常情况下缓存已足够安全: 指纹覆盖行情内容、资金、窗口、执行口径、
+    /// 产出开关、**实现版本**(源码内容哈希) ⇒ 代码/数据/配置任一变化都会
+    /// 自动失效。本开关用于"明知缓存可能过期、但只想强制重算一次"的场合。
+    pub no_cache: bool,
+}
+
+/// 带选项执行一轮回测。生产入口见 [`run`]。
+///
+/// # Errors
+/// 配置加载/校验失败、数据加载失败、或回测写盘失败时返回 [`AppError`]。
+pub fn run_with(config_path: &std::path::Path, opts: RunOptions) -> crate::error::Result<()> {
     let config = config::load_config(config_path)?;
     config.validate()?;
     // 必须走 `build_strategies_checked`: 它在构建后对展开网格做 `param_str` 唯一性
@@ -598,7 +826,7 @@ pub fn run(config_path: &std::path::Path) -> crate::error::Result<()> {
     let detail = config.output.as_ref().is_some_and(|o| o.detail);
     let fixed_curves = config.output.as_ref().is_some_and(|o| o.fixed_curves);
     let overwrite = config.output.as_ref().is_some_and(|o| o.overwrite);
-    let balance = config.backtest.initial_balance.get();
+    let balance = config.backtest.initial_balance.amount();
     let window = format!(
         "{}~{}",
         config.data.start_date.as_deref().unwrap_or(""),
@@ -627,6 +855,7 @@ pub fn run(config_path: &std::path::Path) -> crate::error::Result<()> {
         detail,
         fixed_curves,
         overwrite,
+        no_cache: opts.no_cache,
         temps_dir: temps_dir.clone(),
         detail_dir: detail_dir.clone(),
         window: window.clone(),
@@ -681,6 +910,11 @@ pub fn run(config_path: &std::path::Path) -> crate::error::Result<()> {
             // 策略层循环外算一次: 同一份 `cols` 会被全部策略复用, 在 `run_combo`
             // 内部重算等于把一次全列哈希乘以策略数(100+ 策略 ⇒ 100 倍浪费)。
             let data_fp = data_fingerprint(&cols);
+            // 列合法性检查同理**提到策略循环外**: 它逐列全量扫描 4 条价格列
+            // (O(T)), 放进 `run_combo` 等于把这次扫描乘以策略数。
+            // 语义不变 —— 同一份 `cols` 对全部策略的判定本就相同, 提前失败
+            // 反而更早报错(且不依赖是否走到策略层)。
+            validate_columns(&cols, &format!("{symbol}/{tf}"))?;
             for strategy in &strategies {
                 let (combo_path, computed) =
                     run_combo(strategy.as_ref(), symbol, tf, &cols, bpy, data_fp, &ctx)?;
@@ -703,15 +937,21 @@ pub fn run(config_path: &std::path::Path) -> crate::error::Result<()> {
 
     let out_path = out_dir.join("result.parquet");
     let stats = output::merge_parquet_files(&combo_files, &out_path, balance)?;
+    // `saturating_sub`: `total_files` 是 `u32::try_from(len).unwrap_or(u32::MAX)`,
+    // 当组合文件数超过 `u32::MAX` 时它被截成 `u32::MAX`, 而 `failed_files`
+    // 仍按真实失败数累加 ⇒ 普通 `-` 在 debug 下会**下溢 panic**。
+    let ok_files = stats.total_files.saturating_sub(stats.failed_files);
     tracing::info!(
         "\n  完成: 运行 {ran} 组, 跳过 {skipped} 组, 合并 {} 条结果 (来自 {}/{} 个文件)",
         stats.merged_rows,
-        stats.total_files - stats.failed_files,
+        ok_files,
         stats.total_files
     );
     if stats.failed_files > 0 {
-        // 报告缺了参数, 必须显式告知, 不能让"完成"字样掩盖。
-        tracing::info!(
+        // 报告缺了参数, 必须**以 warn 级别**显式告知 —— 用 `info!` 的话,
+        // 默认的 `RUST_LOG=info` 恰好能看见, 但生产常见的 `RUST_LOG=warn`
+        // 会把它**整个滤掉**, 于是"报告不完整"这件事无人知晓。
+        tracing::warn!(
             "  [警告] {} 个组合文件读取失败已被跳过, 报告不完整(请删 temps/ 后重跑)",
             stats.failed_files
         );
@@ -809,8 +1049,25 @@ mod tests {
         .pop()
         .expect("sma");
         let exec = crate::engine::ExecConfig::default();
-        let fp_old = params_fingerprint(&*s, 1, 10_000.0, "~", data_fingerprint(&a), &exec);
-        let fp_new = params_fingerprint(&*s, 1, 10_000.0, "~", data_fingerprint(&rewritten), &exec);
+        let plain = OutputSet::default();
+        let fp_old = params_fingerprint(
+            &*s,
+            1,
+            crate::money::Amount::from_i64(10_000),
+            "~",
+            data_fingerprint(&a),
+            &exec,
+            plain,
+        );
+        let fp_new = params_fingerprint(
+            &*s,
+            1,
+            crate::money::Amount::from_i64(10_000),
+            "~",
+            data_fingerprint(&rewritten),
+            &exec,
+            plain,
+        );
         assert_ne!(fp_old, fp_new, "同窗口不同数据必须给出不同缓存文件名");
     }
 
@@ -852,13 +1109,15 @@ mod tests {
         .expect("sma");
         let c = cols(10);
         let fp = data_fingerprint(&c);
+        let plain = OutputSet::default();
         let base = params_fingerprint(
             &*s,
             1,
-            10_000.0,
+            crate::money::Amount::from_i64(10_000),
             "a~b",
             fp,
             &crate::engine::ExecConfig::default(),
+            plain,
         );
         for exec in [
             crate::engine::ExecConfig::try_from_bps_fill(2, 0.0, 0.0, false).unwrap(),
@@ -868,7 +1127,15 @@ mod tests {
         ] {
             assert_ne!(
                 base,
-                params_fingerprint(&*s, 1, 10_000.0, "a~b", fp, &exec),
+                params_fingerprint(
+                    &*s,
+                    1,
+                    crate::money::Amount::from_i64(10_000),
+                    "a~b",
+                    fp,
+                    &exec,
+                    plain
+                ),
                 "执行口径 {:?} 变化必须失效缓存",
                 exec
             );
@@ -878,10 +1145,11 @@ mod tests {
             params_fingerprint(
                 &*s,
                 1,
-                20_000.0,
+                crate::money::Amount::from_i64(20_000),
                 "a~b",
                 fp,
-                &crate::engine::ExecConfig::default()
+                &crate::engine::ExecConfig::default(),
+                plain
             ),
             "资金变化必须失效缓存"
         );
@@ -890,12 +1158,231 @@ mod tests {
             params_fingerprint(
                 &*s,
                 1,
-                10_000.0,
+                crate::money::Amount::from_i64(10_000),
                 "a~c",
                 fp,
-                &crate::engine::ExecConfig::default()
+                &crate::engine::ExecConfig::default(),
+                plain
             ),
             "窗口变化必须失效缓存"
+        );
+    }
+
+    /// **回归**: `detail` / `fixed_curves` 开关必须进缓存指纹。
+    ///
+    /// 可触发场景(真实死循环): 先以 `detail=false` 跑一次 → `temps/` 里落了
+    /// 结果缓存; 再以 `detail=true` 跑第二次 → 若开关不进指纹, 第二次**全部
+    /// 命中缓存并直接早退**, 根本走不到 detail 分支 ⇒ `detail/` 目录一个文件
+    /// 都没有(用户以为拿到了逐笔交易/曲线); 紧接着 `vta --pbo` 报
+    /// "未找到 *_fixedcurve.parquet, 请先用 detail=true 重跑" —— 而用户**确实**
+    /// 设了 `detail=true`。死循环。
+    ///
+    /// 指纹的定义是"这次要产出什么": 产出集不同 ⇒ 身份不同 ⇒ 必然重算。
+    #[test]
+    fn fingerprint_covers_output_set_switches() {
+        let s = build_strategies_checked(&[config::StrategyConfig::Sma(config::MaGridCfg {
+            period: config::PeriodParam::Single(20),
+        })])
+        .expect("sma 网格合法")
+        .pop()
+        .expect("sma");
+        let fp = data_fingerprint(&cols(10));
+        let exec = crate::engine::ExecConfig::default();
+        let plain = OutputSet::default();
+        let base = params_fingerprint(
+            &*s,
+            1,
+            crate::money::Amount::from_i64(10_000),
+            "a~b",
+            fp,
+            &exec,
+            plain,
+        );
+
+        // detail 开关变化 ⇒ 指纹变化(否则第二次跑拿不到 detail 产物)。
+        assert_ne!(
+            base,
+            params_fingerprint(
+                &*s,
+                1,
+                crate::money::Amount::from_i64(10_000),
+                "a~b",
+                fp,
+                &exec,
+                OutputSet {
+                    detail: true,
+                    fixed_curves: false
+                }
+            ),
+            "detail 开关变化必须失效缓存, 否则 detail 产物永远不会被写出"
+        );
+        // fixed_curves 开关变化 ⇒ 指纹变化(--pbo 的输入只由该开关产出)。
+        assert_ne!(
+            base,
+            params_fingerprint(
+                &*s,
+                1,
+                crate::money::Amount::from_i64(10_000),
+                "a~b",
+                fp,
+                &exec,
+                OutputSet {
+                    detail: false,
+                    fixed_curves: true
+                }
+            ),
+            "fixed_curves 开关变化必须失效缓存, 否则 *_fixedcurve.parquet 不会被写出"
+        );
+        // 两个开关都变 ⇒ 与基线不同。
+        assert_ne!(
+            base,
+            params_fingerprint(
+                &*s,
+                1,
+                crate::money::Amount::from_i64(10_000),
+                "a~b",
+                fp,
+                &exec,
+                OutputSet {
+                    detail: true,
+                    fixed_curves: true
+                }
+            ),
+            "detail + fixed_curves 同时变化必须失效缓存"
+        );
+        // 同样的开关组合 ⇒ 指纹相同(否则同一次运行会自我失效, 缓存永不命中)。
+        assert_eq!(
+            base,
+            params_fingerprint(
+                &*s,
+                1,
+                crate::money::Amount::from_i64(10_000),
+                "a~b",
+                fp,
+                &exec,
+                plain
+            ),
+            "相同开关组合必须给出相同指纹"
+        );
+        assert_eq!(
+            params_fingerprint(
+                &*s,
+                1,
+                crate::money::Amount::from_i64(10_000),
+                "a~b",
+                fp,
+                &exec,
+                OutputSet {
+                    detail: true,
+                    fixed_curves: true
+                }
+            ),
+            params_fingerprint(
+                &*s,
+                1,
+                crate::money::Amount::from_i64(10_000),
+                "a~b",
+                fp,
+                &exec,
+                OutputSet {
+                    detail: true,
+                    fixed_curves: true
+                }
+            ),
+            "相同开关组合必须给出相同指纹"
+        );
+    }
+
+    /// **回归**: 指纹必须含**实现版本**(源码内容哈希)。
+    ///
+    /// 可触发场景: 指纹只覆盖"输入"(数据/资金/窗口/口径/参数)时, 改完策略代码
+    /// 重跑会**全部命中旧缓存** —— 报告里是修复前的结果, 而使用者以为拿到了
+    /// 新结果, 且**连日志都不会提到缓存命中**。这是研究工具里最隐蔽的
+    /// "结论悄悄过期"失效模式。
+    #[test]
+    fn fingerprint_covers_source_hash() {
+        let s = build_strategies_checked(&[config::StrategyConfig::Sma(config::MaGridCfg {
+            period: config::PeriodParam::Single(20),
+        })])
+        .expect("sma 网格合法")
+        .pop()
+        .expect("sma");
+        let exec = crate::engine::ExecConfig::default();
+        let outputs = OutputSet::default();
+        let fp = data_fingerprint(&cols(10));
+        let real = params_fingerprint(
+            &*s,
+            1,
+            crate::money::Amount::from_i64(10_000),
+            "a~b",
+            fp,
+            &exec,
+            outputs,
+        );
+        // 不含实现版本 ⇒ 必然不同。
+        let without = params_fingerprint_with_source(
+            &*s,
+            1,
+            crate::money::Amount::from_i64(10_000),
+            "a~b",
+            fp,
+            &exec,
+            outputs,
+            "",
+        );
+        assert_ne!(
+            real, without,
+            "实现版本必须进指纹, 否则改代码后仍命中旧缓存"
+        );
+        // 换一个实现版本 ⇒ 也必须不同。
+        let other = params_fingerprint_with_source(
+            &*s,
+            1,
+            crate::money::Amount::from_i64(10_000),
+            "a~b",
+            fp,
+            &exec,
+            outputs,
+            "deadbeefdeadbeef",
+        );
+        assert_ne!(real, other, "实现版本变化必须改变指纹");
+        assert_ne!(without, other);
+    }
+
+    /// 源码哈希必须可用(构建期找到了源文件)。
+    ///
+    /// 若 build.rs 找不到任何源文件, 它会注入哨兵值 `unknown` 并告警 ——
+    /// 此时"实现版本"这一维**不随代码变化**, 退化为"没有这一维"。
+    #[test]
+    fn source_hash_is_available() {
+        let h = source_hash();
+        assert!(!h.is_empty(), "源码哈希不得为空");
+        assert_eq!(h.len(), 16, "源码哈希应是 16 位十六进制: {h}");
+        assert!(
+            h.chars().all(|c| c.is_ascii_hexdigit()),
+            "源码哈希必须是十六进制: {h}"
+        );
+    }
+
+    /// **回归**: 指纹必须**跨机器可复现** —— 整数列用小端序编码。
+    ///
+    /// 可触发场景: 原实现用 `to_ne_bytes()`(本机字节序), 于是同一份数据在
+    /// x86 与 ARM 上得到**不同**指纹 ⇒ 缓存无法在异构机器间复用, 且与相邻
+    /// `fnv_bytes_f64` 的小端编码风格不一致。
+    ///
+    /// 断言方式: 同一列的指纹必须等于"显式小端编码"的结果。
+    #[test]
+    fn fingerprint_uses_little_endian_byte_order() {
+        let xs: &[i64] = &[1, -1, i64::MIN, i64::MAX, 0x0102_0304_0506_0708];
+        let mut expected = FNV_OFFSET;
+        for &x in xs {
+            expected = fnv_bytes(expected, &x.to_le_bytes());
+        }
+        let got = fnv_bytes_i64(FNV_OFFSET, xs);
+        assert_eq!(
+            got,
+            fnv_bytes(expected, &[FNV_COL_SEP]),
+            "整数列必须按小端序编码(跨机器可复现)"
         );
     }
 
@@ -920,26 +1407,40 @@ mod tests {
             fee_bps: 0.0,
             slippage_bps: 0.0,
             fill_close: false,
-            buy_hold_pnl: 1.0,
+            buy_hold_pnl: crate::money::Amount::from_i64(1),
             buy_hold_return: 0.1,
         };
         let good = dir.join("good.parquet");
         let bad = dir.join("bad.parquet");
         let missing = dir.join("missing.parquet");
-        output::write_parquet(&good, std::slice::from_ref(&rr), 10_000.0).unwrap();
+        output::write_parquet(
+            &good,
+            std::slice::from_ref(&rr),
+            crate::money::Amount::from_i64(10_000),
+        )
+        .unwrap();
         std::fs::write(&bad, b"not a parquet file").unwrap();
 
         let out = dir.join("merged.parquet");
 
         // 全部不可读 → 必须报错, 而不是"合并 0 条"式的成功
         assert!(
-            output::merge_parquet_files(&[bad.clone(), missing.clone()], &out, 10_000.0).is_err(),
+            output::merge_parquet_files(
+                &[bad.clone(), missing.clone()],
+                &out,
+                crate::money::Amount::from_i64(10_000),
+            )
+            .is_err(),
             "全部失败时必须报错"
         );
 
         // 部分失败 → 报告仍落盘, 但失败必须被**计数**并进入摘要
-        let st = output::merge_parquet_files(&[good.clone(), bad, missing], &out, 10_000.0)
-            .expect("部分失败仍应产出报告");
+        let st = output::merge_parquet_files(
+            &[good.clone(), bad, missing],
+            &out,
+            crate::money::Amount::from_i64(10_000),
+        )
+        .expect("部分失败仍应产出报告");
         assert_eq!(st.total_files, 3);
         assert_eq!(
             st.failed_files, 2,
@@ -950,7 +1451,7 @@ mod tests {
 
         // L4: 缓存行数必须等于参数数。截断文件(少 1 行)不能被当成有效缓存。
         let truncated = dir.join("trunc.parquet");
-        output::write_parquet(&truncated, &[], 10_000.0).unwrap();
+        output::write_parquet(&truncated, &[], crate::money::Amount::from_i64(10_000)).unwrap();
         assert_eq!(
             output::read_parquet(&truncated).unwrap().len(),
             0,
@@ -1130,7 +1631,7 @@ mod tests {
     fn parquet_io_apis_take_path_and_never_panic_on_non_utf8() {
         let src = include_str!("04_write_output/parquet.rs");
         let io_fns = [
-            "pub fn write_parquet(path: &Path",
+            "pub fn write_parquet(",
             "pub fn read_parquet(path: &Path",
             "pub fn read_equity_curves(dir: &Path",
             "pub fn read_fixed_curves(dir: &Path",
@@ -1138,6 +1639,11 @@ mod tests {
         for sig in io_fns {
             assert!(src.contains(sig), "IO 函数签名应收 &Path: {sig}");
         }
+        // `write_parquet` 的签名是跨行的, 单独断言它的第一个参数是 `&Path`。
+        assert!(
+            src.contains("path: &Path,"),
+            "write_parquet 的路径参数必须是 &Path"
+        );
         assert!(
             !src.contains("non-UTF-8 path"),
             "生产代码不得用 expect(\"non-UTF-8 path\") 把 Path 降级为 &str"
@@ -1145,6 +1651,72 @@ mod tests {
     }
 
     /// O9: `RunResult` 的构造必须**单一来源**, 否则两条分支的字段会漂移。
+    /// **回归**: 不可计算的档位必须被记成 `RunStatus::Invalid`,
+    /// 且 `final_equity = balance`(该档未开仓, 权益就是初始资金)——
+    /// 若留 0, `final_equity` 会与 `total_return = 0` 自相矛盾。
+    #[test]
+    fn invalid_row_is_marked_invalid_and_keeps_equity_consistent() {
+        let s = build_strategies_checked(&[config::StrategyConfig::Sma(config::MaGridCfg {
+            period: config::PeriodParam::Single(20),
+        })])
+        .expect("sma 网格合法")
+        .pop()
+        .expect("sma");
+        let ctx = ComboCtx {
+            balance: crate::money::Amount::from_i64(10_000),
+            detail: false,
+            fixed_curves: false,
+            overwrite: false,
+            no_cache: false,
+            temps_dir: std::path::PathBuf::from("/tmp"),
+            detail_dir: std::path::PathBuf::from("/tmp"),
+            window: "~".to_string(),
+            exec: crate::engine::ExecConfig::default(),
+        };
+        let r = ctx.invalid_row(
+            "BTCUSDT",
+            "1d",
+            &*s,
+            "period=20",
+            300,
+            crate::money::Amount::from_i64(1),
+            0.1,
+        );
+        assert_eq!(r.status, RunStatus::Invalid);
+        assert_eq!(r.status.as_str(), "invalid");
+        assert_eq!(
+            r.metrics.final_equity,
+            crate::money::Amount::from_i64(10_000),
+            "未开仓 ⇒ 权益就是初始资金, 不得为 0"
+        );
+        assert_eq!(r.metrics.total_return, 0.0);
+        assert_eq!(r.bars_used, 300, "数据规模不因该档不可算而改变");
+        assert_eq!(
+            r.buy_hold_pnl,
+            crate::money::Amount::from_i64(1),
+            "基准不因该档不可算而改变"
+        );
+    }
+
+    /// 四个 `status` 取值的落盘文本必须互不相同且稳定。
+    #[test]
+    fn run_status_texts_are_distinct() {
+        let all = [
+            RunStatus::Ok,
+            RunStatus::NoSignals,
+            RunStatus::NoTrades,
+            RunStatus::Invalid,
+        ];
+        let mut seen = std::collections::HashSet::new();
+        for s in all {
+            assert!(seen.insert(s.as_str()), "status 文本重复: {}", s.as_str());
+        }
+        assert_eq!(RunStatus::Ok.as_str(), "ok");
+        assert_eq!(RunStatus::NoSignals.as_str(), "no_signals");
+        assert_eq!(RunStatus::NoTrades.as_str(), "no_trades");
+        assert_eq!(RunStatus::Invalid.as_str(), "invalid");
+    }
+
     #[test]
     fn run_row_is_the_single_construction_point() {
         let s = build_strategies_checked(&[config::StrategyConfig::Sma(config::MaGridCfg {
@@ -1154,10 +1726,11 @@ mod tests {
         .pop()
         .expect("sma");
         let ctx = ComboCtx {
-            balance: 10_000.0,
+            balance: crate::money::Amount::from_i64(10_000),
             detail: false,
             fixed_curves: false,
             overwrite: true,
+            no_cache: false,
             temps_dir: "t".into(),
             detail_dir: "d".into(),
             window: "a~b".into(),
@@ -1175,7 +1748,7 @@ mod tests {
             m,
             300,
             RunStatus::NoSignals,
-            123.0,
+            crate::money::Amount::from_i64(123),
             0.0123,
         );
         // 执行口径字段由 ctx 提供, 不可能与分支漂移
@@ -1193,6 +1766,6 @@ mod tests {
         assert_eq!(r.bars_used, 300);
         assert_eq!(r.status, RunStatus::NoSignals);
         assert_eq!(r.metrics.sharpe_ratio, 1.25);
-        assert!((r.buy_hold_pnl - 123.0).abs() < 1e-12);
+        assert!((r.buy_hold_pnl.to_f64() - 123.0).abs() < 1e-12);
     }
 }

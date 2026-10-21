@@ -61,9 +61,17 @@ fn bench() {
     let exec = vta::engine::ExecConfig::default();
     let t = Instant::now();
     for _ in 0..20 {
-        std::hint::black_box(vta::engine::simulate(
-            &close, &close, &sig, 10_000.0, 365.0, &exec,
-        ));
+        std::hint::black_box(
+            vta::engine::simulate(
+                &close,
+                &close,
+                &sig,
+                vta::money::Amount::from_i64(10_000),
+                365.0,
+                &exec,
+            )
+            .expect("合法回测必须成功"),
+        );
     }
     let c = t.elapsed() / 20;
     println!("C) 单次 simulate({n} bars): {:?}", c);

@@ -21,7 +21,7 @@ const STOP_N: usize = 10;
 /// BBRK+KDJ逆势波段：布防→触发两段式（见 config 文档）。
 /// 状态机：pos（持仓）＋ armed（布防方向 0/±1）＋ exit_armed（见过80/20备战）。
 pub struct BbrkKdjStrategy {
-    sigmas: Vec<f64>,
+    pairs: Vec<(f64, usize)>,
 }
 
 impl BbrkKdjStrategy {
@@ -29,7 +29,7 @@ impl BbrkKdjStrategy {
     #[must_use]
     pub fn new(config: BbrkKdjConfig) -> Self {
         Self {
-            sigmas: config.values(),
+            pairs: config.pairs(),
         }
     }
 }
@@ -102,7 +102,7 @@ pub fn bbrk_kdj_signals(
                 continue;
             }
             // 止损优先（保守：同根先看止损）。
-            if low[i] <= stop {
+            if close[i] <= stop {
                 sig[i] = Signal::Close;
                 pos = 0;
                 continue;
@@ -118,7 +118,7 @@ pub fn bbrk_kdj_signals(
             if ![close[i], high[i], kvals[i]].iter().all(|v| v.is_finite()) {
                 continue;
             }
-            if high[i] >= stop {
+            if close[i] >= stop {
                 sig[i] = Signal::Close;
                 pos = 0;
                 continue;
@@ -141,11 +141,12 @@ fn compute(
     low: &[f64],
     close: &[f64],
     sigma: f64,
+    bblen: usize,
 ) -> crate::error::Result<Vec<Signal>> {
     let bb = match bollinger_bands(&BollingerBandsInput::from_slice(
         close,
         BollingerBandsParams {
-            period: Some(20),
+            period: Some(bblen),
             devup: Some(sigma),
             devdn: Some(sigma),
             matype: Some("sma".to_string()),
@@ -153,7 +154,7 @@ fn compute(
         },
     )) {
         Ok(v) => v,
-        Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+        Err(e) => return Err(crate::strategies::param_skipped(e)),
     };
     let mid_sma = match sma(&SmaInput::from_slice(
         close,
@@ -162,7 +163,7 @@ fn compute(
         },
     )) {
         Ok(v) => v.values,
-        Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+        Err(e) => return Err(crate::strategies::param_skipped(e)),
     };
     let atr_vals = match atr(&AtrInput::from_slices(
         high,
@@ -173,7 +174,7 @@ fn compute(
         },
     )) {
         Ok(v) => v.values,
-        Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+        Err(e) => return Err(crate::strategies::param_skipped(e)),
     };
     let kd = match kdj(&KdjInput::from_slices(
         high,
@@ -188,7 +189,7 @@ fn compute(
         },
     )) {
         Ok(v) => v,
-        Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+        Err(e) => return Err(crate::strategies::param_skipped(e)),
     };
     let n = close.len();
     let mut sqz = vec![false; n];
@@ -223,11 +224,11 @@ impl Strategy for BbrkKdjStrategy {
     }
 
     fn param_count(&self) -> usize {
-        self.sigmas.len()
+        self.pairs.len()
     }
 
     fn param_str(&self, idx: usize) -> String {
-        format!("sigma={}", self.sigmas[idx])
+        format!("sigma={},bblen={}", self.pairs[idx].0, self.pairs[idx].1)
     }
 
     fn generate_signals_full(
@@ -240,7 +241,14 @@ impl Strategy for BbrkKdjStrategy {
         _time: &[i64],
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
-        compute(open, high, low, close, self.sigmas[param_idx])
+        compute(
+            open,
+            high,
+            low,
+            close,
+            self.pairs[param_idx].0,
+            self.pairs[param_idx].1,
+        )
     }
 }
 
@@ -309,11 +317,11 @@ mod tests {
 
     #[test]
     fn test_stop_closes_before_flip() {
-        let (o, h, mut l, mut c, lower, upper, mut k, sqz) = base(4);
+        let (o, h, l, mut c, lower, upper, mut k, sqz) = base(4);
         c[0] = 89.0;
         k[1] = 25.0;
         c[1] = 101.0; // Buy
-        l[2] = 80.0; // 跌破止损（10根最低≤89）
+        c[2] = 80.0; // 跌破止损（**close** ≤ 止损位 89; 收盘价判定）
         k[2] = 30.0;
         let sig = bbrk_kdj_signals(&o, &h, &l, &c, &lower, &upper, &k, &sqz);
         assert_eq!(sig[1], Signal::Buy);
@@ -336,8 +344,10 @@ mod tests {
 
     #[test]
     fn test_name_and_params() {
-        let s = BbrkKdjStrategy { sigmas: vec![2.5] };
+        let s = BbrkKdjStrategy {
+            pairs: vec![(2.5, 20)],
+        };
         assert_eq!(s.name(), "BBRK_KDJ");
-        assert_eq!(s.param_str(0), "sigma=2.5");
+        assert_eq!(s.param_str(0), "sigma=2.5,bblen=20");
     }
 }

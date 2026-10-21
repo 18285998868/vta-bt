@@ -2,12 +2,17 @@ use vector_ta::indicators::bollinger_bands::{
     BollingerBandsInput, BollingerBandsParams, bollinger_bands,
 };
 
-use crate::strategies::{Signal, Strategy};
+use crate::strategies::{ParamOutcome, Signal, Strategy};
 
 use super::config::BbrkVolConfig;
 
 /// BBRK+量能门：flat + close突破 **且** 方向一致 **且**
-/// `volume[i] > mult × mean(volume[i−N+1..i])` → Buy/Sell；
+/// `volume[i] > mult × mean(volume[i−N+1..=i])` → Buy/Sell；
+///
+/// **均值窗含当根**(`i−N+1 ..= i`, 共 N 根): 前缀和 `pre[i+1] − pre[i+1−N]`
+/// 覆盖的正是这 N 根。含当根 ⇒ 阈值 `mult × mean` 被当根自身抬高 ⇒ 量能突增
+/// 判定**更难**通过(更保守)。兄弟策略 `bbrk_rex` 用的是同一约定
+/// ("振幅均值用前 n 根(含当根)滑动平均")。
 /// 持仓后中线离场（与 BBRK 相同）。
 /// 均值窗要求整窗有效且>0（volume<=0/NaN 即 portion 缺失 → 不开仓，P7）。
 pub struct BbrkVolStrategy {
@@ -134,7 +139,7 @@ fn compute(
         },
     )) {
         Ok(v) => v,
-        Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+        Err(e) => return Err(crate::strategies::param_skipped(e)),
     };
     Ok(bbrk_vol_signals(
         open,
@@ -187,7 +192,7 @@ impl Strategy for BbrkVolStrategy {
         volume: &[f64],
         _time: &[i64],
         range: std::ops::Range<usize>,
-    ) -> crate::error::Result<Vec<Vec<Signal>>> {
+    ) -> crate::error::Result<Vec<ParamOutcome>> {
         use rayon::prelude::*;
         use std::collections::HashMap;
         use vector_ta::indicators::bollinger_bands::{
@@ -216,10 +221,12 @@ impl Strategy for BbrkVolStrategy {
             .map(|idx| {
                 let (s, l, n, m) = self.pairs[idx];
                 match bbmap.get(&(s.to_bits(), l)) {
-                    Some(Some((lower, mid, upper))) => Ok(bbrk_vol_signals(
+                    Some(Some((lower, mid, upper))) => Ok(ParamOutcome::Signals(bbrk_vol_signals(
                         open, close, volume, lower, mid, upper, n, m,
-                    )),
-                    _ => Ok(vec![Signal::Hold; close.len()]),
+                    ))),
+                    _ => Ok(ParamOutcome::Skipped(format!(
+                        "BBRK_VOL: BB 指标缺失 (sigma={s}, bblen={l})"
+                    ))),
                 }
             })
             .collect()
@@ -295,6 +302,12 @@ mod tests {
             .unwrap();
         assert_eq!(batched.len(), 3);
         for (i, sig) in batched.iter().enumerate() {
+            let sig = match sig {
+                crate::strategies::ParamOutcome::Signals(s) => s,
+                crate::strategies::ParamOutcome::Skipped(r) => {
+                    panic!("BBRK_VOL param {i} 不该被跳过: {r}")
+                }
+            };
             let one = st
                 .generate_signals_full(&open, &[], &[], &close, &vol, &time, i)
                 .unwrap();

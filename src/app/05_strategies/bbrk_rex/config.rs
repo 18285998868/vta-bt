@@ -1,7 +1,7 @@
 use crate::error::AppError;
 use serde::Deserialize;
 
-use crate::config::F64Param;
+use crate::config::{F64Param, PeriodParam};
 
 /// BBRK+振幅扩张过滤（入场验证#2，用户设计）：
 /// 当根振幅与过去 n 根对比：`(high−low) > k × mean(high−low, n)`，
@@ -19,15 +19,15 @@ pub struct BbrkRexConfig {
     /// BB周期（2026-10-12起参数化；缺省20＝旧串语义，封存数据即len20）。
     #[serde(default = "default_bblen")]
     /// 布林带周期。
-    pub bblen: F64Param,
+    pub bblen: PeriodParam,
     /// 挤压计数窗口。
-    pub rexn: F64Param,
+    pub rexn: PeriodParam,
     /// 挤压判定倍数。
     pub rexmult: F64Param,
 }
 
-fn default_bblen() -> F64Param {
-    F64Param::Single(20.0)
+fn default_bblen() -> PeriodParam {
+    PeriodParam::Single(20)
 }
 
 impl BbrkRexConfig {
@@ -39,18 +39,15 @@ impl BbrkRexConfig {
         let ns = self.rexn.values();
         let ms = self.rexmult.values();
         // 网格规模 = 各维度长度之积(可预知), 一次分配到位(`mem-with-capacity`)。
-        // `saturating_mul`: 笛卡尔积理论上无界, 普通 `*` 在 debug 下会溢出 panic。
-        let cap = ss
-            .len()
-            .saturating_mul(ls.len())
-            .saturating_mul(ns.len())
-            .saturating_mul(ms.len());
-        let mut out = Vec::with_capacity(cap.min(crate::strategies::MAX_GRID_PREALLOC));
+        // 乘积的 `saturating_mul` 与封顶逻辑集中在 `grid_prealloc` 一处
+        // (笛卡尔积理论上无界, 普通 `*` 在 debug 下会溢出 panic)。
+        let cap = crate::strategies::grid_prealloc(&[ss.len(), ls.len(), ns.len(), ms.len()]);
+        let mut out = Vec::with_capacity(cap);
         for &s in &ss {
             for &l in &ls {
                 for &n in &ns {
                     for &m in &ms {
-                        out.push((s, l.round() as usize, n.round() as usize, m));
+                        out.push((s, l, n, m));
                     }
                 }
             }
@@ -68,8 +65,8 @@ impl BbrkRexConfig {
     /// 任一参数越界或展开为空时返回 [`AppError`](crate::error::AppError)。
     pub fn validate(&self) -> crate::error::Result<()> {
         self.sigma.validate_range("bbrk_rex.sigma", 0.1, 10.0)?;
-        self.bblen.validate_range("bbrk_rex.bblen", 2.0, 2000.0)?;
-        self.rexn.validate_range("bbrk_rex.rexn", 2.0, 100.0)?;
+        self.bblen.validate_range("bbrk_rex.bblen", 2, 2000)?;
+        self.rexn.validate_range("bbrk_rex.rexn", 2, 100)?;
         self.rexmult.validate_range("bbrk_rex.rexmult", 0.5, 30.0)?;
         if self.pairs().is_empty() {
             return Err(AppError::Msg("bbrk_rex 参数组合为空".into()));
@@ -86,7 +83,7 @@ mod tests {
 
     #[test]
     fn missing_bblen_defaults_to_20() {
-        let c: BbrkRexConfig = toml::from_str("sigma = 2.5\nrexn = 7.0\nrexmult = 2.0").unwrap();
+        let c: BbrkRexConfig = toml::from_str("sigma = 2.5\nrexn = 7\nrexmult = 2.0").unwrap();
         assert_eq!(c.pairs(), vec![(2.5, 20, 7, 2.0)]);
     }
 
@@ -94,11 +91,11 @@ mod tests {
     fn pairs_cartesian() {
         let c = BbrkRexConfig {
             sigma: F64Param::Single(2.5),
-            bblen: F64Param::Single(20.0),
-            rexn: F64Param::Range(RangeParam {
-                start: 3.0,
-                end: 5.0,
-                step: 2.0,
+            bblen: PeriodParam::Single(20),
+            rexn: PeriodParam::Range(RangeParam {
+                start: 3,
+                end: 5,
+                step: 2,
             }),
             rexmult: F64Param::Single(2.0),
         };

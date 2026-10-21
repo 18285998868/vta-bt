@@ -1,0 +1,28 @@
+# 审查用冒烟配置: 规模小、覆盖全部关键路径(多策略 + detail + fixedcurve + pbo)。
+[data]
+type = "binance"
+dir = "/data/nutilustrader/data"
+symbol = ["BTCUSDT", "ETHUSDT"]
+timeframe = ["1h", "1d"]
+start_date = "2024-01-01"
+end_date = "2026-09-30"
+
+[backtest]
+initial_balance = 10000.0
+delay_bars = 1
+fee_bps = 2.0
+slippage_bps = 1.0
+
+[output]
+dir = "/data/nutilustrader/outputs/reports/vta_review_smoke"
+detail = true
+fixed_curves = true
+overwrite = true
+
+[[strategy]]
+type = "sma"
+period = { start = 10, end = 70, step = 5 }
+
+[[strategy]]
+type = "ema"
+period = { start = 10, end = 70, step = 5 }

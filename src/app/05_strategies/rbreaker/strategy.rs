@@ -21,6 +21,10 @@ impl RBreakerStrategy {
     }
 }
 
+/// 一次突破的**四价**快照: 触发突破的那根 bar 的开/高/低/收。
+///
+/// 抽成值对象而不是四个散落的 `f64`: 这四根价必须**来自同一根 bar**,
+/// 拆成四个平行参数后编译器无法阻止调用方把它们来自不同的 bar。
 #[derive(Debug, Clone, Copy)]
 pub struct Levels {
     /// 策略参数 `b_break`。

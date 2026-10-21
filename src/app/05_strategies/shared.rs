@@ -197,6 +197,7 @@ pub fn rolling_lowest(data: &[f64], n: usize) -> Vec<f64> {
     rolling_extreme(data, n, false)
 }
 
+#[must_use]
 fn rolling_extreme(data: &[f64], n: usize, want_max: bool) -> Vec<f64> {
     use std::collections::VecDeque;
     let len = data.len();
@@ -255,6 +256,64 @@ pub const MAX_F64_RANGE: usize = 100_000;
 /// 超出的部分仍由 `Vec` 自行扩容。
 pub const MAX_GRID_PREALLOC: usize = 65_536;
 
+/// 布林带 (%B) 的位置: `(close − lower) / (upper − lower)`。
+///
+/// **不可计算时返回 `NaN`**(而不是 0 或某个哨兵值): `%b` 是无量纲比率,
+/// `NaN` 让调用方的 `is_finite()` 守卫自然地把"这一根不可用"与"这一根 = 0"
+/// 区分开。守卫口径:
+/// - 任一输入非有限 → `NaN`;
+/// - 带宽 `upper − lower` 非有限或 `<= 0` → `NaN`
+///   (**必须拒绝负带宽**: 负带宽会让 `%b` 的方向整个反过来, 0.5 变成"在带外")。
+///
+/// 这份实现此前在 3 个策略里各抄一份(`bbrk_orth` / `bbrk_m2` / `bbrk_m3`),
+/// 而第 4 个策略(`bbrk_pctb`)自己内联了一份**守卫不同**的版本
+/// (用 `(up − lo).abs() < 1e-12`, 于是负带宽会被接受)。同库两份口径 ⇒ 漂移。
+#[must_use]
+pub fn pct_b(close: f64, lower: f64, upper: f64) -> f64 {
+    if !close.is_finite() || !lower.is_finite() || !upper.is_finite() {
+        return f64::NAN;
+    }
+    let w = upper - lower;
+    if !w.is_finite() || w <= 0.0 {
+        return f64::NAN;
+    }
+    (close - lower) / w
+}
+
+/// 布林带默认周期(20)。
+///
+/// 多数 `bbrk_*` 策略把 BB 周期**硬编码**为 20(而另有 9 个兄弟策略把它暴露成
+/// `bblen` 参数)。硬编码处统一用本常量, 避免"同一文件里既有 `KC_PERIOD`
+/// 常量、又有一处裸写的 `Some(20)`"这种不一致 —— 裸数字既不说明它是哪个概念,
+/// 改的时候也必然漏改一处。
+pub const DEFAULT_BB_PERIOD: usize = 20;
+
+/// 笛卡尔积展开的**预分配档数**。
+///
+/// 这是所有策略 config 展开参数网格时**唯一**的预分配入口, 目的是让
+/// "封顶"这件事只有一处实现 —— 此前每个 config 各自手写
+/// `a.len().saturating_mul(b.len())…` 再 `.min(MAX_GRID_PREALLOC)`, 手写 45 处
+/// 漏了 2 处(`ma_slope_atr_gate` / `swing_fractal`), 而漏掉的后果是**进程
+/// abort**(见 [`MAX_GRID_PREALLOC`]), 不是一条可读错误。
+///
+/// - 乘积用 `saturating_mul`: 笛卡尔积理论上无界, 普通 `*` 在 debug 下会溢出 panic。
+/// - 结果封顶 [`MAX_GRID_PREALLOC`]: 病态配置下不会申请巨额内存。
+///
+/// # Examples
+/// ```
+/// use vta::strategies::grid_prealloc;
+/// assert_eq!(grid_prealloc(&[2, 3, 4]), 24);
+/// // 溢出不 panic, 且被封顶。
+/// assert_eq!(grid_prealloc(&[usize::MAX, usize::MAX]), vta::strategies::MAX_GRID_PREALLOC);
+/// ```
+#[must_use]
+pub fn grid_prealloc(dims: &[usize]) -> usize {
+    dims.iter()
+        .copied()
+        .fold(1usize, |acc, d| acc.saturating_mul(d))
+        .min(MAX_GRID_PREALLOC)
+}
+
 /// 展开 f64 范围(6 位小数取整, 避免累加漂移)。
 ///
 /// 上限 [`MAX_F64_RANGE`] 档; 触顶且未走完时**告警**而非静默截断。
@@ -305,6 +364,12 @@ pub struct DayBar {
 }
 
 /// 按 UTC 自然日聚合 OHLC(日内策略用)。`DayBar` 记录当日首末 bar 下标。
+///
+/// # NaN 透传是契约, 不是缺陷
+///
+/// 首根 bar 的 `open`/`high`/`low` 原样写入; 若其为 NaN, 当日该字段会**保持
+/// NaN** —— `h > NaN` 恒为假, 后续有限值无法覆盖。下游据此判"未知"并 Hold
+/// (P7)。**不要**改成"取后续有限值": 那会把未知伪装成已知下界。
 #[must_use]
 pub fn aggregate_days(
     time: &[i64],
@@ -434,6 +499,74 @@ pub type CachedBands = Option<(Vec<f64>, Vec<f64>, Vec<f64>)>;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `%B` 的口径: 正常值 + 不可计算时返回 `NaN`。
+    ///
+    /// 这份实现此前在 3 个策略里各抄一份, 而第 4 个策略自己内联了一份
+    /// **守卫不同**的版本(用 `|up−lo| < 1e-12`, 于是**负带宽**会被接受 ⇒
+    /// `%b` 方向整个反过来)。同库两份口径 ⇒ 漂移。
+    #[test]
+    fn pct_b_rejects_unusable_inputs() {
+        // 正常: (105−90)/(110−90) = 0.75。
+        assert!((pct_b(105.0, 90.0, 110.0) - 0.75).abs() < 1e-12);
+        // 上轨 ⇒ 1.0, 下轨 ⇒ 0.0。
+        assert!((pct_b(110.0, 90.0, 110.0) - 1.0).abs() < 1e-12);
+        assert!((pct_b(90.0, 90.0, 110.0) - 0.0).abs() < 1e-12);
+        // 零带宽 ⇒ NaN(不是 0/0, 也不是某个哨兵值)。
+        assert!(pct_b(100.0, 100.0, 100.0).is_nan());
+        // **负带宽** ⇒ NaN: 负带宽会让 %b 的方向反过来(0.5 变成"在带外"),
+        // 绝不能被当成合法值。
+        assert!(
+            pct_b(100.0, 110.0, 90.0).is_nan(),
+            "负带宽必须被拒, 否则 %b 方向整个反转"
+        );
+        // 非有限输入 ⇒ NaN。
+        assert!(pct_b(f64::NAN, 90.0, 110.0).is_nan());
+        assert!(pct_b(100.0, f64::INFINITY, 110.0).is_nan());
+        assert!(pct_b(100.0, 90.0, f64::NAN).is_nan());
+    }
+
+    /// 笛卡尔积预分配档数: 正常乘积 + 溢出封顶。
+    ///
+    /// 这是全部 43 个策略 config 展开网格的**唯一**预分配入口。回归点是:
+    /// 手写 45 处 `saturating_mul` 链时漏了 2 处, 漏掉的后果是**进程 abort**
+    /// (不可捕获), 而不是一条可读错误。
+    #[test]
+    fn grid_prealloc_is_capped_and_never_overflows() {
+        // 正常乘积: 不封顶。
+        assert_eq!(grid_prealloc(&[2, 3, 4]), 24);
+        assert_eq!(grid_prealloc(&[1]), 1);
+        assert_eq!(grid_prealloc(&[]), 1);
+        // 超上限 ⇒ 封顶(而不是按积申请巨额内存)。
+        assert_eq!(grid_prealloc(&[100_000, 100_000]), MAX_GRID_PREALLOC);
+        assert_eq!(
+            grid_prealloc(&[usize::MAX, usize::MAX]),
+            MAX_GRID_PREALLOC,
+            "溢出必须被 saturating_mul 吸收并封顶, 绝不 panic/回绕"
+        );
+        assert_eq!(
+            grid_prealloc(&[usize::MAX, 2]),
+            MAX_GRID_PREALLOC,
+            "单维溢出同样必须封顶"
+        );
+    }
+
+    /// 预分配档数必须**恒等于**各维度长度之积(封顶前)—— 否则"预分配"就
+    /// 变成了"少分配", 让 `Vec` 在 push 过程中反复扩容(性能问题)。
+    #[test]
+    fn grid_prealloc_equals_the_real_product_below_the_cap() {
+        for dims in [
+            vec![1usize, 1],
+            vec![10, 20],
+            vec![3, 5, 7],
+            vec![2, 2, 2, 2],
+            vec![100, 100],
+        ] {
+            let product: usize = dims.iter().product();
+            assert!(product <= MAX_GRID_PREALLOC);
+            assert_eq!(grid_prealloc(&dims), product, "dims={dims:?}");
+        }
+    }
 
     #[test]
     fn test_price_cross_buy_then_sell() {

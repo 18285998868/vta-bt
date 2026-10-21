@@ -4,7 +4,7 @@
 //! 对每个基线进场 i(方向 d, 离场 e): 在 `[i..e]` 内找首个同向过滤进场 j。
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use kline_reader::{DataConfig, DataSource, load_columns};
-use vta::config::F64Param;
+use vta::config::{F64Param, PeriodParam};
 use vta::strategies::Signal;
 use vta::strategies::Strategy;
 use vta::strategies::bbrk_adx::{BbrkAdxConfig, BbrkAdxStrategy};
@@ -58,13 +58,13 @@ fn run_pair(symbol: &str, timeframe: &str, len: usize, sigma: f64, adxlen: usize
 
     let base = BbrkBbStrategy::new(BbrkBbConfig {
         ma: vec!["sma".to_string()],
-        bblen: F64Param::Single(len as f64),
+        bblen: PeriodParam::Single(len),
         sigma: F64Param::Single(sigma),
     });
     let filt = BbrkAdxStrategy::new(BbrkAdxConfig {
         sigma: F64Param::Single(sigma),
-        bblen: F64Param::Single(len as f64),
-        adxlen: F64Param::Single(adxlen as f64),
+        bblen: PeriodParam::Single(len as f64 as usize),
+        adxlen: PeriodParam::Single(adxlen),
         adx: F64Param::Single(thr),
     });
     let bs = base

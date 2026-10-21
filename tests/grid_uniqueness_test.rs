@@ -12,7 +12,7 @@
 //! 这正是只查字符串唯一会漏掉的场景。
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-use vta::config::{Config, F64Param, StrategyConfig};
+use vta::config::{Config, F64Param, PeriodParam, StrategyConfig};
 use vta::strategies::build::build_strategies_checked;
 
 /// 解析仓库内的配置文件。路径相对 `CARGO_MANIFEST_DIR`。
@@ -163,23 +163,26 @@ fn known_multi_key_encodings_stay_unique_on_realistic_grids() {
                 end: 2.5,
                 step: 0.5,
             }),
-            bblen: F64Param::Single(20.0),
-            voln: F64Param::Single(10.0),
+            bblen: PeriodParam::Single(20),
+            voln: PeriodParam::Single(10),
             volmult: F64Param::Single(1.5),
         }),
         StrategyConfig::BbrkVolEma(vta::strategies::bbrk_vol_ema::BbrkVolEmaConfig {
+            bblen: vta::config::PeriodParam::Single(20),
             sigma: F64Param::Single(2.5),
-            voln: F64Param::Single(10.0),
+            voln: PeriodParam::Single(10),
             volmult: F64Param::Single(1.5),
         }),
         StrategyConfig::BbrkTtm(vta::strategies::bbrk_ttm::BbrkTtmConfig {
+            bblen: vta::config::PeriodParam::Single(20),
             sigma: F64Param::Single(2.5),
             kc: F64Param::Single(1.5),
-            ttmn: F64Param::Single(5.0),
+            ttmn: PeriodParam::Single(5),
         }),
         StrategyConfig::BbrkMax(vta::strategies::bbrk_max::BbrkMaxConfig {
+            bblen: vta::config::PeriodParam::Single(20),
             ma: vec!["sma".to_string(), "hma".to_string()],
-            malen: F64Param::Single(100.0),
+            malen: PeriodParam::Single(100),
         }),
     ] {
         let sts = build_strategies_checked(&[sc]).expect("这些网格应当通过编码唯一性自检");

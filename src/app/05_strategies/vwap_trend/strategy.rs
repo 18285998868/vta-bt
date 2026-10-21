@@ -27,6 +27,7 @@ impl VwapTrendStrategy {
 }
 
 /// 8h盘块（亚00–08/欧08–16/美16–24UTC）。返回 slot(0/1/2)。
+#[must_use]
 fn utc_slot(time_ms: i64) -> i64 {
     ((time_ms.div_euclid(3_600_000)) % 24).div_euclid(8)
 }
@@ -35,6 +36,7 @@ fn utc_slot(time_ms: i64) -> i64 {
 /// mode=1: sess=UTC日（`vwap` 口径复用），全天 active；
 /// mode=2/3/4: sess=日×3+盘块，每个盘块独立累计，仅目标盘块 active。
 /// 返回 (vwap, sess_id, active)。
+#[must_use]
 fn session_vwap(
     high: &[f64],
     low: &[f64],
@@ -82,6 +84,7 @@ fn session_vwap(
 }
 
 /// 过去24h滚动VWAP（前缀和 + 二分左界，O(n log n)）。
+#[must_use]
 fn rolling_vwap(
     high: &[f64],
     low: &[f64],

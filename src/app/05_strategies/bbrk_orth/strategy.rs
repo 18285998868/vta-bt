@@ -2,7 +2,7 @@ use vector_ta::indicators::bollinger_bands::{
     BollingerBandsInput, BollingerBandsParams, bollinger_bands,
 };
 
-use crate::strategies::{Signal, Strategy};
+use crate::strategies::{Signal, Strategy, pct_b};
 
 use super::config::BbrkOrthConfig;
 
@@ -19,7 +19,7 @@ pub const ORTH_W: usize = 10;
 /// 注：纯价格版正统（未含 MFI 量能确认——引擎 `generate_signals`
 /// 为 close 口径，MFI 需 HLCV 全量，列为后续工作）。
 pub struct BbrkOrthStrategy {
-    sigmas: Vec<f64>,
+    pairs: Vec<(f64, usize)>,
 }
 
 impl BbrkOrthStrategy {
@@ -27,20 +27,9 @@ impl BbrkOrthStrategy {
     #[must_use]
     pub fn new(config: BbrkOrthConfig) -> Self {
         Self {
-            sigmas: config.values(),
+            pairs: config.pairs(),
         }
     }
-}
-
-fn pct_b(close: f64, lower: f64, upper: f64) -> f64 {
-    if !close.is_finite() || !lower.is_finite() || !upper.is_finite() {
-        return f64::NAN;
-    }
-    let w = upper - lower;
-    if !w.is_finite() || w <= 0.0 {
-        return f64::NAN;
-    }
-    (close - lower) / w
 }
 
 /// 窗 `[lo, i)` 内最近两根满足 `tag` 的下标（ precipitate 由调用方给条件）。
@@ -105,9 +94,19 @@ pub fn bbrk_orth_signals(close: &[f64], lower: &[f64], mid: &[f64], upper: &[f64
                 sig[i] = Signal::Close;
                 pos = 0;
             }
-        } else if close[i] >= mid[i] {
-            sig[i] = Signal::Close;
-            pos = 0;
+        } else if pos == -1 {
+            // 空头离场分支: 与多头分支**同样**要求两侧有限 ——
+            // 家族里其它 10+ 个兄弟策略(`bbrk_max` / `bbrk_vol` / `bbrk_rex` /
+            // `bbrk_hma` …)两个分支都有这道守卫, 只有这里空头分支漏了。
+            // 功能上 `NaN >= mid` 恒为 false 故不崩, 但"唯独这一处没有守卫"
+            // 正是复制粘贴导致漂移的典型症状。
+            if ![close[i], mid[i]].iter().all(|v| v.is_finite()) {
+                continue;
+            }
+            if close[i] >= mid[i] {
+                sig[i] = Signal::Close;
+                pos = 0;
+            }
         }
     }
     sig
@@ -119,12 +118,12 @@ impl Strategy for BbrkOrthStrategy {
     }
 
     fn param_count(&self) -> usize {
-        self.sigmas.len()
+        self.pairs.len()
     }
 
     fn param_str(&self, idx: usize) -> String {
         // W 预注册固定，不进 param_str（parquet 零改动口径）。
-        format!("sigma={}", self.sigmas[idx])
+        format!("sigma={},bblen={}", self.pairs[idx].0, self.pairs[idx].1)
     }
 
     fn generate_signals_full(
@@ -137,16 +136,21 @@ impl Strategy for BbrkOrthStrategy {
         _time: &[i64],
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
-        self.compute(close, self.sigmas[param_idx])
+        self.compute(close, self.pairs[param_idx].0, self.pairs[param_idx].1)
     }
 }
 
 impl BbrkOrthStrategy {
-    fn compute(&self, close: &[f64], sigma: f64) -> crate::error::Result<Vec<Signal>> {
+    fn compute(
+        &self,
+        close: &[f64],
+        sigma: f64,
+        bblen: usize,
+    ) -> crate::error::Result<Vec<Signal>> {
         let bb = match bollinger_bands(&BollingerBandsInput::from_slice(
             close,
             BollingerBandsParams {
-                period: Some(20),
+                period: Some(bblen),
                 devup: Some(sigma),
                 devdn: Some(sigma),
                 matype: Some("sma".to_string()),
@@ -154,7 +158,7 @@ impl BbrkOrthStrategy {
             },
         )) {
             Ok(v) => v,
-            Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+            Err(e) => return Err(crate::strategies::param_skipped(e)),
         };
         Ok(bbrk_orth_signals(
             close,
@@ -237,9 +241,11 @@ mod tests {
 
     #[test]
     fn test_name_and_params() {
-        let s = BbrkOrthStrategy { sigmas: vec![2.5] };
+        let s = BbrkOrthStrategy {
+            pairs: vec![(2.5, 20)],
+        };
         assert_eq!(s.name(), "BBRK_ORTH");
-        assert_eq!(s.param_str(0), "sigma=2.5");
+        assert_eq!(s.param_str(0), "sigma=2.5,bblen=20");
         assert_eq!(ORTH_W, 10);
     }
 }

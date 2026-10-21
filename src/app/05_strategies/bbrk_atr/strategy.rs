@@ -3,7 +3,7 @@ use vector_ta::indicators::bollinger_bands::{
     BollingerBandsInput, BollingerBandsParams, bollinger_bands,
 };
 
-use crate::strategies::{Signal, Strategy};
+use crate::strategies::{ParamOutcome, Signal, Strategy};
 
 use super::config::BbrkAtrConfig;
 
@@ -119,7 +119,7 @@ fn compute(
         },
     )) {
         Ok(v) => v,
-        Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+        Err(e) => return Err(crate::strategies::param_skipped(e)),
     };
     let a1 = match atr(&AtrInput::from_slices(
         high,
@@ -128,7 +128,7 @@ fn compute(
         AtrParams { length: Some(atr1) },
     )) {
         Ok(v) => v.values,
-        Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+        Err(e) => return Err(crate::strategies::param_skipped(e)),
     };
     let a2 = match atr(&AtrInput::from_slices(
         high,
@@ -137,7 +137,7 @@ fn compute(
         AtrParams { length: Some(atr2) },
     )) {
         Ok(v) => v.values,
-        Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+        Err(e) => return Err(crate::strategies::param_skipped(e)),
     };
     Ok(bbrk_atr_signals(
         open,
@@ -190,7 +190,7 @@ impl Strategy for BbrkAtrStrategy {
         _volume: &[f64],
         _time: &[i64],
         range: std::ops::Range<usize>,
-    ) -> crate::error::Result<Vec<Vec<Signal>>> {
+    ) -> crate::error::Result<Vec<ParamOutcome>> {
         use rayon::prelude::*;
         use std::collections::HashMap;
         use vector_ta::indicators::bollinger_bands::{
@@ -239,10 +239,14 @@ impl Strategy for BbrkAtrStrategy {
                     atrmap.get(&a2),
                     bbmap.get(&(s.to_bits(), l)),
                 ) {
-                    (Some(Some(short)), Some(Some(long)), Some(Some((lower, mid, upper)))) => Ok(
-                        bbrk_atr_signals(open, close, lower, mid, upper, short, long, t),
-                    ),
-                    _ => Ok(vec![Signal::Hold; close.len()]),
+                    (Some(Some(short)), Some(Some(long)), Some(Some((lower, mid, upper)))) => {
+                        Ok(ParamOutcome::Signals(bbrk_atr_signals(
+                            open, close, lower, mid, upper, short, long, t,
+                        )))
+                    }
+                    _ => Ok(ParamOutcome::Skipped(format!(
+                        "BBRK_ATR: 共享指标缺失 (sigma={s}, bblen={l})"
+                    ))),
                 }
             })
             .collect()
@@ -328,6 +332,12 @@ mod tests {
             .unwrap();
         assert_eq!(batched.len(), 3);
         for (i, sig) in batched.iter().enumerate() {
+            let sig = match sig {
+                crate::strategies::ParamOutcome::Signals(s) => s,
+                crate::strategies::ParamOutcome::Skipped(r) => {
+                    panic!("BBRK_ATR param {i} 不该被跳过: {r}")
+                }
+            };
             let one = st
                 .generate_signals_full(&open, &high, &low, &close, &[], &time, i)
                 .unwrap();

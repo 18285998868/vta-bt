@@ -7,11 +7,16 @@ use crate::strategies::{Signal, Strategy};
 use super::config::BbrkVolEmaConfig;
 
 /// BBRK+量能门：flat + close突破 **且** 方向一致 **且**
-/// `volume[i] > mult × mean(volume[i−N+1..i])` → Buy/Sell；
+/// `volume[i] > mult × mean(volume[i−N+1..=i])` → Buy/Sell；
+///
+/// **均值窗含当根**(`i−N+1 ..= i`, 共 N 根): 前缀和 `pre[i+1] − pre[i+1−N]`
+/// 覆盖的正是这 N 根。含当根 ⇒ 阈值 `mult × mean` 被当根自身抬高 ⇒ 量能突增
+/// 判定**更难**通过(更保守)。兄弟策略 `bbrk_rex` 用的是同一约定
+/// ("振幅均值用前 n 根(含当根)滑动平均")。
 /// 持仓后中线离场（与 BBRK 相同）。
 /// 均值窗要求整窗有效且>0（volume<=0/NaN 即 portion 缺失 → 不开仓，P7）。
 pub struct BbrkVolEmaStrategy {
-    pairs: Vec<(f64, usize, f64)>,
+    pairs: Vec<(f64, usize, usize, f64)>,
 }
 
 impl BbrkVolEmaStrategy {
@@ -119,13 +124,14 @@ fn compute(
     close: &[f64],
     volume: &[f64],
     sigma: f64,
+    bblen: usize,
     win_n: usize,
     mult: f64,
 ) -> crate::error::Result<Vec<Signal>> {
     let bb = match bollinger_bands(&BollingerBandsInput::from_slice(
         close,
         BollingerBandsParams {
-            period: Some(20),
+            period: Some(bblen),
             devup: Some(sigma),
             devdn: Some(sigma),
             matype: Some("ema".to_string()),
@@ -133,7 +139,7 @@ fn compute(
         },
     )) {
         Ok(v) => v,
-        Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+        Err(e) => return Err(crate::strategies::param_skipped(e)),
     };
     Ok(bbrk_vol_ema_signals(
         open,
@@ -157,8 +163,8 @@ impl Strategy for BbrkVolEmaStrategy {
     }
 
     fn param_str(&self, idx: usize) -> String {
-        let (s, n, m) = self.pairs[idx];
-        format!("sigma={s},voln={n},volmult={m}")
+        let (s, b, n, m) = self.pairs[idx];
+        format!("sigma={s},bblen={b},voln={n},volmult={m}")
     }
 
     fn generate_signals_full(
@@ -171,8 +177,8 @@ impl Strategy for BbrkVolEmaStrategy {
         _time: &[i64],
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
-        let (s, n, m) = self.pairs[param_idx];
-        compute(open, close, volume, s, n, m)
+        let (s, b, n, m) = self.pairs[param_idx];
+        compute(open, close, volume, s, b, n, m)
     }
 }
 
@@ -228,9 +234,9 @@ mod tests {
     #[test]
     fn test_name_and_params() {
         let s = BbrkVolEmaStrategy {
-            pairs: vec![(2.5, 10, 1.5)],
+            pairs: vec![(2.5, 20, 10, 1.5)],
         };
         assert_eq!(s.name(), "BBRK_VOL_EMA");
-        assert_eq!(s.param_str(0), "sigma=2.5,voln=10,volmult=1.5");
+        assert_eq!(s.param_str(0), "sigma=2.5,bblen=20,voln=10,volmult=1.5");
     }
 }

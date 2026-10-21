@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-use crate::config::F64Param;
+use crate::config::PeriodParam;
 
 use super::MA_NAMES;
 
@@ -15,20 +15,34 @@ pub struct BbrkMaxConfig {
     /// 均线类型名列表(取值见对应策略的 `*_MA_NAMES`)。
     pub ma: Vec<String>,
     /// regime 均线周期。
-    pub malen: F64Param,
+    pub malen: PeriodParam,
+    /// BB 周期(缺省 20＝旧串语义: 此前该策略把 BB 周期写死为 20)。
+    #[serde(default = "default_bblen")]
+    pub bblen: PeriodParam,
+}
+
+fn default_bblen() -> PeriodParam {
+    PeriodParam::Single(20)
 }
 
 impl BbrkMaxConfig {
     /// 展开后的参数组合(按策略的笛卡尔积顺序)。
     #[must_use]
-    pub fn pairs(&self) -> Vec<(String, usize)> {
+    pub fn pairs(&self) -> Vec<(String, usize, usize)> {
         // 网格规模 = 各维度长度之积(可预知), 一次分配到位(`mem-with-capacity`)。
-        // `saturating_mul`: 笛卡尔积理论上无界, 普通 `*` 在 debug 下会溢出 panic。
-        let cap = self.ma.len().saturating_mul(self.malen.values().len());
-        let mut out = Vec::with_capacity(cap.min(crate::strategies::MAX_GRID_PREALLOC));
+        // 乘积的 `saturating_mul` 与封顶逻辑集中在 `grid_prealloc` 一处
+        // (笛卡尔积理论上无界, 普通 `*` 在 debug 下会溢出 panic)。
+        let cap = crate::strategies::grid_prealloc(&[
+            self.ma.len(),
+            self.malen.values().len(),
+            self.bblen.values().len(),
+        ]);
+        let mut out = Vec::with_capacity(cap);
         for name in &self.ma {
             for &l in &self.malen.values() {
-                out.push((name.clone(), l.round() as usize));
+                for &b in &self.bblen.values() {
+                    out.push((name.clone(), l, b));
+                }
             }
         }
         out
@@ -40,7 +54,7 @@ impl BbrkMaxConfig {
     /// 任一参数越界或展开为空时返回 [`AppError`](crate::error::AppError)。
     pub fn validate(&self) -> crate::error::Result<()> {
         // 范围校验(原在 config.rs 的 match 中, 已下沉到本类型)
-        self.malen.validate_range("bbrk_max.malen", 2.0, 2000.0)?;
+        self.malen.validate_range("bbrk_max.malen", 2, 2000)?;
 
         for name in &self.ma {
             if !MA_NAMES.contains(&name.as_str()) {
@@ -66,19 +80,20 @@ mod tests {
     fn pairs_cartesian() {
         let c = BbrkMaxConfig {
             ma: vec!["sma".into(), "hma".into()],
-            malen: F64Param::Range(RangeParam {
-                start: 100.0,
-                end: 200.0,
-                step: 100.0,
+            malen: PeriodParam::Range(RangeParam {
+                start: 100,
+                end: 200,
+                step: 100,
             }),
+            bblen: crate::config::PeriodParam::Single(20),
         };
         assert_eq!(
             c.pairs(),
             vec![
-                ("sma".to_string(), 100),
-                ("sma".to_string(), 200),
-                ("hma".to_string(), 100),
-                ("hma".to_string(), 200)
+                ("sma".to_string(), 100, 20),
+                ("sma".to_string(), 200, 20),
+                ("hma".to_string(), 100, 20),
+                ("hma".to_string(), 200, 20)
             ]
         );
     }
@@ -87,7 +102,8 @@ mod tests {
     fn unknown_name_rejected() {
         let c = BbrkMaxConfig {
             ma: vec!["nope".into()],
-            malen: F64Param::Single(100.0),
+            malen: PeriodParam::Single(100),
+            bblen: crate::config::PeriodParam::Single(20),
         };
         assert!(c.validate().is_err()); // 原 validate_names, 已并入 validate
     }

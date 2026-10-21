@@ -66,9 +66,11 @@ pub fn params_to_json(params: &str) -> String {
         // 末尾数字只是最后一个维度, 写成 `{"period":"0"}` 是**错的**: `edma_p5_o0`
         // 的真实 period 是 5 而不是 0。下游按 period 分组会直接归错类。
         // 故多参数形态按参数串里原有的键名逐个还原(`edma_p5_o0` → {"p","o"})。
-        match split_underscore_pairs(&clean) {
-            Some(pairs) if pairs.len() > 1 => {
-                let body = pairs
+        // 只拆一次: 原实现拆两遍(match 的判别式 + `_` 分支各一次)。
+        let pairs = split_underscore_pairs(&clean);
+        match pairs {
+            Some(ref p) if p.len() > 1 => {
+                let body = p
                     .iter()
                     .map(|(k, v)| format!("{}:{}", json_str(k), json_str(v)))
                     .collect::<Vec<_>>()
@@ -76,7 +78,7 @@ pub fn params_to_json(params: &str) -> String {
                 format!("{{{body}}}")
             }
             _ => {
-                let period = split_underscore_pairs(&clean)
+                let period = pairs
                     .and_then(|p| p.first().map(|(_, v)| v.clone()))
                     .unwrap_or_else(|| trailing_digits(&clean));
                 format!("{{\"period\":{}}}", json_str(&period))
@@ -100,7 +102,7 @@ fn trailing_digits(s: &str) -> String {
 ///
 /// - `edma_p5_o0` → `[("p","5"), ("o","0")]`(段 = 键字母 + 数字)
 /// - `macd_8_21_5` → `[("0","8"), ("1","21"), ("2","5")]`(段是纯数字 ⇒ 键退化为位置)
-/// - `sma_10` → `[("period","10")]`(单段, 由调用方按单参数形态处理)
+/// - `sma_10` → `[("0","10")]`(单段, 键退化为位置; 由调用方按单参数形态处理)
 ///
 /// 任一段不含数字即返回 `None`, 交调用方走既有兜底。
 fn split_underscore_pairs(s: &str) -> Option<Vec<(String, String)>> {
@@ -450,17 +452,17 @@ fn single_underscore_form(s: &str) -> Option<u64> {
 /// `write_parquet` 的 `# Errors` 段却承诺"schema 与列数不匹配时返回 [`AppError`]"——
 /// **文档与实现直接矛盾**。且 `cols` 与 `fields` 是两份手工同步的平行数组
 /// (各 51 项), 加一列忘了改另一列就会在**生产路径**上崩掉整轮回测。
-fn build_parquet(results: &[RunResult], balance: f64) -> Result<RecordBatch> {
+fn build_parquet(results: &[RunResult], balance: crate::money::Amount) -> Result<RecordBatch> {
     let mut strategy = StringBuilder::new();
     let mut symbol = StringBuilder::new();
     let mut timeframe = StringBuilder::new();
     let mut strategy_params = UInt64Builder::new();
     let mut strategy_params_json = StringBuilder::new();
     let mut params_full = StringBuilder::new();
-    let mut bal = Float64Builder::new();
+    let mut bal = money_builder()?;
     let mut trade_size = StringBuilder::new();
     let mut total_return = Float64Builder::new();
-    let mut final_equity = Float64Builder::new();
+    let mut final_equity = money_builder()?;
     let mut max_dd = Float64Builder::new();
     let mut trades = UInt32Builder::new();
     let mut sharpe = Float64Builder::new();
@@ -469,8 +471,8 @@ fn build_parquet(results: &[RunResult], balance: f64) -> Result<RecordBatch> {
     let mut pf = Float64Builder::new();
     let mut calmar = Float64Builder::new();
     let mut return_mdd = Float64Builder::new();
-    let mut avg_win = Float64Builder::new();
-    let mut avg_loss = Float64Builder::new();
+    let mut avg_win = money_builder()?;
+    let mut avg_loss = money_builder()?;
     let mut expectancy = Float64Builder::new();
     let mut consecutive_wins = UInt32Builder::new();
     let mut consecutive_losses = UInt32Builder::new();
@@ -487,7 +489,7 @@ fn build_parquet(results: &[RunResult], balance: f64) -> Result<RecordBatch> {
     let mut pf_stability = Float64Builder::new();
     let mut z_score = Float64Builder::new();
     let mut p_value = Float64Builder::new();
-    let mut fixed_pnl = Float64Builder::new();
+    let mut fixed_pnl = money_builder()?;
     let mut turnover_per_year = Float64Builder::new();
     let mut delay_bars = UInt32Builder::new();
     let mut fee_bps = Float64Builder::new();
@@ -498,7 +500,7 @@ fn build_parquet(results: &[RunResult], balance: f64) -> Result<RecordBatch> {
     let mut fixed_expectancy_bps = Float64Builder::new();
     let mut fixed_profit_factor = Float64Builder::new();
     let mut fill_close = UInt8Builder::new();
-    let mut buy_hold_pnl = Float64Builder::new();
+    let mut buy_hold_pnl = money_builder()?;
     let mut buy_hold_return = Float64Builder::new();
     let mut bars_used = UInt32Builder::new();
     let mut run_status = StringBuilder::new();
@@ -512,10 +514,10 @@ fn build_parquet(results: &[RunResult], balance: f64) -> Result<RecordBatch> {
         strategy_params.append_value(r.strategy_params);
         strategy_params_json.append_value(&r.strategy_params_json);
         params_full.append_value(&r.params);
-        bal.append_value(balance);
+        bal.append_value(money_mantissa(balance)?);
         trade_size.append_value("100%");
         total_return.append_value(m.total_return);
-        final_equity.append_value(m.final_equity);
+        final_equity.append_value(money_mantissa(m.final_equity)?);
         max_dd.append_value(m.max_drawdown_pct / 100.0);
         trades.append_value(m.num_trades);
         sharpe.append_value(m.sharpe_ratio);
@@ -529,8 +531,8 @@ fn build_parquet(results: &[RunResult], balance: f64) -> Result<RecordBatch> {
             0.0
         };
         return_mdd.append_value(rmdd);
-        avg_win.append_value(m.avg_win);
-        avg_loss.append_value(m.avg_loss);
+        avg_win.append_value(money_mantissa(m.avg_win)?);
+        avg_loss.append_value(money_mantissa(m.avg_loss)?);
         expectancy.append_value(m.expectancy);
         consecutive_wins.append_value(m.consecutive_wins);
         consecutive_losses.append_value(m.consecutive_losses);
@@ -547,7 +549,7 @@ fn build_parquet(results: &[RunResult], balance: f64) -> Result<RecordBatch> {
         pf_stability.append_value(m.pf_stability);
         z_score.append_value(m.z_score);
         p_value.append_value(m.p_value);
-        fixed_pnl.append_value(m.total_fixed_pnl);
+        fixed_pnl.append_value(money_mantissa(m.total_fixed_pnl)?);
         turnover_per_year.append_value(m.turnover_per_year);
         delay_bars.append_value(r.delay_bars);
         fee_bps.append_value(r.fee_bps);
@@ -559,7 +561,7 @@ fn build_parquet(results: &[RunResult], balance: f64) -> Result<RecordBatch> {
         fixed_expectancy_bps.append_value(m.fixed_expectancy_bps);
         fixed_profit_factor.append_value(m.fixed_profit_factor);
         fill_close.append_value(u8::from(r.fill_close));
-        buy_hold_pnl.append_value(r.buy_hold_pnl);
+        buy_hold_pnl.append_value(money_mantissa(r.buy_hold_pnl)?);
         buy_hold_return.append_value(r.buy_hold_return);
         bars_used.append_value(r.bars_used);
         run_status.append_value(r.status.as_str());
@@ -625,10 +627,18 @@ fn build_parquet(results: &[RunResult], balance: f64) -> Result<RecordBatch> {
         Field::new("timeframe", DataType::Utf8, false),
         Field::new("strategy_params", DataType::UInt64, false),
         Field::new("strategy_params_json", DataType::Utf8, false),
-        Field::new("balance", DataType::Float64, false),
+        Field::new(
+            "balance",
+            DataType::Decimal128(MONEY_PRECISION, MONEY_SCALE_I8),
+            false,
+        ),
         Field::new("trade_size", DataType::Utf8, false),
         Field::new("total_return", DataType::Float64, false),
-        Field::new("final_equity", DataType::Float64, false),
+        Field::new(
+            "final_equity",
+            DataType::Decimal128(MONEY_PRECISION, MONEY_SCALE_I8),
+            false,
+        ),
         Field::new("max_drawdown", DataType::Float64, false),
         Field::new("trades", DataType::UInt32, false),
         Field::new("sharpe", DataType::Float64, false),
@@ -637,8 +647,16 @@ fn build_parquet(results: &[RunResult], balance: f64) -> Result<RecordBatch> {
         Field::new("profit_factor", DataType::Float64, false),
         Field::new("calmar", DataType::Float64, false),
         Field::new("return_mdd", DataType::Float64, false),
-        Field::new("avg_win", DataType::Float64, false),
-        Field::new("avg_loss", DataType::Float64, false),
+        Field::new(
+            "avg_win",
+            DataType::Decimal128(MONEY_PRECISION, MONEY_SCALE_I8),
+            false,
+        ),
+        Field::new(
+            "avg_loss",
+            DataType::Decimal128(MONEY_PRECISION, MONEY_SCALE_I8),
+            false,
+        ),
         Field::new("expectancy", DataType::Float64, false),
         Field::new("consecutive_wins", DataType::UInt32, false),
         Field::new("consecutive_losses", DataType::UInt32, false),
@@ -655,7 +673,11 @@ fn build_parquet(results: &[RunResult], balance: f64) -> Result<RecordBatch> {
         Field::new("pf_stability", DataType::Float64, false),
         Field::new("z_score", DataType::Float64, false),
         Field::new("p_value", DataType::Float64, false),
-        Field::new("fixed_pnl", DataType::Float64, false),
+        Field::new(
+            "fixed_pnl",
+            DataType::Decimal128(MONEY_PRECISION, MONEY_SCALE_I8),
+            false,
+        ),
         Field::new("params", DataType::Utf8, false),
         Field::new("turnover_per_year", DataType::Float64, false),
         Field::new("delay_bars", DataType::UInt32, false),
@@ -667,7 +689,11 @@ fn build_parquet(results: &[RunResult], balance: f64) -> Result<RecordBatch> {
         Field::new("fixed_expectancy_bps", DataType::Float64, false),
         Field::new("fixed_profit_factor", DataType::Float64, false),
         Field::new("fill_close", DataType::UInt8, false),
-        Field::new("buy_hold_pnl", DataType::Float64, false),
+        Field::new(
+            "buy_hold_pnl",
+            DataType::Decimal128(MONEY_PRECISION, MONEY_SCALE_I8),
+            false,
+        ),
         Field::new("buy_hold_return", DataType::Float64, false),
         // 退化结果标记: 见 RunStatus。bars_used 与 status 必须配对解读。
         Field::new("bars_used", DataType::UInt32, false),
@@ -678,11 +704,41 @@ fn build_parquet(results: &[RunResult], balance: f64) -> Result<RecordBatch> {
     Ok(RecordBatch::try_new(Arc::new(schema), cols)?)
 }
 
+/// 金额列的 `Decimal128` builder(精度/标度固定)。
+///
+/// # Errors
+/// 精度/标度非法时返回 [`AppError`](crate::error::AppError) ——
+/// 本项目的常量 (38, 8) 恒合法, 该分支只是不把 `expect` 写进生产代码。
+fn money_builder() -> Result<Decimal128Builder> {
+    Ok(Decimal128Builder::new().with_precision_and_scale(MONEY_PRECISION, MONEY_SCALE_I8)?)
+}
+
+/// 金额 → Parquet `Decimal128` 尾数。
+///
+/// # Errors
+/// 金额的小数位超过 [`MONEY_SCALE`], 落盘会丢精度 ⇒ 报错(不静默舍入)。
+fn money_mantissa(a: crate::money::Amount) -> Result<i128> {
+    a.to_decimal128_mantissa(MONEY_SCALE)
+}
+
+/// Parquet `Decimal128` 的**精度**(总有效位数)。
+const MONEY_PRECISION: u8 = 38;
+
+/// Parquet `Decimal128` 金额列的**标度**(小数位数)。
+const MONEY_SCALE: u32 = crate::money::MONEY_SCALE;
+
+/// 同上, `i8` 形式(Arrow 的 `DataType::Decimal128` 用 `i8` 表示标度)。
+const MONEY_SCALE_I8: i8 = MONEY_SCALE as i8;
+
 /// 把结果行写成单个 Parquet 文件(父目录自动创建)。
 ///
 /// # Errors
 /// IO 失败, 或 Arrow schema 与列数不匹配时返回 [`AppError`]。
-pub fn write_parquet(path: &Path, results: &[RunResult], balance: f64) -> Result<()> {
+pub fn write_parquet(
+    path: &Path,
+    results: &[RunResult],
+    balance: crate::money::Amount,
+) -> Result<()> {
     use parquet::arrow::ArrowWriter;
     use parquet::file::properties::WriterProperties;
     use std::fs::File;
@@ -690,16 +746,77 @@ pub fn write_parquet(path: &Path, results: &[RunResult], balance: f64) -> Result
     let batch = build_parquet(results, balance)?;
     let schema = batch.schema();
 
+    write_atomic(path, |tmp| {
+        let file = File::create(tmp)?;
+        let props = WriterProperties::builder().build();
+        let mut writer = ArrowWriter::try_new(file, schema, Some(props))?;
+        writer.write(&batch)?;
+        writer.close()?;
+        Ok(())
+    })
+}
+
+/// 原子写文件: 先写 `{path}.tmp`, 成功后再 `rename` 到 `path`。
+///
+/// **为什么必须原子**: `File::create` 直接**截断**目标路径。若在 `write`/
+/// `close` 之间进程被杀、磁盘写满或 IO 出错, 目标文件是**半截**的, 而旧的
+/// 可用版本已被销毁 —— 此后 `read_parquet` 读到的可能是"行数正好对、内容却
+/// 写坏"的中间态, 而缓存有效性检查只看**行数**, 挡不住这种损坏。
+///
+/// 同目录 `rename` 在 POSIX 上是原子的 ⇒ 目标路径要么是旧的完整文件, 要么是
+/// 新的完整文件, **不会**是中间态。
+///
+/// 临时文件名带 `.tmp` 后缀 ⇒ 扩展名不是 `parquet`, 不会被 `read_dir` 的
+/// 过滤条件(`extension() == "parquet"`)选中, 故中途崩溃留下的临时文件不会
+/// 被当成数据文件读进来。
+///
+/// 失败时删除临时文件, 不留垃圾。
+fn write_atomic(path: &Path, write: impl FnOnce(&Path) -> Result<()>) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
+    let mut tmp = path.as_os_str().to_os_string();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    match write(&tmp) {
+        Ok(()) => {
+            std::fs::rename(&tmp, path)?;
+            Ok(())
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e)
+        }
+    }
+}
 
-    let file = File::create(path)?;
-    let props = WriterProperties::builder().build();
-    let mut writer = ArrowWriter::try_new(file, schema, Some(props))?;
-    writer.write(&batch)?;
-    writer.close()?;
-    Ok(())
+/// 把参数串清洗成**文件名安全且无碰撞**的片段。
+///
+/// 原实现是 `params.replace(' ', "_").replace('=', "-").replace(',', "_")` ——
+/// 这**不是**一一映射: `"a=b"` 与 `"a-b"` 都变成 `a-b`; `"a,b"` 与 `"a_b"` 也一样。
+/// 于是**不同参数组会写同一个文件、互相覆盖** —— detail 目录里少了一部分曲线,
+/// 而 `--pbo` 会基于**少读一半**的曲线算出 φ, 无任何提示。
+///
+/// 修法: 清洗后的可读片段**追加参数串的 FNV-1a 哈希**(`{h:08x}`，8–16 位十六进制)。
+/// 既保留人类可读性, 又保证不同参数串**必定**得到不同文件名。
+fn sanitize_params_for_filename(params: &str) -> String {
+    let readable: String = params
+        .chars()
+        .map(|c| match c {
+            ' ' => '_',
+            '=' => '-',
+            ',' => '_',
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            c if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '+') => c,
+            _ => '_',
+        })
+        .collect();
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in params.as_bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{readable}_{h:08x}")
 }
 
 /// 写出 `--detail` 的产物: 逐笔交易 + 复利曲线 + (可选) fixed 曲线。
@@ -737,7 +854,7 @@ pub fn write_detail_parquet(
     }
 
     for ((symbol, tf, strategy, params), group) in &groups {
-        let clean_params = params.replace(' ', "_").replace('=', "-").replace(',', "_");
+        let clean_params = sanitize_params_for_filename(params);
         let filename = format!("{}_{}_{}_{}.parquet", symbol, tf, strategy, clean_params);
         let filepath = path.join(filename);
 
@@ -746,10 +863,10 @@ pub fn write_detail_parquet(
         let mut trade_side = StringBuilder::new();
         let mut trade_entry = Float64Builder::new();
         let mut trade_exit = Float64Builder::new();
-        let mut trade_qty = Float64Builder::new();
-        let mut trade_pnl = Float64Builder::new();
+        let mut trade_qty = money_builder()?;
+        let mut trade_pnl = money_builder()?;
         let mut trade_pnl_pct = Float64Builder::new();
-        let mut trade_fixed_pnl = Float64Builder::new();
+        let mut trade_fixed_pnl = money_builder()?;
         let mut trade_bars_held = Int64Builder::new();
         let mut trade_max_runup = Float64Builder::new();
         let mut trade_max_drawdown = Float64Builder::new();
@@ -762,10 +879,10 @@ pub fn write_detail_parquet(
                 trade_side.append_value(t.side.as_str());
                 trade_entry.append_value(t.entry_price);
                 trade_exit.append_value(t.exit_price);
-                trade_qty.append_value(t.qty);
-                trade_pnl.append_value(t.pnl);
+                trade_qty.append_value(money_mantissa(t.qty)?);
+                trade_pnl.append_value(money_mantissa(t.pnl)?);
                 trade_pnl_pct.append_value(t.pnl_pct);
-                trade_fixed_pnl.append_value(t.fixed_pnl);
+                trade_fixed_pnl.append_value(money_mantissa(t.fixed_pnl)?);
                 trade_bars_held.append_value(t.bars_held);
                 trade_max_runup.append_value(t.max_runup);
                 trade_max_drawdown.append_value(t.max_drawdown);
@@ -795,10 +912,22 @@ pub fn write_detail_parquet(
             Field::new("side", DataType::Utf8, false),
             Field::new("entry_price", DataType::Float64, false),
             Field::new("exit_price", DataType::Float64, false),
-            Field::new("qty", DataType::Float64, false),
-            Field::new("total_return", DataType::Float64, false),
+            Field::new(
+                "qty",
+                DataType::Decimal128(MONEY_PRECISION, MONEY_SCALE_I8),
+                false,
+            ),
+            Field::new(
+                "total_return",
+                DataType::Decimal128(MONEY_PRECISION, MONEY_SCALE_I8),
+                false,
+            ),
             Field::new("pnl_pct", DataType::Float64, false),
-            Field::new("fixed_pnl", DataType::Float64, false),
+            Field::new(
+                "fixed_pnl",
+                DataType::Decimal128(MONEY_PRECISION, MONEY_SCALE_I8),
+                false,
+            ),
             Field::new("bars_held", DataType::Int64, false),
             Field::new("max_runup", DataType::Float64, false),
             Field::new("max_drawdown", DataType::Float64, false),
@@ -808,15 +937,14 @@ pub fn write_detail_parquet(
         let trade_schema = arrow::datatypes::Schema::new(trade_fields);
         let trade_batch = RecordBatch::try_new(Arc::new(trade_schema), trade_cols)?;
 
-        if let Some(parent) = filepath.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-
-        let file = File::create(&filepath)?;
-        let props = WriterProperties::builder().build();
-        let mut writer = ArrowWriter::try_new(file, trade_batch.schema(), Some(props))?;
-        writer.write(&trade_batch)?;
-        writer.close()?;
+        write_atomic(&filepath, |tmp| {
+            let file = File::create(tmp)?;
+            let props = WriterProperties::builder().build();
+            let mut writer = ArrowWriter::try_new(file, trade_batch.schema(), Some(props))?;
+            writer.write(&trade_batch)?;
+            writer.close()?;
+            Ok(())
+        })?;
 
         // 分组元数据进 schema metadata, 文件名含 params 明文(含 `_` 清洗)故不
         // 做反向解析。两条曲线的 stem 相同, 只有 kind 后缀不同。
@@ -898,15 +1026,18 @@ fn write_curve_file(
     let schema =
         arrow::datatypes::Schema::new_with_metadata(vec![idx_field, val_field], meta.clone());
     let batch = RecordBatch::try_new(Arc::new(schema), vec![idx_col, val_col])?;
-    let file = File::create(dir.join(format!("{stem}_{kind}.parquet")))?;
-    let mut writer = ArrowWriter::try_new(
-        file,
-        batch.schema(),
-        Some(WriterProperties::builder().build()),
-    )?;
-    writer.write(&batch)?;
-    writer.close()?;
-    Ok(())
+    let path = dir.join(format!("{stem}_{kind}.parquet"));
+    write_atomic(&path, |tmp| {
+        let file = File::create(tmp)?;
+        let mut writer = ArrowWriter::try_new(
+            file,
+            batch.schema(),
+            Some(WriterProperties::builder().build()),
+        )?;
+        writer.write(&batch)?;
+        writer.close()?;
+        Ok(())
+    })
 }
 
 /// 按**列名**取列序号; 缺列时返回错误并列出实际列名。
@@ -971,14 +1102,22 @@ pub fn read_equity_curves(dir: &Path) -> Result<Vec<EquityCurve>> {
     let entries = fs::read_dir(dir).map_err(|e| {
         crate::error::AppError::Msg(format!("读取 equitycurve 目录失败 {}: {e}", dir.display()))
     })?;
-    let mut paths: Vec<_> = entries
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| {
-            p.extension().is_some_and(|x| x == "parquet")
-                && p.file_stem()
-                    .is_some_and(|s| s.to_string_lossy().ends_with("_equitycurve"))
-        })
-        .collect();
+    // 目录项的 IO 错误**不得**被 `filter_map(|e| e.ok())` 吞掉: 那会让
+    // "只读到一半曲线"被当成"成功返回", 而 `--pbo` 会基于**不同的策略集合**
+    // 算出 φ, 无任何提示。逐项显式传播错误。
+    let mut paths: Vec<std::path::PathBuf> = Vec::new();
+    for e in entries {
+        let e = e.map_err(|err| {
+            crate::error::AppError::Msg(format!("读取目录 {} 失败: {err}", dir.display()))
+        })?;
+        let p = e.path();
+        if p.extension().is_some_and(|x| x == "parquet")
+            && p.file_stem()
+                .is_some_and(|s| s.to_string_lossy().ends_with("_equitycurve"))
+        {
+            paths.push(p);
+        }
+    }
     paths.sort();
     for path in paths {
         let file = File::open(&path)?;
@@ -1048,14 +1187,21 @@ pub fn read_fixed_curves(dir: &Path) -> Result<Vec<FixedCurve>> {
     let entries = fs::read_dir(dir).map_err(|e| {
         crate::error::AppError::Msg(format!("读取 fixedcurve 目录失败 {}: {e}", dir.display()))
     })?;
-    let mut paths: Vec<_> = entries
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| {
-            p.extension().is_some_and(|x| x == "parquet")
-                && p.file_stem()
-                    .is_some_and(|s| s.to_string_lossy().ends_with("_fixedcurve"))
-        })
-        .collect();
+    // 同 `read_equity_curves`: 目录项的 IO 错误必须显式传播, 不得被吞掉
+    // (否则 `--pbo` 会基于少读一半曲线的集合算 φ, 且无任何提示)。
+    let mut paths: Vec<std::path::PathBuf> = Vec::new();
+    for e in entries {
+        let e = e.map_err(|err| {
+            crate::error::AppError::Msg(format!("读取目录 {} 失败: {err}", dir.display()))
+        })?;
+        let p = e.path();
+        if p.extension().is_some_and(|x| x == "parquet")
+            && p.file_stem()
+                .is_some_and(|s| s.to_string_lossy().ends_with("_fixedcurve"))
+        {
+            paths.push(p);
+        }
+    }
     paths.sort();
     for path in paths {
         let file = File::open(&path)?;
@@ -1117,15 +1263,54 @@ fn col_name(batch: &RecordBatch, idx: usize) -> String {
         .map_or_else(|| format!("#{idx}"), |f| f.name().clone())
 }
 
+/// 列中出现 null 时的错误。
+///
+/// null 槽位在 `Array::value(i)` 下会**静默**变成该类型的默认值
+/// (`Float64` → `0.0`, `Utf8` → `""`, `UInt*` → `0`), 而本项目的报告 schema
+/// 全部 `nullable = false` —— 所以 null 只可能来自"别的工具写的文件"或
+/// "被手工改过的文件"。那种文件被静默读成默认值时:
+/// - `sharpe` 的 null → `0.0` → 与"真实零波动低风险"**不可区分**(这正是
+///   `RunStatus` 存在的理由);
+/// - `status` 的 null → `""` → 落到 `_ => RunStatus::NoSignals` 分支, 把
+///   "正常"误判成"退化"。
+///
+/// 故 null 一律**报错**, 不静默填默认值。
+fn null_err(file: &Path, name: &str, row: usize) -> crate::error::AppError {
+    crate::error::AppError::Msg(format!(
+        "{}: 列 {name} 第 {row} 行为 null —— 该 schema 声明为非空; \
+         文件可能由其它工具产出或被手工改写, 请删掉后重跑",
+        file.display()
+    ))
+}
+
+/// 读一列的**非空**值: null 槽位报错, 不静默填默认值。
+fn read_non_null<T, A>(
+    batch: &RecordBatch,
+    idx: usize,
+    file: &Path,
+    arr: &A,
+    get: impl Fn(&A, usize) -> T,
+) -> Result<Vec<T>>
+where
+    A: Array,
+{
+    (0..batch.num_rows())
+        .map(|i| {
+            if arr.is_null(i) {
+                return Err(null_err(file, &col_name(batch, idx), i));
+            }
+            Ok(get(arr, i))
+        })
+        .collect()
+}
+
 fn str_col(batch: &RecordBatch, idx: usize, file: &Path) -> Result<Vec<String>> {
     let arr = batch
         .column(idx)
         .as_any()
         .downcast_ref::<StringArray>()
         .ok_or_else(|| col_type_err(file, &col_name(batch, idx), "Utf8", "非字符串"))?;
-    Ok((0..batch.num_rows())
-        .map(|i| arr.value(i).to_string())
-        .collect())
+    read_non_null(batch, idx, file, arr, |a, i| a.value(i).to_string())
 }
 
 fn i64_col(batch: &RecordBatch, idx: usize, file: &Path) -> Result<Vec<i64>> {
@@ -1134,7 +1319,7 @@ fn i64_col(batch: &RecordBatch, idx: usize, file: &Path) -> Result<Vec<i64>> {
         .as_any()
         .downcast_ref::<Int64Array>()
         .ok_or_else(|| col_type_err(file, &col_name(batch, idx), "Int64", "非 Int64"))?;
-    Ok((0..batch.num_rows()).map(|i| arr.value(i)).collect())
+    read_non_null(batch, idx, file, arr, |a, i| a.value(i))
 }
 
 fn u64_col(batch: &RecordBatch, idx: usize, file: &Path) -> Result<Vec<u64>> {
@@ -1143,7 +1328,33 @@ fn u64_col(batch: &RecordBatch, idx: usize, file: &Path) -> Result<Vec<u64>> {
         .as_any()
         .downcast_ref::<UInt64Array>()
         .ok_or_else(|| col_type_err(file, &col_name(batch, idx), "UInt64", "非 UInt64"))?;
-    Ok((0..batch.num_rows()).map(|i| arr.value(i)).collect())
+    read_non_null(batch, idx, file, arr, |a, i| a.value(i))
+}
+
+/// 读一列 `Decimal128` 金额(定点十进制)。
+fn dec_col(batch: &RecordBatch, idx: usize, file: &Path) -> Result<Vec<crate::money::Amount>> {
+    let arr = batch
+        .column(idx)
+        .as_any()
+        .downcast_ref::<Decimal128Array>()
+        .ok_or_else(|| col_type_err(file, &col_name(batch, idx), "Decimal128", "非 Decimal128"))?;
+    read_non_null(batch, idx, file, arr, |a, i| {
+        crate::money::Amount::from_decimal128_mantissa(a.value(i), MONEY_SCALE)
+    })
+}
+
+/// 读一列**可选**的 `Decimal128` 金额(旧缓存无此列 ⇒ 缺省零)。
+fn opt_dec(
+    batch: &RecordBatch,
+    ci: &ColumnIndex,
+    name: &str,
+    n: usize,
+    file: &Path,
+) -> Result<Vec<crate::money::Amount>> {
+    match ci.opt(name) {
+        Some(i) => dec_col(batch, i, file),
+        None => Ok(vec![crate::money::Amount::ZERO; n]),
+    }
 }
 
 fn f64_col(batch: &RecordBatch, idx: usize, file: &Path) -> Result<Vec<f64>> {
@@ -1152,7 +1363,7 @@ fn f64_col(batch: &RecordBatch, idx: usize, file: &Path) -> Result<Vec<f64>> {
         .as_any()
         .downcast_ref::<Float64Array>()
         .ok_or_else(|| col_type_err(file, &col_name(batch, idx), "Float64", "非 Float64"))?;
-    Ok((0..batch.num_rows()).map(|i| arr.value(i)).collect())
+    read_non_null(batch, idx, file, arr, |a, i| a.value(i))
 }
 
 fn u32_col(batch: &RecordBatch, idx: usize, file: &Path) -> Result<Vec<u32>> {
@@ -1161,7 +1372,7 @@ fn u32_col(batch: &RecordBatch, idx: usize, file: &Path) -> Result<Vec<u32>> {
         .as_any()
         .downcast_ref::<UInt32Array>()
         .ok_or_else(|| col_type_err(file, &col_name(batch, idx), "UInt32", "非 UInt32"))?;
-    Ok((0..batch.num_rows()).map(|i| arr.value(i)).collect())
+    read_non_null(batch, idx, file, arr, |a, i| a.value(i))
 }
 
 fn u8_col(batch: &RecordBatch, idx: usize, file: &Path) -> Result<Vec<u8>> {
@@ -1170,7 +1381,7 @@ fn u8_col(batch: &RecordBatch, idx: usize, file: &Path) -> Result<Vec<u8>> {
         .as_any()
         .downcast_ref::<UInt8Array>()
         .ok_or_else(|| col_type_err(file, &col_name(batch, idx), "UInt8", "非 UInt8"))?;
-    Ok((0..batch.num_rows()).map(|i| arr.value(i)).collect())
+    read_non_null(batch, idx, file, arr, |a, i| a.value(i))
 }
 
 /// 报告列的**单位**。
@@ -1237,7 +1448,9 @@ pub const COLUMNS: &[(&str, Unit)] = &[
     ("return_mdd", Unit::Dimensionless),
     ("avg_win", Unit::Money),
     ("avg_loss", Unit::Money),
-    ("expectancy", Unit::Money),
+    // `expectancy` 是**逐笔 pnl_pct 的均值**(比率), 不是货币金额 ——
+    // 声明成 `Money` 会让读者把它与 `avg_win`/`avg_loss` 混为一谈。
+    ("expectancy", Unit::Ratio),
     ("consecutive_wins", Unit::Count),
     ("consecutive_losses", Unit::Count),
     ("volatility_pct", Unit::Percent),
@@ -1264,7 +1477,8 @@ pub const COLUMNS: &[(&str, Unit)] = &[
     // 单位修正: 原名 fixed_max_drawdown_pct, 值是**百分数**, 而复利腿的
     // max_drawdown 是**小数**。同名不同量纲是最容易读错的一种不一致。
     ("fixed_max_drawdown", Unit::Ratio),
-    ("fixed_expectancy_bps", Unit::Money),
+    // 单位是 **bp**(基点), 不是货币: 1.0 = 1bp = 0.01%。
+    ("fixed_expectancy_bps", Unit::BasisPoints),
     ("fixed_profit_factor", Unit::Dimensionless),
     ("fill_close", Unit::Dimensionless),
     ("buy_hold_pnl", Unit::Money),
@@ -1316,6 +1530,32 @@ impl ColumnIndex {
     fn opt(&self, name: &str) -> Option<usize> {
         self.map.get(name).copied()
     }
+}
+
+/// 只读 Parquet 元数据里的行数, **不解码任何列**。
+///
+/// 缓存有效性检查(`run_combo`)只需要"行数是否等于参数数"这一个事实; 原先调用
+/// [`read_parquet`] 会把整张表(含全部列、全部行)解码成 `Vec<RunResult>`, 而这条
+/// 路径对每个策略都要走一次 —— 参数网格越大、缓存命中越多, 浪费越大。
+///
+/// 这里只打开 footer 读 `num_rows`; 真正的 schema/内容校验仍由后续的
+/// [`read_parquet`] / [`merge_parquet_files`] 在读取数据时完成。
+///
+/// # Errors
+/// 文件打开/footer 解析失败, 或行数超出 `usize` 时返回 [`AppError`]。
+pub fn parquet_row_count(path: &Path) -> Result<usize> {
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+    use std::fs::File;
+
+    let file = File::open(path)?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+    let rows = builder.metadata().file_metadata().num_rows();
+    usize::try_from(rows).map_err(|e| {
+        crate::error::AppError::Msg(format!(
+            "{}: Parquet 行数 {rows} 无法表示为 usize: {e}",
+            path.display()
+        ))
+    })
 }
 
 /// 读取一个组合临时文件/报告文件。
@@ -1381,7 +1621,7 @@ pub fn read_parquet(path: &Path) -> Result<Vec<RunResult>> {
         let timeframe = str_col(&batch, timeframe_idx, path)?;
         let params_full = str_col(&batch, params_idx, path)?;
         let pnl = f64_col(&batch, total_return_idx, path)?;
-        let eq = f64_col(&batch, final_equity_idx, path)?;
+        let eq = dec_col(&batch, final_equity_idx, path)?;
         let mdd = f64_col(&batch, max_dd_idx, path)?;
         let trades = u32_col(&batch, trades_idx, path)?;
         let sharpe = f64_col(&batch, sharpe_idx, path)?;
@@ -1389,8 +1629,8 @@ pub fn read_parquet(path: &Path) -> Result<Vec<RunResult>> {
         let wr = f64_col(&batch, win_rate_idx, path)?;
         let pf = f64_col(&batch, pf_idx, path)?;
         let calmar = f64_col(&batch, calmar_idx, path)?;
-        let avg_win = f64_col(&batch, avg_win_idx, path)?;
-        let avg_loss = f64_col(&batch, avg_loss_idx, path)?;
+        let avg_win = dec_col(&batch, avg_win_idx, path)?;
+        let avg_loss = dec_col(&batch, avg_loss_idx, path)?;
         let expectancy = f64_col(&batch, expectancy_idx, path)?;
         let cw = u32_col(&batch, cw_idx, path)?;
         let cl = u32_col(&batch, cl_idx, path)?;
@@ -1407,7 +1647,7 @@ pub fn read_parquet(path: &Path) -> Result<Vec<RunResult>> {
         let pf_stab = f64_col(&batch, pf_stab_idx, path)?;
         let z_score = f64_col(&batch, z_idx, path)?;
         let p_value = f64_col(&batch, pval_idx, path)?;
-        let fixed_pnl = f64_col(&batch, fixed_pnl_idx, path)?;
+        let fixed_pnl = dec_col(&batch, fixed_pnl_idx, path)?;
 
         // 以下均为**历史上逐次追加**的可选列, 旧缓存文件没有 → 回退为旧口径。
         let turnover_per_year = opt_f64(&batch, &ci, "turnover_per_year", n, path)?;
@@ -1420,7 +1660,7 @@ pub fn read_parquet(path: &Path) -> Result<Vec<RunResult>> {
         let fixed_expectancy_bps = opt_f64(&batch, &ci, "fixed_expectancy_bps", n, path)?;
         let fixed_profit_factor = opt_f64(&batch, &ci, "fixed_profit_factor", n, path)?;
         let fill_close = opt_u8(&batch, &ci, "fill_close", n, path)?;
-        let buy_hold_pnl = opt_f64(&batch, &ci, "buy_hold_pnl", n, path)?;
+        let buy_hold_pnl = opt_dec(&batch, &ci, "buy_hold_pnl", n, path)?;
         let buy_hold_return = opt_f64(&batch, &ci, "buy_hold_return", n, path)?;
         // O6: 原样读回写入时的编码, 合并时不重算。旧文件无此列 → 0 / 空串。
         let strategy_params = opt_u64(&batch, &ci, "strategy_params", n, path)?;
@@ -1437,6 +1677,12 @@ pub fn read_parquet(path: &Path) -> Result<Vec<RunResult>> {
                     "ok" => crate::app::RunStatus::Ok,
                     "no_signals" => crate::app::RunStatus::NoSignals,
                     "no_trades" => crate::app::RunStatus::NoTrades,
+                    // "该档不可计算"必须**如实**还原, 不能落进下面的兜底分支
+                    // 变成 `NoSignals` —— 那正是本项目要消除的"不可计算"与
+                    // "无信号"混为一谈。
+                    "invalid" => crate::app::RunStatus::Invalid,
+                    // 未知取值(未来版本新增的 status)⇒ 保守落 `NoSignals`:
+                    // 未知状态**不是**"算不出来", 不可臆断。
                     _ => crate::app::RunStatus::NoSignals,
                 })
                 .collect::<Vec<_>>(),
@@ -1566,10 +1812,11 @@ fn opt_u8(
 ///
 /// # Errors
 /// IO 失败时返回 [`AppError`]。
-pub fn write_single_parquet(results: &[RunResult], path: &Path, balance: f64) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+pub fn write_single_parquet(
+    results: &[RunResult],
+    path: &Path,
+    balance: crate::money::Amount,
+) -> Result<()> {
     write_parquet(path, results, balance)
 }
 
@@ -1587,7 +1834,7 @@ pub fn write_single_parquet(results: &[RunResult], path: &Path, balance: f64) ->
 pub fn merge_parquet_files(
     paths: &[PathBuf],
     output_path: &Path,
-    balance: f64,
+    balance: crate::money::Amount,
 ) -> Result<MergeStats> {
     let mut all: Vec<RunResult> = Vec::new();
     let mut failed = 0u32;
@@ -1887,7 +2134,12 @@ mod tests {
         );
 
         // 内容: time 与 equity 两列, 组内多参数按顺序拼接
-        let p = dir.join("BTCUSDT_1d_sma_period-10_equitycurve.parquet");
+        // 文件名带参数串的哈希后缀(防碰撞, 见 `sanitize_params_for_filename`)。
+        let expected = format!(
+            "BTCUSDT_1d_sma_{}_equitycurve.parquet",
+            sanitize_params_for_filename("period=10")
+        );
+        let p = dir.join(&expected);
         let curves = read_equity_curves(&dir).unwrap();
         let c = curves
             .iter()
@@ -1900,7 +2152,7 @@ mod tests {
         assert_eq!(c.values.len(), 5);
         assert_eq!(c.times[0], 1_700_000_000);
         assert_eq!(c.values[4], 1004.0);
-        assert!(p.exists());
+        assert!(p.exists(), "应存在 {expected}, 实际文件: {files:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1966,7 +2218,7 @@ mod tests {
             fee_bps: 0.0,
             slippage_bps: 0.0,
             fill_close: false,
-            buy_hold_pnl: 0.0,
+            buy_hold_pnl: crate::money::Amount::ZERO,
             buy_hold_return: 0.0,
             bars_used: bars,
             status,
@@ -1980,10 +2232,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("r.parquet");
-        write_parquet(&p, &rows, 10_000.0).unwrap();
+        write_parquet(&p, &rows, crate::money::Amount::from_i64(10_000)).unwrap();
 
         let back = read_parquet(&p).unwrap();
         assert_eq!(back.len(), 3);
+        // 缓存校验只读 footer 行数, 必须与完整解码一致。
+        assert_eq!(parquet_row_count(&p).unwrap(), 3);
         assert_eq!(back[0].bars_used, 300);
         assert_eq!(back[0].status, crate::app::RunStatus::Ok);
         assert_eq!(back[1].bars_used, 300);
@@ -2014,7 +2268,7 @@ mod tests {
             fee_bps: 0.0,
             slippage_bps: 0.0,
             fill_close: false,
-            buy_hold_pnl: 0.0,
+            buy_hold_pnl: crate::money::Amount::ZERO,
             buy_hold_return: 0.0,
             bars_used: 300,
             status: crate::app::RunStatus::Ok,
@@ -2024,8 +2278,13 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let a = dir.join("a.parquet");
         let out = dir.join("m.parquet");
-        write_parquet(&a, std::slice::from_ref(&r), 10_000.0).unwrap();
-        merge_parquet_files(&[a], &out, 10_000.0).unwrap();
+        write_parquet(
+            &a,
+            std::slice::from_ref(&r),
+            crate::money::Amount::from_i64(10_000),
+        )
+        .unwrap();
+        merge_parquet_files(&[a], &out, crate::money::Amount::from_i64(10_000)).unwrap();
         let back = read_parquet(&out).unwrap();
         assert_eq!(
             back[0].strategy_params, 999_999_999_999,
@@ -2076,13 +2335,18 @@ mod tests {
             fee_bps: 0.0,
             slippage_bps: 0.0,
             fill_close: false,
-            buy_hold_pnl: 0.0,
+            buy_hold_pnl: crate::money::Amount::ZERO,
             buy_hold_return: 0.0,
             bars_used: 300,
             status: crate::app::RunStatus::Ok,
         };
         let full = dir.join("full.parquet");
-        write_parquet(&full, std::slice::from_ref(&r), 10_000.0).unwrap();
+        write_parquet(
+            &full,
+            std::slice::from_ref(&r),
+            crate::money::Amount::from_i64(10_000),
+        )
+        .unwrap();
 
         // 2) 原样读回, 再造一个**只缺 sharpe** 的文件
         let src = ParquetRecordBatchReaderBuilder::try_new(std::fs::File::open(&full).unwrap())
@@ -2156,12 +2420,12 @@ mod tests {
                 fee_bps: 0.0,
                 slippage_bps: 0.0,
                 fill_close: false,
-                buy_hold_pnl: 0.0,
+                buy_hold_pnl: crate::money::Amount::ZERO,
                 buy_hold_return: 0.0,
                 bars_used: 300,
                 status: crate::app::RunStatus::Ok,
             }],
-            10_000.0,
+            crate::money::Amount::from_i64(10_000),
         )
         .unwrap();
 
@@ -2179,6 +2443,326 @@ mod tests {
         let stale: Vec<&&str> = declared.iter().filter(|d| !actual.contains(d)).collect();
         assert!(stale.is_empty(), "单位表里声明了不存在的列: {stale:?}");
         assert_eq!(actual.len(), declared.len(), "列数不一致");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **单位契约的语义断言**: 关键列的声明单位必须与引擎口径一致。
+    ///
+    /// `test_every_report_column_declares_its_unit` 只校验"每列都有声明",
+    /// **不校验声明的单位对不对** —— 所以下表曾经把两个比率/基点列声明成
+    /// `Money`, 护栏也照样通过。
+    ///
+    /// 缺陷现场:
+    /// - `expectancy` = `pnl_pct_sum / num_trades` ⇒ **比率**(逐笔 pnl_pct 的
+    ///   均值), 声明成 `Money` 会让读者把它与 `avg_win`/`avg_loss`(货币)混为一谈;
+    /// - `fixed_expectancy_bps` = `total_fixed_pnl / n / initial * 10_000` ⇒
+    ///   **基点**, 声明成 `Money` 更是量纲错误。
+    #[test]
+    fn semantic_units_match_the_engine_definition() {
+        let unit_of = |name: &str| {
+            COLUMNS
+                .iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, u)| *u)
+                .unwrap_or_else(|| panic!("列 {name} 未在 COLUMNS 中声明"))
+        };
+        // 比率类。
+        assert_eq!(
+            unit_of("expectancy"),
+            Unit::Ratio,
+            "expectancy 是逐笔 pnl_pct 均值(比率)"
+        );
+        assert_eq!(unit_of("total_return"), Unit::Ratio);
+        assert_eq!(unit_of("win_rate"), Unit::Ratio);
+        assert_eq!(unit_of("buy_hold_return"), Unit::Ratio);
+        assert_eq!(unit_of("fixed_total_return"), Unit::Ratio);
+        assert_eq!(unit_of("max_drawdown"), Unit::Ratio);
+        assert_eq!(unit_of("fixed_max_drawdown"), Unit::Ratio);
+        // 货币类(真正的金额)。
+        assert_eq!(unit_of("balance"), Unit::Money);
+        assert_eq!(unit_of("final_equity"), Unit::Money);
+        assert_eq!(unit_of("avg_win"), Unit::Money);
+        assert_eq!(unit_of("avg_loss"), Unit::Money);
+        assert_eq!(unit_of("fixed_pnl"), Unit::Money);
+        assert_eq!(unit_of("buy_hold_pnl"), Unit::Money);
+        // 基点类。
+        assert_eq!(
+            unit_of("fixed_expectancy_bps"),
+            Unit::BasisPoints,
+            "fixed_expectancy_bps 是 bp, 不是货币"
+        );
+        assert_eq!(unit_of("fee_bps"), Unit::BasisPoints);
+        assert_eq!(unit_of("slippage_bps"), Unit::BasisPoints);
+        // 价格差 ≠ 货币金额。
+        assert_eq!(unit_of("avg_mae_price"), Unit::Price);
+        assert_eq!(unit_of("avg_mfe_price"), Unit::Price);
+        // 百分数。
+        assert_eq!(unit_of("volatility_pct"), Unit::Percent);
+    }
+
+    /// **null 槽位必须报错**, 不得被静默读成默认值。
+    ///
+    /// 缺陷现场: 读取路径一律用 `Array::value(i)`, 而该 API 对 null 槽位返回
+    /// **该类型的默认值**(`Float64` → `0.0`, `Utf8` → `""`, `UInt*` → `0`)。
+    /// 报告 schema 全部 `nullable = false`, 所以 null 只可能来自"别的工具写的
+    /// 文件"或"被手工改过的文件" —— 那种文件里的 `sharpe` null 会被读成 `0.0`,
+    /// 与"真实零波动低风险"**不可区分**(这正是 `RunStatus` 存在的理由);
+    /// `status` 的 null 会被读成 `""` 并落到 `NoSignals` 分支, 把"正常"误判
+    /// 成"退化"。
+    #[test]
+    fn null_cells_are_rejected_instead_of_read_as_defaults() {
+        use arrow::array::{Float64Builder, RecordBatch};
+        use parquet::arrow::ArrowWriter;
+        use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+        use parquet::file::properties::WriterProperties;
+        use std::sync::Arc;
+
+        let dir = std::env::temp_dir().join(format!("vta-null-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("null.parquet");
+
+        // 1. 先写一个**合法**文件, 拿到真实的 schema 与全部列。
+        write_parquet(
+            &p,
+            &[RunResult {
+                symbol: "B".into(),
+                timeframe: "1d".into(),
+                strategy: "sma".into(),
+                params: "period=20".into(),
+                strategy_params: 20,
+                strategy_params_json: "{}".into(),
+                metrics: SummaryMetrics::default(),
+                delay_bars: 1,
+                fee_bps: 0.0,
+                slippage_bps: 0.0,
+                fill_close: false,
+                buy_hold_pnl: crate::money::Amount::ZERO,
+                buy_hold_return: 0.0,
+                bars_used: 300,
+                status: crate::app::RunStatus::Ok,
+            }],
+            crate::money::Amount::from_i64(10_000),
+        )
+        .unwrap();
+
+        // 2. 读回来, 把 `sharpe` 列换成含 null 的版本(其它列原样)。
+        let f = std::fs::File::open(&p).unwrap();
+        let mut batches = ParquetRecordBatchReaderBuilder::try_new(f)
+            .unwrap()
+            .build()
+            .unwrap();
+        let batch = batches.next().unwrap().unwrap();
+        let old_schema = batch.schema().clone();
+        let sharpe_idx = old_schema.index_of("sharpe").unwrap();
+        let mut fb = Float64Builder::new();
+        for i in 0..batch.num_rows() {
+            if i == 0 {
+                fb.append_null();
+            } else {
+                fb.append_value(0.0);
+            }
+        }
+        let mut cols: Vec<Arc<dyn arrow::array::Array>> = batch.columns().to_vec();
+        cols[sharpe_idx] = Arc::new(fb.finish());
+        // 该列在 schema 里必须声明为 **nullable**, 否则 Arrow 会在写入时
+        // 直接拒绝(null 与"非空"声明矛盾) —— 而这正是我们要模拟的
+        // "别的工具产出的文件"的样子: 它自己声明了 nullable。
+        let fields: Vec<arrow::datatypes::Field> = old_schema
+            .fields()
+            .iter()
+            .map(|f| {
+                if f.name() == "sharpe" {
+                    arrow::datatypes::Field::new(f.name(), f.data_type().clone(), true)
+                } else {
+                    f.as_ref().clone()
+                }
+            })
+            .collect();
+        let schema = Arc::new(arrow::datatypes::Schema::new(fields));
+        let bad = RecordBatch::try_new(schema, cols).unwrap();
+
+        // 3. 写出去(模拟"别的工具产出的文件"里有 null)。
+        {
+            let file = std::fs::File::create(&p).unwrap();
+            let mut w = ArrowWriter::try_new(
+                file,
+                bad.schema(),
+                Some(WriterProperties::builder().build()),
+            )
+            .unwrap();
+            w.write(&bad).unwrap();
+            w.close().unwrap();
+        }
+
+        // 4. 读取必须失败, 且错误消息指明是 null 与哪一列。
+        let e = read_parquet(&p).expect_err("含 null 的文件必须被拒");
+        let msg = format!("{e}");
+        assert!(msg.contains("null"), "错误消息应说明是 null: {msg}");
+        assert!(msg.contains("sharpe"), "错误消息应指明列名: {msg}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **回归**: detail 文件名必须**无碰撞**。
+    ///
+    /// 可触发场景: 原清洗规则 `replace(' ', "_").replace('=', "-").replace(',', "_")`
+    /// **不是**一一映射 —— `"a=b"` 与 `"a-b"` 都变成 `a-b`。于是不同参数组
+    /// 写同一个文件、**互相覆盖**, detail 目录少了一部分曲线, 而 `--pbo`
+    /// 会基于少读一半的曲线算出 φ, 无任何提示。
+    #[test]
+    fn detail_filenames_never_collide() {
+        // 这些参数串经旧清洗规则会得到**相同**的文件名。
+        let colliding = ["a=b", "a-b", "a b", "a,b", "a_b"];
+        let mut seen = std::collections::HashSet::new();
+        for p in colliding {
+            let f = sanitize_params_for_filename(p);
+            assert!(
+                seen.insert(f.clone()),
+                "参数串 {p:?} 与其它参数串撞出了同一个文件名 {f:?}"
+            );
+        }
+        // 不同参数串 ⇒ 不同文件名。
+        assert_ne!(
+            sanitize_params_for_filename("sigma=2.5"),
+            sanitize_params_for_filename("sigma=2.6")
+        );
+        // 可读性保留: 清洗后的片段仍含原参数的主要信息。
+        let f = sanitize_params_for_filename("sigma=2.5,period=20");
+        assert!(
+            f.starts_with("sigma-2.5_period-20"),
+            "文件名应保留可读部分: {f}"
+        );
+        // 路径分隔符等必须被替换掉, 不得进文件名。
+        for p in ["a/b", "a\\b", "a:b", "a*b", "a?b"] {
+            let f = sanitize_params_for_filename(p);
+            assert!(
+                !f.contains('/') && !f.contains('\\') && !f.contains(':'),
+                "文件名不得含路径分隔符: {f}"
+            );
+        }
+    }
+
+    /// **回归**: `status = "invalid"` 必须**如实**往返。
+    ///
+    /// 可触发场景: 读回时未知的 status 取值会落进 `_ =>` 兜底分支变成
+    /// `NoSignals` —— 于是"这一档**没算出来**"会被还原成"跑了但没信号",
+    /// 正是本项目要消除的混为一谈。
+    #[test]
+    fn invalid_status_survives_the_parquet_round_trip() {
+        let dir = std::env::temp_dir().join(format!("vta-inv-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("r.parquet");
+
+        let mk = |status: crate::app::RunStatus| RunResult {
+            symbol: "B".into(),
+            timeframe: "1d".into(),
+            strategy: "sma".into(),
+            params: "period=20".into(),
+            strategy_params: 20,
+            strategy_params_json: "{}".into(),
+            metrics: SummaryMetrics::default(),
+            delay_bars: 1,
+            fee_bps: 0.0,
+            slippage_bps: 0.0,
+            fill_close: false,
+            buy_hold_pnl: crate::money::Amount::ZERO,
+            buy_hold_return: 0.0,
+            bars_used: 300,
+            status,
+        };
+        write_parquet(
+            &p,
+            &[
+                mk(crate::app::RunStatus::Ok),
+                mk(crate::app::RunStatus::NoSignals),
+                mk(crate::app::RunStatus::NoTrades),
+                mk(crate::app::RunStatus::Invalid),
+            ],
+            crate::money::Amount::from_i64(10_000),
+        )
+        .unwrap();
+
+        let back = read_parquet(&p).expect("必须能读回");
+        assert_eq!(back.len(), 4);
+        assert_eq!(back[0].status, crate::app::RunStatus::Ok);
+        assert_eq!(back[1].status, crate::app::RunStatus::NoSignals);
+        assert_eq!(back[2].status, crate::app::RunStatus::NoTrades);
+        assert_eq!(
+            back[3].status,
+            crate::app::RunStatus::Invalid,
+            "invalid 必须如实还原, 不得落进 _ => 兜底变成 no_signals"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **原子写**: 写入失败时, 目标文件必须保持**旧内容**不变。
+    ///
+    /// 缺陷现场: `File::create` 直接截断目标路径。若在 `write`/`close` 之间
+    /// 出错(磁盘满、IO 错误、进程被杀), 目标文件是**半截**的, 而旧的可用版本
+    /// 已被销毁; 缓存有效性检查只看**行数**, 挡不住"行数对、内容坏"的中间态。
+    ///
+    /// 修法: 先写 `{path}.tmp`, 成功后再 `rename`(POSIX 原子)。
+    #[test]
+    fn failed_write_leaves_the_previous_file_intact() {
+        let dir = std::env::temp_dir().join(format!("vta-atomic-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("r.parquet");
+
+        // 先写一个成功的版本。
+        write_parquet(&p, &[], crate::money::Amount::from_i64(10_000)).unwrap();
+        let before = std::fs::read(&p).unwrap();
+        assert!(!before.is_empty());
+
+        // 一次失败的写: 闭包返回 Err。
+        let e = write_atomic(&p, |_tmp| {
+            Err(crate::error::AppError::Msg("故意失败".into()))
+        })
+        .expect_err("写入必须失败");
+        assert!(format!("{e}").contains("故意失败"));
+
+        // 旧文件必须**逐字节**不变。
+        let after = std::fs::read(&p).unwrap();
+        assert_eq!(
+            before.len(),
+            after.len(),
+            "失败后目标文件被截断了(原子性丢失)"
+        );
+        assert_eq!(before, after, "失败后目标文件内容被破坏(原子性丢失)");
+
+        // 临时文件必须被清理, 不留垃圾。
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(std::result::Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "临时文件未被清理: {leftovers:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **原子写**: 成功时目标文件被完整替换, 且不残留 `.tmp`。
+    #[test]
+    fn atomic_write_replaces_the_target_and_cleans_up() {
+        let dir = std::env::temp_dir().join(format!("vta-atomic2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("r.parquet");
+
+        write_atomic(&p, |tmp| {
+            std::fs::write(tmp, b"hello")?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(std::fs::read(&p).unwrap(), b"hello");
+
+        let names: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(std::result::Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["r.parquet".to_string()], "不应残留临时文件");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2205,7 +2789,7 @@ mod tests {
             fee_bps: 0.0,
             slippage_bps: 0.0,
             fill_close: false,
-            buy_hold_pnl: 0.0,
+            buy_hold_pnl: crate::money::Amount::ZERO,
             buy_hold_return: 0.0,
             bars_used: 300,
             status: crate::app::RunStatus::Ok,
@@ -2214,7 +2798,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("r.parquet");
-        write_parquet(&p, std::slice::from_ref(&r), 10_000.0).unwrap();
+        write_parquet(
+            &p,
+            std::slice::from_ref(&r),
+            crate::money::Amount::from_i64(10_000),
+        )
+        .unwrap();
 
         use arrow::record_batch::RecordBatch;
         use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -2268,7 +2857,7 @@ mod tests {
             fee_bps: 2.0,
             slippage_bps: 1.0,
             fill_close: false,
-            buy_hold_pnl: 0.0,
+            buy_hold_pnl: crate::money::Amount::ZERO,
             buy_hold_return: 0.4,
             bars_used: 300,
             status: crate::app::RunStatus::Ok,
@@ -2277,7 +2866,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("r.parquet");
-        write_parquet(&p, std::slice::from_ref(&r), 10_000.0).unwrap();
+        write_parquet(
+            &p,
+            std::slice::from_ref(&r),
+            crate::money::Amount::from_i64(10_000),
+        )
+        .unwrap();
 
         use arrow::record_batch::RecordBatch;
         use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;

@@ -2,7 +2,7 @@ use vector_ta::indicators::atr::{AtrInput, AtrParams, atr};
 use vector_ta::indicators::moving_averages::ma::{MaData, ma};
 use vector_ta::indicators::stddev::{StdDevData, StdDevInput, StdDevParams, stddev};
 
-use crate::strategies::{Signal, Strategy};
+use crate::strategies::{ParamOutcome, Signal, Strategy};
 
 use super::config::MabbShortConfig;
 
@@ -67,7 +67,7 @@ pub fn mabb_short_signals(
         } else {
             if keff > 0.0 {
                 let a = atr_vals[i];
-                if a.is_finite() && high[i] >= extreme + keff * a {
+                if a.is_finite() && close[i] >= extreme + keff * a {
                     sig[i] = Signal::Close;
                     pos = 0;
                     continue;
@@ -123,6 +123,10 @@ pub fn mabb_bands_short(
 }
 
 /// 中轨＋原始sd（batch缓存用，与mabb_bands_short同源，避免σ=1重构的浮点误差）。
+/// **止损为收盘价判定, 非盘中 stop 单**: vta 引擎的成交价只由 `ExecConfig`
+/// (次根开盘/收盘) 决定, 无法表达"盘中触及即按止损价成交"。若用 `low[i] <= stop`
+/// 判定, 信号在 bar i 发出而平仓在 bar i+1 开盘, 次日高开即以远优于止损价离场 ——
+/// 系统性高估, 与延迟口径冲突。故统一用 `close`(与 `swing_fractal` 同口径)。
 fn mabb_core_short(close: &[f64], maname: &str, len: usize) -> Option<(Vec<f64>, Vec<f64>)> {
     let mid = ma(maname, MaData::Slice(close), len).ok()?;
     let sd = stddev(&StdDevInput {
@@ -171,7 +175,11 @@ fn compute(
 ) -> crate::error::Result<Vec<Signal>> {
     let (lower, mid, upper) = match mabb_bands_short(close, maname, len, sigma) {
         Some(v) => v,
-        None => return Ok(vec![Signal::Hold; close.len()]),
+        None => {
+            return Err(crate::strategies::param_skipped(format!(
+                "MABB_SHORT: 未知 MA 名 `{maname}`"
+            )));
+        }
     };
     let av = mabb_atr_short(high, low, close, atrlen);
     Ok(mabb_short_signals(
@@ -217,7 +225,7 @@ impl Strategy for MabbShortStrategy {
         volume: &[f64],
         time: &[i64],
         range: std::ops::Range<usize>,
-    ) -> crate::error::Result<Vec<Vec<Signal>>> {
+    ) -> crate::error::Result<Vec<ParamOutcome>> {
         use rayon::prelude::*;
         use std::collections::{HashMap, HashSet};
         let idxs: Vec<usize> = range.collect();
@@ -243,13 +251,16 @@ impl Strategy for MabbShortStrategy {
         for (p, &i) in idxs.iter().enumerate() {
             at.insert(i, p);
         }
-        let mut out: Vec<Vec<Signal>> = vec![Vec::new(); idxs.len()];
+        // 占位初值: 每个下标都会被下面的分组循环覆盖一次。
+        let mut out: Vec<ParamOutcome> = vec![ParamOutcome::Skipped(String::new()); idxs.len()];
         for ((m, l), members) in keys {
             let (mi, sd) = match mabb_core_short(close, m, *l) {
                 Some(v) => v,
                 None => {
                     for &i in members {
-                        out[at[&i]] = vec![Signal::Hold; close.len()];
+                        out[at[&i]] = ParamOutcome::Skipped(format!(
+                            "MABB_SHORT: 共享指标缺失 (ma={m}, len={l})"
+                        ));
                     }
                     continue;
                 }
@@ -295,7 +306,7 @@ impl Strategy for MabbShortStrategy {
                 })
                 .collect::<crate::error::Result<Vec<_>>>()?;
             for (i, sig) in done {
-                out[at[&i]] = sig;
+                out[at[&i]] = ParamOutcome::Signals(sig);
             }
         }
         Ok(out)
@@ -342,10 +353,10 @@ mod tests {
 
     #[test]
     fn test_trail_and_ratchet() {
-        // entry89，trail=89+10=99：high100触发，早于中线。
+        // entry89，trail=89+10=99：**close** 100 触发，早于中线。
         let (lower, mid, upper) = bands(3);
         let sig = mabb_short_signals(
-            &[101.0, 89.0, 95.0],
+            &[101.0, 89.0, 100.0],
             &[101.0, 89.0, 100.0],
             &[101.0, 89.0, 95.0],
             &lower,
@@ -394,7 +405,13 @@ mod tests {
             let single = s
                 .generate_signals_full(&close, &high, &low, &close, &close, &time, i)
                 .unwrap();
-            assert_eq!(*b, single, "param {i} batch与single不一致");
+            let b = match b {
+                crate::strategies::ParamOutcome::Signals(s) => s,
+                crate::strategies::ParamOutcome::Skipped(r) => {
+                    panic!("MABB_SHORT param {i} 不该被跳过: {r}")
+                }
+            };
+            assert_eq!(*b, single, "param {i}");
         }
     }
 

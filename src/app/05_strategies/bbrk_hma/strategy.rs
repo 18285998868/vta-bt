@@ -95,7 +95,7 @@ fn compute(
         },
     )) {
         Ok(v) => v,
-        Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+        Err(e) => return Err(crate::strategies::param_skipped(e)),
     };
     let ma = match hma(&HmaInput::from_slice(
         close,
@@ -104,7 +104,7 @@ fn compute(
         },
     )) {
         Ok(v) => v.values,
-        Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+        Err(e) => return Err(crate::strategies::param_skipped(e)),
     };
     Ok(bbrk_hma_signals(
         close,

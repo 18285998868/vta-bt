@@ -1,7 +1,7 @@
 use crate::error::AppError;
 use serde::Deserialize;
 
-use crate::config::F64Param;
+use crate::config::{F64Param, PeriodParam};
 
 /// BBRK+TTM Squeeze正统版（用户设计2）：布林带上下轨落在
 /// Keltner(EMA20 ± k·ATR14) 上下轨内部即 squeeze_on（BB inside KC，与书/ToS一致；
@@ -13,29 +13,39 @@ use crate::config::F64Param;
 pub struct BbrkTtmConfig {
     /// 布林带标准差倍数(通道宽度)。
     pub sigma: F64Param,
+    /// BB 周期(缺省 20＝旧串语义: 此前该策略把 BB 周期写死为 20)。
+    #[serde(default = "default_bblen")]
+    pub bblen: PeriodParam,
     /// Keltner 通道系数。
     pub kc: F64Param,
     /// TTM 挤压回看窗口。
-    pub ttmn: F64Param,
+    pub ttmn: PeriodParam,
+}
+
+fn default_bblen() -> PeriodParam {
+    PeriodParam::Single(20)
 }
 
 impl BbrkTtmConfig {
     /// 展开后的参数组合(按策略的笛卡尔积顺序)。
     #[must_use]
-    pub fn pairs(&self) -> Vec<(f64, f64, usize)> {
+    pub fn pairs(&self) -> Vec<(f64, usize, f64, usize)> {
         // 网格规模 = 各维度长度之积(可预知), 一次分配到位(`mem-with-capacity`)。
-        // `saturating_mul`: 笛卡尔积理论上无界, 普通 `*` 在 debug 下会溢出 panic。
-        let cap = self
-            .sigma
-            .values()
-            .len()
-            .saturating_mul(self.kc.values().len())
-            .saturating_mul(self.ttmn.values().len());
-        let mut out = Vec::with_capacity(cap.min(crate::strategies::MAX_GRID_PREALLOC));
+        // 乘积的 `saturating_mul` 与封顶逻辑集中在 `grid_prealloc` 一处
+        // (笛卡尔积理论上无界, 普通 `*` 在 debug 下会溢出 panic)。
+        let cap = crate::strategies::grid_prealloc(&[
+            self.sigma.values().len(),
+            self.bblen.values().len(),
+            self.kc.values().len(),
+            self.ttmn.values().len(),
+        ]);
+        let mut out = Vec::with_capacity(cap);
         for &s in &self.sigma.values() {
-            for &k in &self.kc.values() {
-                for &n in &self.ttmn.values() {
-                    out.push((s, k, n.round() as usize));
+            for &b in &self.bblen.values() {
+                for &k in &self.kc.values() {
+                    for &n in &self.ttmn.values() {
+                        out.push((s, b, k, n));
+                    }
                 }
             }
         }
@@ -52,8 +62,9 @@ impl BbrkTtmConfig {
     /// 任一参数越界或展开为空时返回 [`AppError`](crate::error::AppError)。
     pub fn validate(&self) -> crate::error::Result<()> {
         self.sigma.validate_range("bbrk_ttm.sigma", 0.1, 10.0)?;
+        self.bblen.validate_range("bbrk_ttm.bblen", 2, 2000)?;
         self.kc.validate_range("bbrk_ttm.kc", 0.5, 5.0)?;
-        self.ttmn.validate_range("bbrk_ttm.ttmn", 2.0, 100.0)?;
+        self.ttmn.validate_range("bbrk_ttm.ttmn", 2, 100)?;
         if self.pairs().is_empty() {
             return Err(AppError::Msg("bbrk_ttm 参数组合为空".into()));
         }
@@ -76,15 +87,21 @@ mod tests {
                 step: 0.5,
             }),
             kc: F64Param::Single(1.5),
-            ttmn: F64Param::Range(RangeParam {
-                start: 5.0,
-                end: 10.0,
-                step: 5.0,
+            ttmn: PeriodParam::Range(RangeParam {
+                start: 5,
+                end: 10,
+                step: 5,
             }),
+            bblen: crate::config::PeriodParam::Single(20),
         };
         assert_eq!(
             c.pairs(),
-            vec![(2.0, 1.5, 5), (2.0, 1.5, 10), (2.5, 1.5, 5), (2.5, 1.5, 10)]
+            vec![
+                (2.0, 20, 1.5, 5),
+                (2.0, 20, 1.5, 10),
+                (2.5, 20, 1.5, 5),
+                (2.5, 20, 1.5, 10)
+            ]
         );
     }
 }

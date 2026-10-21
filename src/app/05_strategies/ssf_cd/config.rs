@@ -15,6 +15,17 @@ pub struct SsfCdConfig {
     pub poles: PoleCount,
 }
 
+impl SsfCdConfig {
+    /// 语义校验: 单周期策略只需校验 `period` 的区间与方向。
+    ///
+    /// # Errors
+    /// `period` 越界(`start < 1` / `start > end` / `step == 0`)时返回
+    /// [`AppError`](crate::error::AppError)。
+    pub fn validate(&self) -> crate::error::Result<()> {
+        self.period.validate()
+    }
+}
+
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {

@@ -50,7 +50,7 @@ impl Strategy for AlmaStrategy {
         );
         let ma = match alma(&input) {
             Ok(v) => v.values,
-            Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+            Err(e) => return Err(crate::strategies::param_skipped(e)),
         };
         Ok(price_cross_signal(&ma, close))
     }

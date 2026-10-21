@@ -12,7 +12,7 @@ use super::config::BBRKConfig;
 /// 口径声明: EA用 Close[1] 算带(不含当根), 此处用当根收盘带 + delay1 次根执行,
 /// 同bar带内含当根收盘属 contemporaneous 可交易, 与 ATRBand 同类处理。
 pub struct BBRKStrategy {
-    sigmas: Vec<f64>,
+    pairs: Vec<(f64, usize)>,
 }
 
 impl BBRKStrategy {
@@ -20,7 +20,7 @@ impl BBRKStrategy {
     #[must_use]
     pub fn new(config: BBRKConfig) -> Self {
         Self {
-            sigmas: config.values(),
+            pairs: config.pairs(),
         }
     }
 }
@@ -63,11 +63,11 @@ impl Strategy for BBRKStrategy {
     }
 
     fn param_count(&self) -> usize {
-        self.sigmas.len()
+        self.pairs.len()
     }
 
     fn param_str(&self, idx: usize) -> String {
-        format!("sigma={}", self.sigmas[idx])
+        format!("sigma={},bblen={}", self.pairs[idx].0, self.pairs[idx].1)
     }
 
     fn generate_signals_full(
@@ -80,16 +80,21 @@ impl Strategy for BBRKStrategy {
         _time: &[i64],
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
-        self.compute(close, self.sigmas[param_idx])
+        self.compute(close, self.pairs[param_idx].0, self.pairs[param_idx].1)
     }
 }
 
 impl BBRKStrategy {
-    fn compute(&self, close: &[f64], sigma: f64) -> crate::error::Result<Vec<Signal>> {
+    fn compute(
+        &self,
+        close: &[f64],
+        sigma: f64,
+        bblen: usize,
+    ) -> crate::error::Result<Vec<Signal>> {
         let bb = match bollinger_bands(&BollingerBandsInput::from_slice(
             close,
             BollingerBandsParams {
-                period: Some(20),
+                period: Some(bblen),
                 devup: Some(sigma),
                 devdn: Some(sigma),
                 matype: Some("sma".to_string()),
@@ -97,7 +102,7 @@ impl BBRKStrategy {
             },
         )) {
             Ok(v) => v,
-            Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+            Err(e) => return Err(crate::strategies::param_skipped(e)),
         };
         Ok(bbrk_signals(
             close,
@@ -154,8 +159,10 @@ mod tests {
 
     #[test]
     fn test_name_and_params() {
-        let s = BBRKStrategy { sigmas: vec![2.0] };
+        let s = BBRKStrategy {
+            pairs: vec![(2.0, 20)],
+        };
         assert_eq!(s.name(), "BBRK");
-        assert_eq!(s.param_str(0), "sigma=2");
+        assert_eq!(s.param_str(0), "sigma=2,bblen=20");
     }
 }

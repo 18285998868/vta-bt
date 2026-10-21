@@ -1,7 +1,7 @@
 use crate::error::AppError;
 use serde::Deserialize;
 
-use crate::config::F64Param;
+use crate::config::{F64Param, PeriodParam};
 
 /// BBRK+TTM fire+动量版（书中口径改编）：挤压检测与 v1 逐位一致
 /// （BB inside KC，EMA20+ATR14 KC，离场中线），只改入口——
@@ -14,25 +14,35 @@ use crate::config::F64Param;
 pub struct BbrkTtmFireConfig {
     /// 布林带标准差倍数(通道宽度)。
     pub sigma: F64Param,
+    /// BB 周期(缺省 20＝旧串语义: 此前该策略把 BB 周期写死为 20)。
+    #[serde(default = "default_bblen")]
+    pub bblen: PeriodParam,
     /// Keltner 通道系数。
     pub kc: F64Param,
+}
+
+fn default_bblen() -> PeriodParam {
+    PeriodParam::Single(20)
 }
 
 impl BbrkTtmFireConfig {
     /// 展开后的参数组合(按策略的笛卡尔积顺序)。
     #[must_use]
-    pub fn pairs(&self) -> Vec<(f64, f64)> {
+    pub fn pairs(&self) -> Vec<(f64, usize, f64)> {
         // 网格规模 = 各维度长度之积(可预知), 一次分配到位(`mem-with-capacity`)。
-        // `saturating_mul`: 笛卡尔积理论上无界, 普通 `*` 在 debug 下会溢出 panic。
-        let cap = self
-            .sigma
-            .values()
-            .len()
-            .saturating_mul(self.kc.values().len());
-        let mut out = Vec::with_capacity(cap.min(crate::strategies::MAX_GRID_PREALLOC));
+        // 乘积的 `saturating_mul` 与封顶逻辑集中在 `grid_prealloc` 一处
+        // (笛卡尔积理论上无界, 普通 `*` 在 debug 下会溢出 panic)。
+        let cap = crate::strategies::grid_prealloc(&[
+            self.sigma.values().len(),
+            self.bblen.values().len(),
+            self.kc.values().len(),
+        ]);
+        let mut out = Vec::with_capacity(cap);
         for &s in &self.sigma.values() {
-            for &k in &self.kc.values() {
-                out.push((s, k));
+            for &b in &self.bblen.values() {
+                for &k in &self.kc.values() {
+                    out.push((s, b, k));
+                }
             }
         }
         out
@@ -72,7 +82,8 @@ mod tests {
                 end: 1.5,
                 step: 0.5,
             }),
+            bblen: crate::config::PeriodParam::Single(20),
         };
-        assert_eq!(c.pairs(), vec![(2.5, 1.0), (2.5, 1.5)]);
+        assert_eq!(c.pairs(), vec![(2.5, 20, 1.0), (2.5, 20, 1.5)]);
     }
 }

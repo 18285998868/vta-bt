@@ -101,7 +101,7 @@ fn compute(
         },
     )) {
         Ok(v) => v,
-        Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+        Err(e) => return Err(crate::strategies::param_skipped(e)),
     };
     let adx_vals = match adx(&AdxInput::from_slices(
         high,
@@ -112,7 +112,7 @@ fn compute(
         },
     )) {
         Ok(v) => v.values,
-        Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+        Err(e) => return Err(crate::strategies::param_skipped(e)),
     };
     Ok(bbrk_adx_signals(
         close,

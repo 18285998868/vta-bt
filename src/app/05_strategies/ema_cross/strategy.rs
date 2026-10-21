@@ -21,6 +21,7 @@ impl EmaCrossStrategy {
     }
 }
 
+#[must_use]
 fn ema_values(close: &[f64], period: usize) -> Option<Vec<f64>> {
     let input = EmaInput::from_slice(
         close,
@@ -58,7 +59,9 @@ impl Strategy for EmaCrossStrategy {
         let (fast_p, slow_p) = self.pairs[param_idx];
         let (Some(fast), Some(slow)) = (ema_values(close, fast_p), ema_values(close, slow_p))
         else {
-            return Ok(vec![Signal::Hold; close.len()]);
+            return Err(crate::strategies::param_skipped(format!(
+                "EMA_CROSS: EMA 计算失败 (fast={fast_p}, slow={slow_p})"
+            )));
         };
         let n = close.len().min(fast.len()).min(slow.len());
         let mut sig = vec![Signal::Hold; n];

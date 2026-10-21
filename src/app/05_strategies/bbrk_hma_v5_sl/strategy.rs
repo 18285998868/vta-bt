@@ -113,7 +113,7 @@ pub fn bbrk_hma_v5_sl_signals(
                 pos = 0;
             }
         } else if pos == 2 {
-            if low[i] <= entry - stopd {
+            if close[i] <= entry - stopd {
                 sig[i] = Signal::Close;
                 pos = 0;
                 continue;
@@ -130,7 +130,7 @@ pub fn bbrk_hma_v5_sl_signals(
                 pos = 0;
             }
         } else {
-            if high[i] >= entry + stopd {
+            if close[i] >= entry + stopd {
                 sig[i] = Signal::Close;
                 pos = 0;
                 continue;
@@ -173,7 +173,7 @@ fn compute(
         },
     )) {
         Ok(v) => v,
-        Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+        Err(e) => return Err(crate::strategies::param_skipped(e)),
     };
     let ma = match hma(&HmaInput::from_slice(
         close,
@@ -182,7 +182,7 @@ fn compute(
         },
     )) {
         Ok(v) => v.values,
-        Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+        Err(e) => return Err(crate::strategies::param_skipped(e)),
     };
     // ATR失败不拦入口：降级为NaN序列→逆势腿止损禁用、闩锁照常。
     let av = match atr(&AtrInput::from_slices(
@@ -277,9 +277,9 @@ mod tests {
 
     #[test]
     fn test_stop_fires_on_runaway() {
-        // 进多后一路下跌触止损：entry89−2*5=79，low78触发。
+        // 进多后一路下跌触止损：entry89−2*5=79，**close** 78 触发(收盘价判定)。
         let (lower, mid, upper) = bands(3);
-        let close = vec![101.0, 89.0, 80.0];
+        let close = vec![101.0, 89.0, 78.0];
         let high = close.clone();
         let low = vec![101.0, 89.0, 78.0];
         let hma = vec![95.0, 85.0, 84.0];

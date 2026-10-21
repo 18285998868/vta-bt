@@ -1,4 +1,4 @@
-use crate::config::F64Param;
+use crate::config::{F64Param, PeriodParam};
 use crate::error::AppError;
 use crate::strategies::mabb_short::MABB_MA_NAMES;
 use serde::Deserialize;
@@ -10,11 +10,11 @@ pub struct MaAtrConfig {
     /// 均线类型名列表(取值见对应策略的 `*_MA_NAMES`)。
     pub ma: Vec<String>,
     /// 均线周期。
-    pub len: F64Param,
+    pub len: PeriodParam,
     /// 阈值倍数。
     pub mult: F64Param,
     /// ATR 周期。
-    pub atrlen: F64Param,
+    pub atrlen: PeriodParam,
 }
 
 impl MaAtrConfig {
@@ -22,19 +22,20 @@ impl MaAtrConfig {
     #[must_use]
     pub fn quints(&self) -> Vec<(String, usize, f64, usize)> {
         // 网格规模 = 各维度长度之积(可预知), 一次分配到位(`mem-with-capacity`)。
-        // `saturating_mul`: 笛卡尔积理论上无界, 普通 `*` 在 debug 下会溢出 panic。
-        let cap = self
-            .ma
-            .len()
-            .saturating_mul(self.len.values().len())
-            .saturating_mul(self.mult.values().len())
-            .saturating_mul(self.atrlen.values().len());
-        let mut out = Vec::with_capacity(cap.min(crate::strategies::MAX_GRID_PREALLOC));
+        // 乘积的 `saturating_mul` 与封顶逻辑集中在 `grid_prealloc` 一处
+        // (笛卡尔积理论上无界, 普通 `*` 在 debug 下会溢出 panic)。
+        let cap = crate::strategies::grid_prealloc(&[
+            self.ma.len(),
+            self.len.values().len(),
+            self.mult.values().len(),
+            self.atrlen.values().len(),
+        ]);
+        let mut out = Vec::with_capacity(cap);
         for name in &self.ma {
             for &l in &self.len.values() {
                 for &k in &self.mult.values() {
                     for &a in &self.atrlen.values() {
-                        out.push((name.clone(), l.round() as usize, k, a.round() as usize));
+                        out.push((name.clone(), l, k, a));
                     }
                 }
             }
@@ -47,9 +48,9 @@ impl MaAtrConfig {
     /// # Errors
     /// 任一参数越界或展开为空时返回 [`AppError`](crate::error::AppError)。
     pub fn validate(&self) -> crate::error::Result<()> {
-        self.len.validate_range("ma_atr.len", 1.0, 2000.0)?;
+        self.len.validate_range("ma_atr.len", 1, 2000)?;
         self.mult.validate_range("ma_atr.mult", 0.1, 20.0)?;
-        self.atrlen.validate_range("ma_atr.atrlen", 2.0, 500.0)?;
+        self.atrlen.validate_range("ma_atr.atrlen", 2, 500)?;
         for name in &self.ma {
             if !MABB_MA_NAMES.contains(&name.as_str()) {
                 return Err(AppError::Msg(format!(
@@ -73,9 +74,9 @@ mod tests {
     fn quints_cartesian() {
         let c = MaAtrConfig {
             ma: vec!["sma".into()],
-            len: F64Param::Single(20.0),
+            len: PeriodParam::Single(20),
             mult: F64Param::Single(2.0),
-            atrlen: F64Param::Single(14.0),
+            atrlen: PeriodParam::Single(14),
         };
         assert_eq!(c.quints(), vec![("sma".to_string(), 20, 2.0, 14)]);
     }

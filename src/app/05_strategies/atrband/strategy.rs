@@ -5,6 +5,11 @@ use crate::strategies::{Signal, Strategy, price_cross_signal};
 
 use super::config::ATRBandConfig;
 
+/// 中线 SMA 周期(文档口径 "ATR 带" 的 20)。
+const BASIS_PERIOD: usize = 20;
+/// ATR 长度(同上的 14)。
+const ATR_PERIOD: usize = 14;
+
 /// ATR 通道突破(中线 SMA20 + ATR14 固定, 乘数 k 变)。
 /// 上穿上轨 Buy, 下穿下轨 Sell(翻仓语义由引擎处理)。NaN→Hold。
 pub struct ATRBandStrategy {
@@ -27,18 +32,25 @@ fn compute(
     close: &[f64],
     mult: f64,
 ) -> crate::error::Result<Vec<Signal>> {
-    let basis = match sma(&SmaInput::from_slice(close, SmaParams { period: Some(20) })) {
+    let basis = match sma(&SmaInput::from_slice(
+        close,
+        SmaParams {
+            period: Some(BASIS_PERIOD),
+        },
+    )) {
         Ok(v) => v.values,
-        Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+        Err(e) => return Err(crate::strategies::param_skipped(e)),
     };
     let atr_vals = match atr(&AtrInput::from_slices(
         high,
         low,
         close,
-        AtrParams { length: Some(14) },
+        AtrParams {
+            length: Some(ATR_PERIOD),
+        },
     )) {
         Ok(v) => v.values,
-        Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+        Err(e) => return Err(crate::strategies::param_skipped(e)),
     };
     let n = close.len().min(basis.len()).min(atr_vals.len());
     let mut up = vec![f64::NAN; n];

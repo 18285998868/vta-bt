@@ -26,6 +26,7 @@ impl SsfStCdStrategy {
 
 /// 2 极 = 社区版 (无预平均): c1*Price[i] + b*SSF[i-1] - a2*SSF[i-2], 常数 sqrt(2)。
 /// 与 `ssf_st` 共用同一实现, 保证除方向过滤外行为完全一致。
+#[must_use]
 fn ssf_filter(close: &[f64], period: usize) -> Vec<f64> {
     use std::f64::consts::PI;
     let x = PI * 2.0_f64.sqrt() / period as f64;
@@ -79,7 +80,11 @@ impl Strategy for SsfStCdStrategy {
             PoleCount::Two => ssf_filter(close, period),
             PoleCount::Three => match supersmoother_3_pole(close, period) {
                 Some(v) => v,
-                None => return Ok(vec![Signal::Hold; close.len()]),
+                None => {
+                    return Err(crate::strategies::param_skipped(format!(
+                        "SSF_ST_CD: 3 极超平滑器计算失败 (period={period})"
+                    )));
+                }
             },
         };
         let mut signals = price_cross_signal(&values, close);

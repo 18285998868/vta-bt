@@ -79,7 +79,7 @@ impl Strategy for RSI2Strategy {
         let (b, s) = self.pairs[param_idx];
         let rsi_vals = match rsi(&RsiInput::from_slice(close, RsiParams { period: Some(2) })) {
             Ok(v) => v.values,
-            Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+            Err(e) => return Err(crate::strategies::param_skipped(e)),
         };
         Ok(rsi2_signals(close, &rsi_vals, b, s))
     }

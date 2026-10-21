@@ -178,12 +178,50 @@ pub mod wma;
 pub mod zlema;
 
 pub use shared::{
-    CachedBands, DayBar, MAX_GRID_PREALLOC, PoleCount, Signal, aggregate_days, bars_per_year,
-    candle_direction_filter, expand_f64_range, is_known_timeframe, money_flow_index,
-    price_cross_signal, rolling_highest, rolling_lowest, shift_right_1, supersmoother_3_pole,
-    utc_day_index,
+    CachedBands, DEFAULT_BB_PERIOD, DayBar, MAX_GRID_PREALLOC, PoleCount, Signal, aggregate_days,
+    bars_per_year, candle_direction_filter, expand_f64_range, grid_prealloc, is_known_timeframe,
+    money_flow_index, pct_b, price_cross_signal, rolling_highest, rolling_lowest, shift_right_1,
+    supersmoother_3_pole, utc_day_index,
 };
 pub use sma_cd::SmaCdStrategy;
+
+/// 单个参数档位的求值结果。
+///
+/// 存在的理由: "**这一档算不出来**"必须与"**这一档跑了但没信号**"在报告里
+/// **可区分**。前者是 [`crate::app::RunStatus::Invalid`], 后者是
+/// [`crate::app::RunStatus::NoSignals`]。在引入本类型之前, 66/67 个策略把
+/// 算不出来的档位**静默**降级成"全程 Hold", 于是它在报告里长得和
+/// "零波动低风险"的真实结论**一模一样**(都是 `trades=0 / pnl=0 / sharpe=0`),
+/// 而 [`crate::strategies::Strategy`] 的契约明写"不做静默降级"。
+#[derive(Debug, Clone, PartialEq)]
+pub enum ParamOutcome {
+    /// 算出来了: 该档位的逐 bar 信号。
+    Signals(Vec<Signal>),
+    /// 该档位**不可计算**(数据/参数不足)。`reason` 是可读原因, 会进日志。
+    Skipped(String),
+}
+
+impl ParamOutcome {
+    /// 取信号; 不可计算时返回 `None`。
+    #[must_use]
+    pub fn signals(&self) -> Option<&[Signal]> {
+        match self {
+            Self::Signals(s) => Some(s),
+            Self::Skipped(_) => None,
+        }
+    }
+}
+
+/// 构造"该参数档位不可计算"的错误。
+///
+/// 供策略侧统一使用: 算不出指标时返回它, 引擎会把它记成
+/// [`crate::app::RunStatus::Invalid`] 并继续跑, 而不是静默降级。
+#[must_use]
+pub fn param_skipped(reason: impl std::fmt::Display) -> crate::error::AppError {
+    crate::error::AppError::ParamSkipped {
+        reason: reason.to_string(),
+    }
+}
 
 /// 策略接口。
 pub trait Strategy: Send + Sync {
@@ -198,7 +236,9 @@ pub trait Strategy: Send + Sync {
     fn param_str(&self, idx: usize) -> String;
 
     /// 生成信号。返回 `Err` 表示该参数/数据无法计算 (例如 VWMA 缺少等长 volume),
-    /// 不做静默降级。
+    /// **不做静默降级** —— 若属"预期内的不可计算", 请返回
+    /// [`crate::error::AppError::ParamSkipped`] (经 [`param_skipped`] 构造),
+    /// 引擎会把它记成 [`crate::app::RunStatus::Invalid`] 并**继续**跑下一档。
     // 参数全为 `&[f64]`, 编译器无法校验顺序 —— 顺序契约由
     // `test_full_arg_order_contract` 显式锁定。
     #[allow(clippy::too_many_arguments)]
@@ -220,6 +260,9 @@ pub trait Strategy: Send + Sync {
     /// 循环等价）；重参数策略重写本方法做 hoist。
     /// 引擎是唯一调用方（逐批调，内存预算逻辑不变）。
     ///
+    /// **逐档独立**: 某一档不可计算时, 该档返回 [`ParamOutcome::Skipped`],
+    /// **其余档照常计算** —— 绝不因为一档参数就中断整轮。
+    ///
     /// **契约**: 返回长度必须等于 `range` 长度, 否则 `run_combo` 会**返回
     /// [`AppError`](crate::error::AppError)** —— 契约违反是**调用方的 bug**,
     /// 故走错误通道而非 panic(panic 会让已经跑了几小时的整轮回测在最后一个
@@ -234,11 +277,21 @@ pub trait Strategy: Send + Sync {
         volume: &[f64],
         time: &[i64],
         range: std::ops::Range<usize>,
-    ) -> crate::error::Result<Vec<Vec<Signal>>> {
+    ) -> crate::error::Result<Vec<ParamOutcome>> {
         use rayon::prelude::*;
         range
             .into_par_iter()
-            .map(|i| self.generate_signals_full(open, high, low, close, volume, time, i))
+            .map(|i| {
+                match self.generate_signals_full(open, high, low, close, volume, time, i) {
+                    Ok(s) => Ok(ParamOutcome::Signals(s)),
+                    // "不可计算"是**预期内**的: 记为该档跳过, 不中断整轮。
+                    Err(crate::error::AppError::ParamSkipped { reason }) => {
+                        Ok(ParamOutcome::Skipped(reason))
+                    }
+                    // 其它错误是**真 bug**: 中断整轮, 让调用方拿到可读信息。
+                    Err(e) => Err(e),
+                }
+            })
             .collect()
     }
 }

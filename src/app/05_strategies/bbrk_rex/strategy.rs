@@ -2,7 +2,7 @@ use vector_ta::indicators::bollinger_bands::{
     BollingerBandsInput, BollingerBandsParams, bollinger_bands,
 };
 
-use crate::strategies::{Signal, Strategy};
+use crate::strategies::{ParamOutcome, Signal, Strategy};
 
 use super::config::BbrkRexConfig;
 
@@ -144,7 +144,7 @@ fn compute(
         },
     )) {
         Ok(v) => v,
-        Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+        Err(e) => return Err(crate::strategies::param_skipped(e)),
     };
     Ok(bbrk_rex_signals(
         open,
@@ -198,7 +198,7 @@ impl Strategy for BbrkRexStrategy {
         _volume: &[f64],
         _time: &[i64],
         range: std::ops::Range<usize>,
-    ) -> crate::error::Result<Vec<Vec<Signal>>> {
+    ) -> crate::error::Result<Vec<ParamOutcome>> {
         use rayon::prelude::*;
         use std::collections::HashMap;
         use vector_ta::indicators::bollinger_bands::{
@@ -227,10 +227,12 @@ impl Strategy for BbrkRexStrategy {
             .map(|idx| {
                 let (s, l, n, m) = self.pairs[idx];
                 match bbmap.get(&(s.to_bits(), l)) {
-                    Some(Some((lower, mid, upper))) => Ok(bbrk_rex_signals(
+                    Some(Some((lower, mid, upper))) => Ok(ParamOutcome::Signals(bbrk_rex_signals(
                         open, high, low, close, lower, mid, upper, n, m,
-                    )),
-                    _ => Ok(vec![Signal::Hold; close.len()]),
+                    ))),
+                    _ => Ok(ParamOutcome::Skipped(format!(
+                        "BBRK_REX: BB 指标缺失 (sigma={s}, bblen={l})"
+                    ))),
                 }
             })
             .collect()
@@ -314,6 +316,12 @@ mod tests {
             .unwrap();
         assert_eq!(batched.len(), 3);
         for (i, sig) in batched.iter().enumerate() {
+            let sig = match sig {
+                crate::strategies::ParamOutcome::Signals(s) => s,
+                crate::strategies::ParamOutcome::Skipped(r) => {
+                    panic!("BBRK_REX param {i} 不该被跳过: {r}")
+                }
+            };
             let one = st
                 .generate_signals_full(&open, &high, &low, &close, &[], &time, i)
                 .unwrap();

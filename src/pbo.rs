@@ -57,6 +57,50 @@ pub fn pick_s(t_bars: usize) -> Option<usize> {
     }
 }
 
+/// 每块实际覆盖的**收益笔数**(与 [`cscv`] 的累加映射严格同源)。
+///
+/// 累加映射是 `b = i * s / (t - 1)`(整除下取整), 于是块 `b` 覆盖的收益下标
+/// `i` 是区间 `[b·m/s, (b+1)·m/s)`, 其中 `m = t - 1`(首 bar 无收益)。
+/// 该区间内的**整数**个数为
+///
+/// ```text
+/// count(b) = ceil((b+1)·m/s) − ceil(b·m/s)
+/// ```
+///
+/// **为什么必须用 ceil 而不是整除差**: 整除差 `b·m/s .. (b+1)·m/s` 的边界是
+/// **floor** 语义, 与上面 floor 分块的边界差一, 在 `s >= 2` 时**永远不相等**
+/// —— 因为 `t` 是 `s` 的倍数, 故 `s ∤ (t−1)`。实测 `t=32,s=4` 时真实笔数为
+/// `[8,8,8,7]`, 整除差给出的是 `[7,8,8,8]`。
+///
+/// 笔数 `cnt` 是 Sharpe 的分母(均值 `sum/cnt`、方差自由度 `cnt−1`), 用错笔数
+/// 会同时污染两者: 均值被放大/缩小(上例 15 vs 16 ⇒ 6.7%), 方差分母同步错;
+/// 更糟的是 `cnt` 被**低估**时 `sq − sum²/cnt` 可能变负, 于是方差被夹到 0,
+/// 该策略的 IS Sharpe 被**静默强制为 0** —— 低波动策略(最可能成为 IS 最优的
+/// 那种)首当其冲。最终 `r_is`/`r_oos` 的 argmax 被改变, φ 被算错。
+///
+/// 不变量: `count(b)` 之和恒为 `t − 1`(总收益笔数)。
+///
+/// # Examples
+/// ```
+/// use vta::pbo::block_counts;
+/// assert_eq!(block_counts(32, 4), vec![8, 8, 8, 7]);
+/// assert_eq!(block_counts(512, 2), vec![256, 255]);
+/// ```
+#[must_use]
+pub fn block_counts(t: usize, s: usize) -> Vec<usize> {
+    if s == 0 {
+        return Vec::new();
+    }
+    // `t < 2` 时无任何收益(首 bar 无收益), 全部块笔数为 0。
+    let m = t.saturating_sub(1);
+    if m == 0 {
+        return vec![0; s];
+    }
+    (0..s)
+        .map(|b| ((b + 1) * m).div_ceil(s) - (b * m).div_ceil(s))
+        .collect()
+}
+
 /// 两遍法 Sharpe 的**参照实现**(先物化收益数组, 再单遍统计)。
 ///
 /// 仅测试用: 它是 [`sharpe_of_curve`] 的正确性基准 —— 刻意用与后者**不同**的写法
@@ -139,12 +183,8 @@ pub fn cscv(curves: &[impl AsRef<[f64]>], s: usize, bpy: f64) -> crate::error::R
             sqs[j][b] += v * v;
         }
     }
-    // 块 b 覆盖的收益下标(与上式同映射): Sharpe 分母用实际笔数(首 bar 无收益, T-1 个)。
-    let block_n = |b: usize| {
-        let lo = b * (t - 1) / s;
-        let hi = (b + 1) * (t - 1) / s;
-        hi - lo
-    };
+    // 每块**实际**覆盖的收益笔数(与上面的累加映射**严格同源**)。
+    let counts = block_counts(t, s);
     let sharpe_of_blocks = |blocks: &[usize]| -> Vec<f64> {
         (0..n)
             .map(|j| {
@@ -154,7 +194,7 @@ pub fn cscv(curves: &[impl AsRef<[f64]>], s: usize, bpy: f64) -> crate::error::R
                 for &b in blocks {
                     sum += sums[j][b];
                     sq += sqs[j][b];
-                    cnt += block_n(b);
+                    cnt += counts[b];
                 }
                 if cnt < 2 {
                     return 0.0;
@@ -278,18 +318,33 @@ pub fn run_pbo_report(dir: &std::path::Path) -> crate::error::Result<()> {
         "group", "N", "T", "S", "logits", "φ", "判据", "全样本最优SR*", "衰减"
     );
     println!("{}", "-".repeat(96));
+    let mut computed = 0usize;
+    let mut skipped = 0usize;
     for ((sym, tf, strat), mut members) in groups {
-        members.sort_by(|a, b| a.0.cmp(&b.0));
+        // 同一组内 params 可能重复(重复跑/复制 detail 目录)。若不剔重, CSCV 会把
+        // 同一策略的同一参数当成两个"策略", N 被虚增、φ 被稀释。
+        // 同名参数按曲线长度降序, 保证 `dedup_by` 保留最长(最可能完整)的一份。
+        members.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| b.1.len().cmp(&a.1.len())));
+        let before = members.len();
+        members.dedup_by(|a, b| a.0 == b.0);
+        if members.len() != before {
+            tracing::warn!(
+                "{sym}/{tf}/{strat}: 去掉 {} 条重复 params 曲线",
+                before - members.len()
+            );
+        }
         if members.len() < 10 {
             tracing::warn!(
                 "{sym}/{tf}/{strat}: N={} <10, 跳过(名义N过小)",
                 members.len()
             );
+            skipped += 1;
             continue;
         }
         let t = members.iter().map(|(_, v)| v.len()).min().unwrap_or(0);
         let Some(s) = pick_s(t) else {
             tracing::warn!("{sym}/{tf}/{strat}: T={t} <32, 跳过(块长不足)");
+            skipped += 1;
             continue;
         };
         // 年化口径必须可靠: `bars_per_year` 对未知周期会**静默回退 365**,
@@ -298,6 +353,7 @@ pub fn run_pbo_report(dir: &std::path::Path) -> crate::error::Result<()> {
         // φ 与 degradation 被静默算错且无任何提示。
         if !crate::strategies::is_known_timeframe(&tf) {
             tracing::warn!("[跳过] {sym}/{tf}/{strat}: 未知周期, 年化口径不可靠");
+            skipped += 1;
             continue;
         }
         // **零拷贝**: 直接借用各曲线切片, 不再克隆一份 T×N 矩阵
@@ -322,8 +378,12 @@ pub fn run_pbo_report(dir: &std::path::Path) -> crate::error::Result<()> {
         if r.n_logits < 70 {
             tracing::warn!("{sym}/{tf}/{strat}: logits<70, λ 分布稀疏, φ 估计误差大");
         }
+        computed += 1;
     }
-    println!("\n判据: φ>0.05 按 Neyman-Pearson 惯例拒绝该模型(C3)。");
+    // 参与计算的组数必须**显式**告知: 三条跳过分支都是 `continue` + `warn!`,
+    // 若全部组被跳过, 表里一行都没有, 而收尾仍打印判据 —— 用户会以为"跑完了"。
+    println!("\n共 {computed} 组参与计算 / {skipped} 组被跳过。");
+    println!("判据: φ>0.05 按 Neyman-Pearson 惯例拒绝该模型(C3)。");
     println!("* 全样本最优SR 是**拿全样本挑出来的乐观值**, 不是业绩证据; 真实证据是 φ。");
     Ok(())
 }
@@ -587,5 +647,202 @@ mod tests {
             a.full_sample_best_sharpe.to_bits(),
             b.full_sample_best_sharpe.to_bits()
         );
+    }
+
+    /// **核心不变量**: 每块笔数必须与 `cscv` 的实际累加映射**逐块相等**。
+    ///
+    /// 这条直接锁死曾经的缺陷: 笔数曾用 `b·m/s .. (b+1)·m/s` 的整除差
+    /// (floor 边界)推算, 而累加用的是 floor 分块 `b = i·s/(t−1)`(ceil 边界),
+    /// 两者在 `s ≥ 2` 时**永远不相等** ⇒ Sharpe 分母错 ⇒ φ 被算错。
+    ///
+    /// 参照实现是**暴力计数**: 把每个收益真的投进它所属的块再数 `len()`,
+    /// 不依赖任何边界推导 —— 故"两边同时写错"不可能发生。
+    #[test]
+    fn block_counts_match_brute_force_accumulation() {
+        for t in [2usize, 4, 8, 16, 32, 64, 128, 256, 512, 1000] {
+            for s in [2usize, 4, 8, 16] {
+                if t % s != 0 {
+                    continue;
+                }
+                let mut brute = vec![0usize; s];
+                for i in 0..(t - 1) {
+                    let b = (i * s / (t - 1)).min(s - 1);
+                    brute[b] += 1;
+                }
+                assert_eq!(
+                    super::block_counts(t, s),
+                    brute,
+                    "t={t} s={s}: 块笔数必须与实际累加一致"
+                );
+            }
+        }
+    }
+
+    /// 每块笔数之和恒等于总收益笔数 `t − 1`。
+    #[test]
+    fn block_counts_sum_to_total_return_count() {
+        for t in [32usize, 64, 256, 512] {
+            for s in [2usize, 4, 8, 16] {
+                if t % s != 0 {
+                    continue;
+                }
+                let sum: usize = super::block_counts(t, s).iter().sum();
+                assert_eq!(sum, t - 1, "t={t} s={s}: 笔数总和必须等于 t-1");
+            }
+        }
+    }
+
+    /// 曾经的缺陷形态必须被本测试**区分出来**(= 测试有牙齿)。
+    ///
+    /// 旧口径用整除差推算笔数, 与真实累加**逐块不等**。若有人把
+    /// [`super::block_counts`] 改回旧口径, 本测试立即失败。
+    #[test]
+    fn legacy_floor_based_counts_are_provably_wrong() {
+        // 旧口径: `b·m/s .. (b+1)·m/s` 的整除差。
+        let legacy = |t: usize, s: usize, b: usize| {
+            let m = t - 1;
+            (b + 1) * m / s - b * m / s
+        };
+        // t=32, s=4: 真实 [8,8,8,7], 旧口径 [7,8,8,8] —— 逐块都不等。
+        assert_eq!(super::block_counts(32, 4), vec![8, 8, 8, 7]);
+        assert_eq!(
+            (0..4).map(|b| legacy(32, 4, b)).collect::<Vec<_>>(),
+            vec![7, 8, 8, 8]
+        );
+        // 更普适地: 在 t、s 遍历下, 旧口径与真实口径**从不**完全相等。
+        for t in [32usize, 64, 128, 256, 512] {
+            for s in [2usize, 4, 8, 16] {
+                if t % s != 0 {
+                    continue;
+                }
+                let real = super::block_counts(t, s);
+                let old: Vec<usize> = (0..s).map(|b| legacy(t, s, b)).collect();
+                assert_ne!(real, old, "t={t} s={s}: 旧口径与真实口径不应相同");
+            }
+        }
+    }
+
+    /// CSCV 的**端到端参照实现**: 物化收益、按块**实际计数**、两遍法算方差。
+    ///
+    /// 与 [`cscv`] 的三处刻意差异(使"两边同时写错同一处"不可能发生):
+    /// 1. 笔数由 `Vec::len()` 实际计数得到, 而非公式推算;
+    /// 2. 收益**真的装进**每块的 `Vec`(而 `cscv` 只累加一阶/二阶矩);
+    /// 3. 方差用两遍法(先均值再离差平方和), 而 `cscv` 用单遍代数式。
+    ///
+    /// `cscv` 的收益: 不物化 T×N 收益矩阵(1m×500 规模省 4 GB)。
+    /// 本参照实现没有这个约束, 故可作为独立基准。
+    fn cscv_materialized(curves: &[Vec<f64>], s: usize, bpy: f64) -> PboResult {
+        let n = curves.len();
+        let t = curves.iter().map(|c| c.len()).min().unwrap_or(0);
+        let t = t - (t % s);
+        let m = t - 1;
+
+        // 物化: 每条曲线 → 每块的收益 Vec(笔数由 len() 实际给出)。
+        let blocks: Vec<Vec<Vec<f64>>> = curves
+            .iter()
+            .map(|c| {
+                let rets: Vec<f64> = crate::engine::bar_log_returns(&c[..t]).collect();
+                let mut out: Vec<Vec<f64>> = vec![Vec::new(); s];
+                for (i, v) in rets.iter().enumerate() {
+                    let b = (i * s / m).min(s - 1);
+                    out[b].push(*v);
+                }
+                out
+            })
+            .collect();
+
+        let sharpe_of_blocks = |j: usize, sel: &[usize]| -> f64 {
+            let mut vals: Vec<f64> = Vec::new();
+            for &b in sel {
+                vals.extend_from_slice(&blocks[j][b]);
+            }
+            sharpe_of(&vals, bpy)
+        };
+
+        let half = s / 2;
+        let mut neg = 0usize;
+        let mut total = 0usize;
+        let mut deg_sum = 0.0;
+        let all: u32 = (1u32 << s) - 1;
+        let mut mask = (1u32 << half) - 1;
+        while mask <= all {
+            let mut in_c: Vec<usize> = Vec::new();
+            let mut out_c: Vec<usize> = Vec::new();
+            for b in 0..s {
+                if mask & (1u32 << b) != 0 {
+                    in_c.push(b);
+                } else {
+                    out_c.push(b);
+                }
+            }
+            let r_is: Vec<f64> = (0..n).map(|j| sharpe_of_blocks(j, &in_c)).collect();
+            let best = r_is
+                .iter()
+                .enumerate()
+                .max_by(|a, b| a.1.total_cmp(b.1))
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+            let r_oos: Vec<f64> = (0..n).map(|j| sharpe_of_blocks(j, &out_c)).collect();
+            let worse = r_oos.iter().filter(|v| **v < r_oos[best]).count();
+            let omega = (worse + 1) as f64 / (n + 1) as f64;
+            let lambda = (omega / (1.0 - omega)).ln();
+            if lambda < 0.0 {
+                neg += 1;
+            }
+            total += 1;
+            deg_sum += r_oos[best] - r_is[best];
+            let c = mask.isolate_lowest_one();
+            let r = mask + c;
+            if r == 0 {
+                break;
+            }
+            mask = (((r ^ mask) >> 2) / c) | r;
+        }
+
+        PboResult {
+            n_strategies: n,
+            t_bars: t,
+            s_blocks: s,
+            n_logits: total,
+            pbo: neg as f64 / total.max(1) as f64,
+            full_sample_best_idx: 0,
+            full_sample_best_sharpe: 0.0,
+            degradation: deg_sum / total.max(1) as f64,
+        }
+    }
+
+    /// `cscv`(不物化收益)必须与「物化后逐块实际计数」的参照实现**一致**。
+    ///
+    /// 这条是分块口径的端到端安全网: 笔数口径一旦与实际累加脱节
+    /// (曾经的 floor/ceil 边界错配), IS/OOS Sharpe 就被污染, φ 随之出错,
+    /// 而**没有任何**现有测试会发现 —— 故此处用完全不同的写法做交叉验证。
+    #[test]
+    fn cscv_matches_materialized_reference() {
+        let bpy = 252.0;
+        for (n, t, s, seed) in [
+            (10usize, 64usize, 4usize, 5u64),
+            (12, 128, 4, 11),
+            (10, 256, 8, 23),
+            (8, 512, 16, 31),
+            (16, 400, 4, 47),
+        ] {
+            let curves = noise_curves(n, t, seed);
+            let got = cscv(&curves, s, bpy).expect("合法口径的 CSCV 必须成功");
+            let want = cscv_materialized(&curves, s, bpy);
+            assert_eq!(got.n_logits, want.n_logits, "n={n} t={t} s={s}");
+            assert_eq!(
+                got.pbo.to_bits(),
+                want.pbo.to_bits(),
+                "n={n} t={t} s={s}: φ 必须与参照实现逐位一致 ({} vs {})",
+                got.pbo,
+                want.pbo
+            );
+            assert!(
+                (got.degradation - want.degradation).abs() < 1e-9,
+                "n={n} t={t} s={s}: 衰减必须一致 ({} vs {})",
+                got.degradation,
+                want.degradation
+            );
+        }
     }
 }

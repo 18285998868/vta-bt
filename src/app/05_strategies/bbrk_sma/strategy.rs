@@ -77,6 +77,7 @@ pub fn bbrk_sma_signals(
     sig
 }
 
+#[must_use]
 fn rolling_sma(close: &[f64], len: usize) -> Vec<f64> {
     let n = close.len();
     let mut out = vec![f64::NAN; n];
@@ -119,7 +120,7 @@ fn compute(
         },
     )) {
         Ok(v) => v,
-        Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+        Err(e) => return Err(crate::strategies::param_skipped(e)),
     };
     let sma = rolling_sma(close, reg);
     Ok(bbrk_sma_signals(

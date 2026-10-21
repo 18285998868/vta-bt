@@ -21,9 +21,10 @@ impl AtmaConfig {
         let ups: Vec<usize> = (ru.start..=ru.end).step_by(ru.step).collect();
         let downs: Vec<usize> = (rd.start..=rd.end).step_by(rd.step).collect();
         // 网格规模 = 各维度长度之积(可预知), 一次分配到位(`mem-with-capacity`)。
-        // `saturating_mul`: 笛卡尔积理论上无界, 普通 `*` 在 debug 下会溢出 panic。
-        let cap = ups.len().saturating_mul(downs.len());
-        let mut out = Vec::with_capacity(cap.min(crate::strategies::MAX_GRID_PREALLOC));
+        // 乘积的 `saturating_mul` 与封顶逻辑集中在 `grid_prealloc` 一处
+        // (笛卡尔积理论上无界, 普通 `*` 在 debug 下会溢出 panic)。
+        let cap = crate::strategies::grid_prealloc(&[ups.len(), downs.len()]);
+        let mut out = Vec::with_capacity(cap);
         for &u in &ups {
             for &d in &downs {
                 out.push((u, d));

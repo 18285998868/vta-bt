@@ -21,9 +21,10 @@ impl RSI2Config {
         let bs = self.buy.values();
         let ss = self.sell.values();
         // 网格规模 = 各维度长度之积(可预知), 一次分配到位(`mem-with-capacity`)。
-        // `saturating_mul`: 笛卡尔积理论上无界, 普通 `*` 在 debug 下会溢出 panic。
-        let cap = bs.len().saturating_mul(ss.len());
-        let mut out = Vec::with_capacity(cap.min(crate::strategies::MAX_GRID_PREALLOC));
+        // 乘积的 `saturating_mul` 与封顶逻辑集中在 `grid_prealloc` 一处
+        // (笛卡尔积理论上无界, 普通 `*` 在 debug 下会溢出 panic)。
+        let cap = crate::strategies::grid_prealloc(&[bs.len(), ss.len()]);
+        let mut out = Vec::with_capacity(cap);
         for &b in &bs {
             for &s in &ss {
                 out.push((b, s));

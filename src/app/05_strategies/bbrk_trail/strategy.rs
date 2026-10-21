@@ -98,7 +98,7 @@ fn compute(
         },
     )) {
         Ok(v) => v,
-        Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+        Err(e) => return Err(crate::strategies::param_skipped(e)),
     };
     let atr_vals = match atr(&AtrInput::from_slices(
         high,
@@ -109,7 +109,7 @@ fn compute(
         },
     )) {
         Ok(v) => v.values,
-        Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+        Err(e) => return Err(crate::strategies::param_skipped(e)),
     };
     // 前 N 根极值（不含当根，Donchian 经典口径）减/加 k·ATR。
     let hh = shift_right_1(&rolling_highest(high, TRAIL_N));

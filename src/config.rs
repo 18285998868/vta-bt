@@ -170,17 +170,27 @@ impl Config {
     /// 语义校验。
     ///
     /// # Errors
-    /// 品种/周期为空、周期未知或策略参数非法时返回 [`AppError`]。
+    /// 品种/周期为空、**品种/周期含路径穿越字符**、周期未知或策略参数非法时
+    /// 返回 [`AppError`]。
     pub fn validate(&self) -> crate::error::Result<()> {
         let syms = self.data.symbols();
         if syms.is_empty() || syms.iter().any(String::is_empty) {
             return Err(AppError::Msg("data.symbol 不能为空".into()));
+        }
+        // 品种名会**直接进入落盘文件名**(`{symbol}_{tf}_{strategy}_…parquet`),
+        // 故必须在这里挡住路径穿越 —— 否则 `symbol = "../evil"` 会让产物写到
+        // 输出目录的**上一层**。真实品种名都是字母数字(`BTCUSDT` /
+        // `1000SHIBUSDT` / `1INCHUSDT`), 白名单不会误伤。
+        for s in syms {
+            check_path_safe_component("data.symbol", s)?;
         }
         let tfs = self.data.timeframes();
         if tfs.is_empty() || tfs.iter().any(String::is_empty) {
             return Err(AppError::Msg("data.timeframe 不能为空".into()));
         }
         for tf in tfs {
+            // 周期同理: 它也进文件名(`{symbol}_{tf}_…`)。
+            check_path_safe_component("data.timeframe", tf)?;
             if !crate::strategies::is_known_timeframe(tf) {
                 return Err(AppError::Msg(format!(
                     "未知周期 data.timeframe = {tf:?}; 已知: 1m/3m/5m/15m/30m/1h/2h/4h/6h/8h/12h/1d/1w"
@@ -291,19 +301,30 @@ impl Config {
     }
 }
 
-/// 初始资金: **严格正且有限**。
+/// 初始资金: **严格正**, 且是**定点十进制金额**。
 ///
 /// 用 newtype 而非裸 `f64` + 运行时 `if`: 后者让 `balance = 0` 成为可表示的状态,
 /// 而它在下游会触发 `qty = cash / entry_price` 与 `fixed_qty = initial_cash / entry`
 /// 的除零。现在该值**无法用非法状态表示**。
+///
+/// 内部用 [`Amount`](crate::money::Amount)(定点十进制)而非 `f64` ——
+/// 资金是**货币**, `domain-fintech` 的硬规则是"Never use `f64` for money"。
+/// 此前本 newtype 只是给 `f64` 套了个名字: `get()` 之后 `balance: f64` 一路流通,
+/// 任何人都能直接构造 `f64` 绕过校验 —— 那是**假**的类型安全。
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
-pub struct InitialBalance(f64);
+pub struct InitialBalance(crate::money::Amount);
 
 impl InitialBalance {
-    /// 取回原始数值。
+    /// 金额值(定点十进制)。
+    #[must_use]
+    pub fn amount(self) -> crate::money::Amount {
+        self.0
+    }
+
+    /// 取回 `f64` 形式(**仅供统计/落盘口径**, 内部金额运算不得用)。
     #[must_use]
     pub fn get(self) -> f64 {
-        self.0
+        self.0.to_f64()
     }
 }
 
@@ -312,7 +333,7 @@ impl TryFrom<f64> for InitialBalance {
 
     fn try_from(v: f64) -> crate::error::Result<Self> {
         if v > 0.0 && v.is_finite() {
-            Ok(Self(v))
+            Ok(Self(crate::money::Amount::from_f64(v)?))
         } else {
             Err(AppError::Msg(format!(
                 "backtest.initial_balance 必须 > 0 且为有限值, 当前为 {v}"
@@ -444,6 +465,40 @@ pub struct OutputConfig {
     pub overwrite: bool,
 }
 
+/// 校验一个会**进入落盘文件名**的字符串是安全的路径片段。
+///
+/// 拒绝:
+/// - 任何路径分隔符(`/`、`\`)、盘符分隔符(`:`);
+/// - `..`(父目录)与 `.`(当前目录)段;
+/// - 其它控制字符与空白(它们在文件名里毫无意义, 还会让跨平台行为不一致);
+/// - 空串。
+///
+/// 允许: 字母、数字、`.`、`-`、`_`、`+` —— 覆盖全部真实品种名
+/// (`BTCUSDT` / `1000SHIBUSDT` / `1INCHUSDT` / `BRK-B`) 与周期名(`1m` / `1d`)。
+///
+/// # Errors
+/// 不安全时返回 [`AppError`]。
+fn check_path_safe_component(what: &str, value: &str) -> crate::error::Result<()> {
+    if value.is_empty() {
+        return Err(AppError::Msg(format!("{what} 不能为空")));
+    }
+    if value == "." || value == ".." {
+        return Err(AppError::Msg(format!(
+            "{what} = {value:?} 是路径片段, 不得直接进入文件名"
+        )));
+    }
+    for c in value.chars() {
+        let ok = c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '+');
+        if !ok {
+            return Err(AppError::Msg(format!(
+                "{what} = {value:?} 含非法字符 {c:?}; \
+                 它会直接进入落盘文件名, 只允许字母数字与 `.` `-` `_` `+`"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Config for single-MA price-cross strategies.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -458,50 +513,6 @@ impl MaGridCfg {
     ///
     /// # Errors
     /// `period` 越界时返回 [`AppError`]。
-    pub fn validate(&self) -> crate::error::Result<()> {
-        self.period.validate()
-    }
-}
-
-impl SsfStConfig {
-    /// 语义校验: 单周期策略只需校验 `period` 的区间与方向。
-    ///
-    /// # Errors
-    /// `period` 越界(`start < 1` / `start > end` / `step == 0`)时返回
-    /// [`AppError`]。
-    pub fn validate(&self) -> crate::error::Result<()> {
-        self.period.validate()
-    }
-}
-
-impl SsfStCdConfig {
-    /// 语义校验: 单周期策略只需校验 `period` 的区间与方向。
-    ///
-    /// # Errors
-    /// `period` 越界(`start < 1` / `start > end` / `step == 0`)时返回
-    /// [`AppError`]。
-    pub fn validate(&self) -> crate::error::Result<()> {
-        self.period.validate()
-    }
-}
-
-impl SsfCdConfig {
-    /// 语义校验: 单周期策略只需校验 `period` 的区间与方向。
-    ///
-    /// # Errors
-    /// `period` 越界(`start < 1` / `start > end` / `step == 0`)时返回
-    /// [`AppError`]。
-    pub fn validate(&self) -> crate::error::Result<()> {
-        self.period.validate()
-    }
-}
-
-impl SsfConfig {
-    /// 语义校验: 单周期策略只需校验 `period` 的区间与方向。
-    ///
-    /// # Errors
-    /// `period` 越界(`start < 1` / `start > end` / `step == 0`)时返回
-    /// [`AppError`]。
     pub fn validate(&self) -> crate::error::Result<()> {
         self.period.validate()
     }
@@ -777,7 +788,66 @@ impl PeriodParam {
             PeriodParam::Range(r) => r.clone(),
         }
     }
+
+    /// 展开为具体取值列表。
+    ///
+    /// 上限 [`MAX_PERIOD_RANGE`] 档防爆(与 f64 展开的 [`MAX_F64_RANGE`] 同思路):
+    /// 范围型参数的规模**无上限**(`start = 1, end = 10^9` ⇒ 10 亿档),
+    /// 不封顶会把内存吃光。触顶时**告警**而非静默截断。
+    #[must_use]
+    pub fn values(&self) -> Vec<usize> {
+        match self {
+            PeriodParam::Single(v) => vec![*v],
+            PeriodParam::Range(r) => {
+                let mut out = Vec::new();
+                // `step == 0` 会让下面的循环**不前进**(死循环)。`validate` 会
+                // 单独拒绝它, 但本函数是 `pub` 的, 单独调用时也必须安全。
+                if r.step == 0 {
+                    return out;
+                }
+                let mut v = r.start;
+                while v <= r.end && out.len() < MAX_PERIOD_RANGE {
+                    out.push(v);
+                    // `checked_add`: `v + step` 可能越过 `usize::MAX`。
+                    match v.checked_add(r.step) {
+                        Some(n) => v = n,
+                        None => break,
+                    }
+                }
+                if out.len() >= MAX_PERIOD_RANGE && v <= r.end {
+                    tracing::warn!(
+                        "period 范围展开触顶 {MAX_PERIOD_RANGE} 档(实际想展开到 {}), 已截断",
+                        r.end
+                    );
+                }
+                out
+            }
+        }
+    }
+
+    /// 校验展开结果落在 `[lo, hi]` 且非空。
+    ///
+    /// 与 [`F64Param::validate_range`] 同形, 但边界是**整数**。
+    ///
+    /// # Errors
+    /// 展开为空或存在越界值时返回 [`AppError`]。
+    pub fn validate_range(&self, name: &str, lo: usize, hi: usize) -> crate::error::Result<()> {
+        let vs = self.values();
+        if vs.is_empty() {
+            return Err(AppError::Msg(format!("{name} 展开为空")));
+        }
+        if vs.iter().any(|v| *v < lo || *v > hi) {
+            return Err(AppError::Msg(format!("{name} 越界(允许 [{lo}, {hi}])")));
+        }
+        Ok(())
+    }
 }
+
+/// 整型参数展开的**档数上限**(防爆)。
+///
+/// 与 [`crate::strategies::MAX_F64_RANGE`] 同思路: 范围型参数的规模无上限,
+/// 不封顶会把内存吃光。
+pub const MAX_PERIOD_RANGE: usize = 100_000;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -911,6 +981,112 @@ mod tests {
         assert!(cfg.validate().is_err());
     }
 
+    /// **回归**: bar 数参数必须是**整数** —— 小数值必须被**拒绝**, 不得静默取整。
+    ///
+    /// 可触发场景: 这些参数原先用 `F64Param` 承载, 再 `.round() as usize` ——
+    /// 于是 `bblen = 20.4` 是**合法**配置, 静默变成 20, 两个不同的 TOML 值
+    /// 映射到同一参数串(唯一性自检报的是"参数串重复"这种让人困惑的错)。
+    /// 换成 `PeriodParam(usize)` 后, `20.4` 在**反序列化期**即被拒。
+    #[test]
+    fn bar_count_params_reject_fractional_values() {
+        // 整数必须照常通过。
+        let ok: Config = toml::from_str(
+            "[data]\ntype = \"binance\"\ndir = \"/tmp\"\nsymbol = [\"BTCUSDT\"]\n\
+             timeframe = [\"1d\"]\n[backtest]\ninitial_balance = 10000.0\n\
+             [[strategy]]\ntype = \"bbrk_don\"\nsigma = 2.5\nbblen = 20\nexitn = 10\n",
+        )
+        .expect("整数 bar 数必须可解析");
+        assert!(ok.validate().is_ok());
+
+        // 小数必须被拒(反序列化期)。
+        let bad: Result<Config, _> = toml::from_str(
+            "[data]\ntype = \"binance\"\ndir = \"/tmp\"\nsymbol = [\"BTCUSDT\"]\n\
+             timeframe = [\"1d\"]\n[backtest]\ninitial_balance = 10000.0\n\
+             [[strategy]]\ntype = \"bbrk_don\"\nsigma = 2.5\nbblen = 20.4\nexitn = 10\n",
+        );
+        assert!(bad.is_err(), "bblen = 20.4 必须被拒(不得静默取整成 20)");
+    }
+
+    /// **回归**: `PeriodParam` 的范围展开必须与 `F64Param` 的整数档位一致,
+    /// 且 `step = 0` 不得死循环。
+    #[test]
+    fn period_param_expansion_is_safe() {
+        assert_eq!(PeriodParam::Single(20).values(), vec![20]);
+        assert_eq!(
+            PeriodParam::Range(RangeParam {
+                start: 3,
+                end: 10,
+                step: 7
+            })
+            .values(),
+            vec![3, 10]
+        );
+        // step = 0: 必须返回空(而不是死循环)。
+        assert!(
+            PeriodParam::Range(RangeParam {
+                start: 3,
+                end: 10,
+                step: 0
+            })
+            .values()
+            .is_empty()
+        );
+        // 越界校验。
+        let p = PeriodParam::Range(RangeParam {
+            start: 1,
+            end: 5000,
+            step: 1,
+        });
+        assert!(p.validate_range("x", 2, 2000).is_err());
+        assert!(PeriodParam::Single(20).validate_range("x", 2, 2000).is_ok());
+    }
+
+    /// **回归**: 含路径穿越成分的品种名/周期名必须被拒。
+    ///
+    /// 可触发场景: 品种名**直接进入落盘文件名**(`{symbol}_{tf}_{strategy}_…`),
+    /// 故 `symbol = "../evil"` 会让产物写到输出目录的**上一层**。
+    #[test]
+    fn validate_rejects_path_traversal_in_symbol_and_timeframe() {
+        for bad_symbol in ["../evil", "a/b", "a\\b", "..", "a:b", "a*b"] {
+            let toml = format!(
+                "[data]\ntype = \"binance\"\ndir = \"/tmp\"\nsymbol = {bad_symbol:?}\n\
+                 timeframe = [\"1d\"]\n[backtest]\ninitial_balance = 10000.0\n\
+                 [[strategy]]\ntype = \"sma\"\nperiod = 20\n"
+            );
+            let cfg: Config = toml::from_str(&toml).unwrap();
+            let e = cfg.validate().expect_err("含路径穿越成分的品种名必须被拒");
+            assert!(
+                format!("{e}").contains("data.symbol"),
+                "错误消息应指向 data.symbol: {e}"
+            );
+        }
+        for bad_tf in ["../1d", "1d/../x"] {
+            let toml = format!(
+                "[data]\ntype = \"binance\"\ndir = \"/tmp\"\nsymbol = [\"BTCUSDT\"]\n\
+                 timeframe = [{bad_tf:?}]\n[backtest]\ninitial_balance = 10000.0\n\
+                 [[strategy]]\ntype = \"sma\"\nperiod = 20\n"
+            );
+            let cfg: Config = toml::from_str(&toml).unwrap();
+            assert!(
+                cfg.validate().is_err(),
+                "含路径穿越成分的周期名必须被拒: {bad_tf}"
+            );
+        }
+        // 真实品种名与周期名必须照常通过(白名单不得误伤)。
+        for good_symbol in ["BTCUSDT", "1000SHIBUSDT", "1INCHUSDT", "BRK-B", "XRP_USDT"] {
+            let toml = format!(
+                "[data]\ntype = \"binance\"\ndir = \"/tmp\"\nsymbol = [{good_symbol:?}]\n\
+                 timeframe = [\"1d\"]\n[backtest]\ninitial_balance = 10000.0\n\
+                 [[strategy]]\ntype = \"sma\"\nperiod = 20\n"
+            );
+            let cfg: Config = toml::from_str(&toml).unwrap();
+            assert!(
+                cfg.validate().is_ok(),
+                "真实品种名 {good_symbol} 必须通过白名单"
+            );
+        }
+    }
+
     #[test]
     fn validate_rejects_empty_strategy() {
         let cfg: Config = toml::from_str(&make_toml(10000.0, true, false)).unwrap();
@@ -966,37 +1142,37 @@ mod tests {
             "type = \"bbrk\"\nsigma = { start = 1.5, end = 2.5, step = 0.5 }",
             "type = \"bbrk_adx\"\nsigma = { start = 2.0, end = 3.0, step = 0.5 }\nadx = { start = 20.0, end = 25.0, step = 5.0 }",
             "type = \"bbrk_trail\"\nsigma = { start = 2.0, end = 3.0, step = 0.5 }\ntrailk = { start = 2.0, end = 3.0, step = 1.0 }",
-            "type = \"bbrk_don\"\nsigma = { start = 2.0, end = 2.5, step = 0.5 }\nexitn = { start = 2.0, end = 3.0, step = 1.0 }",
+            "type = \"bbrk_don\"\nsigma = { start = 2.0, end = 2.5, step = 0.5 }\nexitn = { start = 2, end = 3, step = 1 }",
             "type = \"bbrk_pctb\"\nsigma = { start = 2.0, end = 2.5, step = 0.5 }\nexitb = { start = 0.2, end = 0.5, step = 0.3 }",
             "type = \"bbrk_atr\"\nsigma = { start = 2.0, end = 2.5, step = 0.5 }\natrthr = { start = 0.8, end = 1.0, step = 0.2 }",
             "type = \"bbrk_str\"\nsigma = { start = 2.0, end = 2.5, step = 0.5 }\nbody = { start = 0.3, end = 0.5, step = 0.2 }",
-            "type = \"bbrk_sma\"\nsigma = 2.5\nsmareg = 100.0",
-            "type = \"bbrk_hma\"\nsigma = 2.5\nhmalen = 100.0",
-            "type = \"bbrk_max\"\nma = [\"sma\", \"hma\"]\nmalen = 100.0",
-            "type = \"bbrk_bb\"\nma = [\"sma\"]\nbblen = 20.0\nsigma = 2.5",
-            "type = \"bbrk_vol_ema\"\nsigma = 2.5\nvoln = 10.0\nvolmult = 1.5",
+            "type = \"bbrk_sma\"\nsigma = 2.5\nsmareg = 100",
+            "type = \"bbrk_hma\"\nsigma = 2.5\nhmalen = 100",
+            "type = \"bbrk_max\"\nma = [\"sma\", \"hma\"]\nmalen = 100",
+            "type = \"bbrk_bb\"\nma = [\"sma\"]\nbblen = 20\nsigma = 2.5",
+            "type = \"bbrk_vol_ema\"\nsigma = 2.5\nvoln = 10\nvolmult = 1.5",
             "type = \"bbrk_atr_ema\"\nsigma = 2.5\natrthr = 1.0",
-            "type = \"bbrk_sma_ema\"\nsigma = 2.5\nsmareg = 100.0",
-            "type = \"bbrk_hma_ema\"\nsigma = 2.5\nhmalen = 100.0",
-            "type = \"bbrk_hma_v1\"\nsigma = 2.5\nbblen = 20.0\nhmalen = 450.0",
-            "type = \"bbrk_hma_v2\"\nsigma = 2.5\nbblen = 20.0\nhmalen = 450.0",
-            "type = \"bbrk_hma_v3\"\nsigma = 2.5\nbblen = 20.0",
-            "type = \"bbrk_hma_v4\"\nsigma = 2.5\nbblen = 20.0",
-            "type = \"bbrk_hma_v5\"\nsigma = 2.5\nbblen = 20.0\nhmalen = 450.0",
-            "type = \"bbrk_hma_v1_sl\"\nsigma = 2.5\nbblen = 20.0\nhmalen = 450.0\nstopk = 2.0\natrlen = 50.0",
-            "type = \"bbrk_hma_v2_sl\"\nsigma = 2.5\nbblen = 20.0\nhmalen = 450.0\nstopk = 2.0\natrlen = 50.0",
-            "type = \"bbrk_hma_v3_sl\"\nsigma = 2.5\nbblen = 20.0\nstopk = 2.0\natrlen = 50.0",
-            "type = \"bbrk_hma_v4_sl\"\nsigma = 2.5\nbblen = 20.0\nstopk = 2.0\natrlen = 50.0",
-            "type = \"bbrk_hma_v5_sl\"\nsigma = 2.5\nbblen = 20.0\nhmalen = 450.0\nstopk = 2.0\natrlen = 50.0",
-            "type = \"mabb_long\"\nma = [\"sma\"]\nbblen = 20.0\nsigma = 2.5\nstopk = 0.0\natrlen = 14.0",
-            "type = \"mabb_short\"\nma = [\"ema\"]\nbblen = 20.0\nsigma = 2.5\nstopk = 2.0\natrlen = 14.0",
-            "type = \"bbrk_zlema_ema\"\nsigma = 2.5\nzlemareg = 100.0",
-            "type = \"bbrk_rex\"\nsigma = { start = 2.0, end = 2.5, step = 0.5 }\nrexn = { start = 3.0, end = 5.0, step = 2.0 }\nrexmult = 1.5",
-            "type = \"bbrk_vol\"\nsigma = 2.5\nvoln = 10.0\nvolmult = 1.5",
-            "type = \"bbrk_ttm\"\nsigma = 2.5\nkc = 1.5\nttmn = 5.0",
+            "type = \"bbrk_sma_ema\"\nsigma = 2.5\nsmareg = 100",
+            "type = \"bbrk_hma_ema\"\nsigma = 2.5\nhmalen = 100",
+            "type = \"bbrk_hma_v1\"\nsigma = 2.5\nbblen = 20\nhmalen = 450",
+            "type = \"bbrk_hma_v2\"\nsigma = 2.5\nbblen = 20\nhmalen = 450",
+            "type = \"bbrk_hma_v3\"\nsigma = 2.5\nbblen = 20",
+            "type = \"bbrk_hma_v4\"\nsigma = 2.5\nbblen = 20",
+            "type = \"bbrk_hma_v5\"\nsigma = 2.5\nbblen = 20\nhmalen = 450",
+            "type = \"bbrk_hma_v1_sl\"\nsigma = 2.5\nbblen = 20\nhmalen = 450\nstopk = 2.0\natrlen = 50",
+            "type = \"bbrk_hma_v2_sl\"\nsigma = 2.5\nbblen = 20\nhmalen = 450\nstopk = 2.0\natrlen = 50",
+            "type = \"bbrk_hma_v3_sl\"\nsigma = 2.5\nbblen = 20\nstopk = 2.0\natrlen = 50",
+            "type = \"bbrk_hma_v4_sl\"\nsigma = 2.5\nbblen = 20\nstopk = 2.0\natrlen = 50",
+            "type = \"bbrk_hma_v5_sl\"\nsigma = 2.5\nbblen = 20\nhmalen = 450\nstopk = 2.0\natrlen = 50",
+            "type = \"mabb_long\"\nma = [\"sma\"]\nbblen = 20\nsigma = 2.5\nstopk = 0.0\natrlen = 14",
+            "type = \"mabb_short\"\nma = [\"ema\"]\nbblen = 20\nsigma = 2.5\nstopk = 2.0\natrlen = 14",
+            "type = \"bbrk_zlema_ema\"\nsigma = 2.5\nzlemareg = 100",
+            "type = \"bbrk_rex\"\nsigma = { start = 2.0, end = 2.5, step = 0.5 }\nrexn = { start = 3, end = 5, step = 2 }\nrexmult = 1.5",
+            "type = \"bbrk_vol\"\nsigma = 2.5\nvoln = 10\nvolmult = 1.5",
+            "type = \"bbrk_ttm\"\nsigma = 2.5\nkc = 1.5\nttmn = 5",
             "type = \"bbrk_ttm_fire\"\nsigma = 2.5\nkc = 1.5",
             "type = \"vwap_trend\"\nreset = { start = 0.0, end = 1.0, step = 1.0 }",
-            "type = \"ma_atr\"\nma = [\"sma\"]\nlen = 20.0\nmult = 2.0\natrlen = 14.0",
+            "type = \"ma_atr\"\nma = [\"sma\"]\nlen = 20\nmult = 2.0\natrlen = 14",
         ] {
             let toml = format!(
                 "[data]\ntype = \"binance\"\ndir = \"/tmp\"\nsymbol = \"BTCUSDT\"\ntimeframe = \"1d\"\n\n[backtest]\ninitial_balance = 10000.0\n\n[[strategy]]\n{st}\n"

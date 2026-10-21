@@ -15,7 +15,7 @@ const ATR_LONG: usize = 20;
 /// `ATR5/ATR20 > thr` → Buy/Sell；持仓后中线离场（与 BBRK 相同）。
 /// ATR NaN（预热）/ATR20非正 → 不开仓（P7）。
 pub struct BbrkAtrEmaStrategy {
-    pairs: Vec<(f64, f64)>,
+    pairs: Vec<(f64, usize, f64)>,
 }
 
 impl BbrkAtrEmaStrategy {
@@ -106,12 +106,13 @@ fn compute(
     low: &[f64],
     close: &[f64],
     sigma: f64,
+    bblen: usize,
     thr: f64,
 ) -> crate::error::Result<Vec<Signal>> {
     let bb = match bollinger_bands(&BollingerBandsInput::from_slice(
         close,
         BollingerBandsParams {
-            period: Some(20),
+            period: Some(bblen),
             devup: Some(sigma),
             devdn: Some(sigma),
             matype: Some("ema".to_string()),
@@ -119,7 +120,7 @@ fn compute(
         },
     )) {
         Ok(v) => v,
-        Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+        Err(e) => return Err(crate::strategies::param_skipped(e)),
     };
     let a5 = match atr(&AtrInput::from_slices(
         high,
@@ -130,7 +131,7 @@ fn compute(
         },
     )) {
         Ok(v) => v.values,
-        Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+        Err(e) => return Err(crate::strategies::param_skipped(e)),
     };
     let a20 = match atr(&AtrInput::from_slices(
         high,
@@ -141,7 +142,7 @@ fn compute(
         },
     )) {
         Ok(v) => v.values,
-        Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+        Err(e) => return Err(crate::strategies::param_skipped(e)),
     };
     Ok(bbrk_atr_ema_signals(
         open,
@@ -165,8 +166,8 @@ impl Strategy for BbrkAtrEmaStrategy {
     }
 
     fn param_str(&self, idx: usize) -> String {
-        let (s, t) = self.pairs[idx];
-        format!("sigma={s},atrthr={t}")
+        let (s, b, t) = self.pairs[idx];
+        format!("sigma={s},bblen={b},atrthr={t}")
     }
 
     fn generate_signals_full(
@@ -179,8 +180,8 @@ impl Strategy for BbrkAtrEmaStrategy {
         _time: &[i64],
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
-        let (s, t) = self.pairs[param_idx];
-        compute(open, high, low, close, s, t)
+        let (s, b, t) = self.pairs[param_idx];
+        compute(open, high, low, close, s, b, t)
     }
 }
 
@@ -243,9 +244,9 @@ mod tests {
     #[test]
     fn test_name_and_params() {
         let s = BbrkAtrEmaStrategy {
-            pairs: vec![(2.5, 1.0)],
+            pairs: vec![(2.5, 20, 1.0)],
         };
         assert_eq!(s.name(), "BBRK_ATR_EMA");
-        assert_eq!(s.param_str(0), "sigma=2.5,atrthr=1");
+        assert_eq!(s.param_str(0), "sigma=2.5,bblen=20,atrthr=1");
     }
 }

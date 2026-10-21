@@ -12,7 +12,7 @@ use super::config::BbrkCrossConfig;
 /// 持仓后中线离场（与 BBRK 相同）。
 /// 首根（无前根）/前根缺失或 NaN → 不开仓（P7）。
 pub struct BbrkCrossStrategy {
-    sigmas: Vec<f64>,
+    pairs: Vec<(f64, usize)>,
 }
 
 impl BbrkCrossStrategy {
@@ -20,7 +20,7 @@ impl BbrkCrossStrategy {
     #[must_use]
     pub fn new(config: BbrkCrossConfig) -> Self {
         Self {
-            sigmas: config.values(),
+            pairs: config.pairs(),
         }
     }
 }
@@ -82,11 +82,11 @@ impl Strategy for BbrkCrossStrategy {
     }
 
     fn param_count(&self) -> usize {
-        self.sigmas.len()
+        self.pairs.len()
     }
 
     fn param_str(&self, idx: usize) -> String {
-        format!("sigma={}", self.sigmas[idx])
+        format!("sigma={},bblen={}", self.pairs[idx].0, self.pairs[idx].1)
     }
 
     fn generate_signals_full(
@@ -99,16 +99,21 @@ impl Strategy for BbrkCrossStrategy {
         _time: &[i64],
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
-        self.compute(close, self.sigmas[param_idx])
+        self.compute(close, self.pairs[param_idx].0, self.pairs[param_idx].1)
     }
 }
 
 impl BbrkCrossStrategy {
-    fn compute(&self, close: &[f64], sigma: f64) -> crate::error::Result<Vec<Signal>> {
+    fn compute(
+        &self,
+        close: &[f64],
+        sigma: f64,
+        bblen: usize,
+    ) -> crate::error::Result<Vec<Signal>> {
         let bb = match bollinger_bands(&BollingerBandsInput::from_slice(
             close,
             BollingerBandsParams {
-                period: Some(20),
+                period: Some(bblen),
                 devup: Some(sigma),
                 devdn: Some(sigma),
                 matype: Some("sma".to_string()),
@@ -116,7 +121,7 @@ impl BbrkCrossStrategy {
             },
         )) {
             Ok(v) => v,
-            Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+            Err(e) => return Err(crate::strategies::param_skipped(e)),
         };
         Ok(bbrk_cross_signals(
             close,
@@ -193,8 +198,10 @@ mod tests {
 
     #[test]
     fn test_name_and_params() {
-        let s = BbrkCrossStrategy { sigmas: vec![2.5] };
+        let s = BbrkCrossStrategy {
+            pairs: vec![(2.5, 20)],
+        };
         assert_eq!(s.name(), "BBRK_CROSS");
-        assert_eq!(s.param_str(0), "sigma=2.5");
+        assert_eq!(s.param_str(0), "sigma=2.5,bblen=20");
     }
 }

@@ -15,6 +15,7 @@ impl McGinleyStrategy {
     }
 }
 
+#[must_use]
 fn mcgd_ma(close: &[f64], period: usize) -> Vec<f64> {
     let n = close.len();
     let mut out = vec![f64::NAN; n];

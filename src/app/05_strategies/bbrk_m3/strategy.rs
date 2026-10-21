@@ -2,7 +2,7 @@ use vector_ta::indicators::bollinger_bands::{
     BollingerBandsInput, BollingerBandsParams, bollinger_bands,
 };
 
-use crate::strategies::{Signal, Strategy, money_flow_index};
+use crate::strategies::{Signal, Strategy, money_flow_index, pct_b};
 
 use super::config::BbrkM3Config;
 
@@ -23,7 +23,7 @@ pub const M3_MFI_N: usize = 10;
 /// 摆动点结构检测不做（原文只约束带相对位置）。
 /// `generate_signals`（无 H/L）恒 Hold（P7）；生产入口为 full。
 pub struct BbrkM3Strategy {
-    sigmas: Vec<f64>,
+    pairs: Vec<(f64, usize)>,
 }
 
 impl BbrkM3Strategy {
@@ -31,20 +31,9 @@ impl BbrkM3Strategy {
     #[must_use]
     pub fn new(config: BbrkM3Config) -> Self {
         Self {
-            sigmas: config.values(),
+            pairs: config.pairs(),
         }
     }
-}
-
-fn pct_b(close: f64, lower: f64, upper: f64) -> f64 {
-    if !close.is_finite() || !lower.is_finite() || !upper.is_finite() {
-        return f64::NAN;
-    }
-    let w = upper - lower;
-    if !w.is_finite() || w <= 0.0 {
-        return f64::NAN;
-    }
-    (close - lower) / w
 }
 
 /// 窗 `[lo, i)` 内：b=最近的带内 tag（`inside`），a=b 之前最近的轨外 tag
@@ -149,11 +138,11 @@ impl Strategy for BbrkM3Strategy {
     }
 
     fn param_count(&self) -> usize {
-        self.sigmas.len()
+        self.pairs.len()
     }
 
     fn param_str(&self, idx: usize) -> String {
-        format!("sigma={}", self.sigmas[idx])
+        format!("sigma={},bblen={}", self.pairs[idx].0, self.pairs[idx].1)
     }
 
     fn generate_signals_full(
@@ -166,7 +155,14 @@ impl Strategy for BbrkM3Strategy {
         _time: &[i64],
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
-        self.compute(high, low, close, volume, self.sigmas[param_idx])
+        self.compute(
+            high,
+            low,
+            close,
+            volume,
+            self.pairs[param_idx].0,
+            self.pairs[param_idx].1,
+        )
     }
 }
 
@@ -178,11 +174,12 @@ impl BbrkM3Strategy {
         close: &[f64],
         volume: &[f64],
         sigma: f64,
+        bblen: usize,
     ) -> crate::error::Result<Vec<Signal>> {
         let bb = match bollinger_bands(&BollingerBandsInput::from_slice(
             close,
             BollingerBandsParams {
-                period: Some(20),
+                period: Some(bblen),
                 devup: Some(sigma),
                 devdn: Some(sigma),
                 matype: Some("sma".to_string()),
@@ -190,7 +187,7 @@ impl BbrkM3Strategy {
             },
         )) {
             Ok(v) => v,
-            Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+            Err(e) => return Err(crate::strategies::param_skipped(e)),
         };
         let mfi = money_flow_index(high, low, close, volume, M3_MFI_N);
         Ok(bbrk_m3_signals(
@@ -276,9 +273,11 @@ mod tests {
 
     #[test]
     fn test_name_and_params() {
-        let s = BbrkM3Strategy { sigmas: vec![2.0] };
+        let s = BbrkM3Strategy {
+            pairs: vec![(2.0, 20)],
+        };
         assert_eq!(s.name(), "BBRK_M3");
-        assert_eq!(s.param_str(0), "sigma=2");
+        assert_eq!(s.param_str(0), "sigma=2,bblen=20");
         assert_eq!((M3_W, M3_MFI_N), (10, 10));
     }
 }

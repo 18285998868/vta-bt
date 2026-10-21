@@ -16,7 +16,7 @@ const ATR_LEN: usize = 14;
 /// flat + close突破 **且** 过去 n 根存在 squeeze_on → Buy/Sell；
 /// 持仓后中线离场（与 BBRK 相同）。任一输入 NaN → 不开仓（P7）。
 pub struct BbrkTtmStrategy {
-    pairs: Vec<(f64, f64, usize)>,
+    pairs: Vec<(f64, usize, f64, usize)>,
 }
 
 impl BbrkTtmStrategy {
@@ -97,13 +97,14 @@ fn compute(
     low: &[f64],
     close: &[f64],
     sigma: f64,
+    bblen: usize,
     kc_mult: f64,
     lookback: usize,
 ) -> crate::error::Result<Vec<Signal>> {
     let bb = match bollinger_bands(&BollingerBandsInput::from_slice(
         close,
         BollingerBandsParams {
-            period: Some(20),
+            period: Some(bblen),
             devup: Some(sigma),
             devdn: Some(sigma),
             matype: Some("sma".to_string()),
@@ -111,7 +112,7 @@ fn compute(
         },
     )) {
         Ok(v) => v,
-        Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+        Err(e) => return Err(crate::strategies::param_skipped(e)),
     };
     let basis = match ema(&EmaInput::from_slice(
         close,
@@ -120,7 +121,7 @@ fn compute(
         },
     )) {
         Ok(v) => v.values,
-        Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+        Err(e) => return Err(crate::strategies::param_skipped(e)),
     };
     let atr_vals = match atr(&AtrInput::from_slices(
         high,
@@ -131,7 +132,7 @@ fn compute(
         },
     )) {
         Ok(v) => v.values,
-        Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+        Err(e) => return Err(crate::strategies::param_skipped(e)),
     };
     let n = close.len();
     let mut sqz = vec![false; n];
@@ -166,8 +167,8 @@ impl Strategy for BbrkTtmStrategy {
     }
 
     fn param_str(&self, idx: usize) -> String {
-        let (s, k, n) = self.pairs[idx];
-        format!("sigma={s},kc={k},ttmn={n}")
+        let (s, b, k, n) = self.pairs[idx];
+        format!("sigma={s},bblen={b},kc={k},ttmn={n}")
     }
 
     fn generate_signals_full(
@@ -180,8 +181,8 @@ impl Strategy for BbrkTtmStrategy {
         _time: &[i64],
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
-        let (s, k, n) = self.pairs[param_idx];
-        compute(high, low, close, s, k, n)
+        let (s, b, k, n) = self.pairs[param_idx];
+        compute(high, low, close, s, b, k, n)
     }
 }
 
@@ -226,9 +227,9 @@ mod tests {
     #[test]
     fn test_name_and_params() {
         let s = BbrkTtmStrategy {
-            pairs: vec![(2.5, 1.5, 5)],
+            pairs: vec![(2.5, 20, 1.5, 5)],
         };
         assert_eq!(s.name(), "BBRK_TTM");
-        assert_eq!(s.param_str(0), "sigma=2.5,kc=1.5,ttmn=5");
+        assert_eq!(s.param_str(0), "sigma=2.5,bblen=20,kc=1.5,ttmn=5");
     }
 }

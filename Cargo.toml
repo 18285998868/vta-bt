@@ -38,6 +38,8 @@ arrow = "60"
 parquet = { version = "60", features = ["arrow"] }
 clap = { version = "4", features = ["derive"] }
 thiserror = "2"
+# 货币金额用定点十进制(不用 f64): 见 src/money.rs 的口径说明。
+rust_decimal = "1"
 tracing = { version = "0.1", features = ["log"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 

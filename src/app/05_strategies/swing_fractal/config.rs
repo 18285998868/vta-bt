@@ -23,12 +23,22 @@ pub enum IntParam {
 
 impl IntParam {
     /// 展开为具体取值列表。
+    ///
+    /// **不 panic**: `step = 0` 时 [`RangeParam`] 的 `step_by` 会 panic,
+    /// 而本函数是 `pub` —— 未经 [`Self::validate`] 的配置也能直接调用它。
+    /// 此处把 `step = 0` 视为"展开为空"(由 `validate` 报出更精确的
+    /// "step 必须 > 0"), 保证公共 API 不因可构造的输入而崩溃。
     #[must_use]
     pub fn values(&self) -> Vec<usize> {
         match self {
             Self::Single(v) => vec![*v],
             Self::List(v) => v.clone(),
-            Self::Range(r) => (r.start..=r.end).step_by(r.step).collect(),
+            Self::Range(r) => {
+                if r.step == 0 {
+                    return Vec::new();
+                }
+                (r.start..=r.end).step_by(r.step).collect()
+            }
         }
     }
 
@@ -76,7 +86,12 @@ impl SwingFractalConfig {
     pub fn pairs(&self) -> Vec<(usize, usize)> {
         let ls = self.left.values();
         let rs = self.right.values();
-        let mut out = Vec::with_capacity(ls.len() * rs.len());
+        // 网格规模 = 各维度长度之积(可预知), 一次分配到位(`mem-with-capacity`)。
+        // 乘积的 `saturating_mul` 与封顶逻辑集中在 `grid_prealloc` 一处: 范围型
+        // 参数的展开长度**没有上限**, 直接按积申请会在病态配置下触发分配失败
+        // → 进程 abort(不可捕获), 而不是返回一条可读错误。
+        let cap = crate::strategies::grid_prealloc(&[ls.len(), rs.len()]);
+        let mut out = Vec::with_capacity(cap);
         for &a in &ls {
             for &b in &rs {
                 out.push((a, b));
@@ -176,6 +191,28 @@ mod tests {
             right: IntParam::Single(5),
         };
         assert!(z.validate().is_err(), "step=0 必须被拒");
+    }
+
+    /// **公共 API 不得因可构造的输入而 panic**: `step = 0` 时 `step_by` 会 panic。
+    ///
+    /// `IntParam::values()` 是 `pub` 的, 调用方可以绕过 `validate()` 直接用它
+    /// (例如库的下游使用者)。故这里把 `step = 0` 视为"展开为空"。
+    #[test]
+    fn values_does_not_panic_on_zero_step() {
+        let z = IntParam::Range(RangeParam {
+            start: 3,
+            end: 10,
+            step: 0,
+        });
+        assert!(z.values().is_empty(), "step=0 必须展开为空而不是 panic");
+        // `pairs()` 同样不得 panic。
+        let c = SwingFractalConfig {
+            left: z.clone(),
+            right: IntParam::Single(5),
+        };
+        assert!(c.pairs().is_empty());
+        // `validate()` 仍报出精确的原因。
+        assert!(c.validate().is_err());
     }
 
     /// TOML 三种形态都要能反序列化: 单值 / 列表 / 表。

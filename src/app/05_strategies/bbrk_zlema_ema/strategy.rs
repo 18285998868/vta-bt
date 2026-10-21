@@ -12,7 +12,7 @@ use super::config::BbrkZlemaEmaConfig;
 /// 持仓后中线离场（与 BBRK 相同）。
 /// HMA 预热不足/NaN → 不开仓（P7）。
 pub struct BbrkZlemaEmaStrategy {
-    pairs: Vec<(f64, usize)>,
+    pairs: Vec<(f64, usize, usize)>,
 }
 
 impl BbrkZlemaEmaStrategy {
@@ -78,11 +78,16 @@ pub fn bbrk_zlema_ema_signals(
     sig
 }
 
-fn compute(close: &[f64], sigma: f64, len: usize) -> crate::error::Result<Vec<Signal>> {
+fn compute(
+    close: &[f64],
+    sigma: f64,
+    bblen: usize,
+    len: usize,
+) -> crate::error::Result<Vec<Signal>> {
     let bb = match bollinger_bands(&BollingerBandsInput::from_slice(
         close,
         BollingerBandsParams {
-            period: Some(20),
+            period: Some(bblen),
             devup: Some(sigma),
             devdn: Some(sigma),
             matype: Some("ema".to_string()),
@@ -90,14 +95,14 @@ fn compute(close: &[f64], sigma: f64, len: usize) -> crate::error::Result<Vec<Si
         },
     )) {
         Ok(v) => v,
-        Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+        Err(e) => return Err(crate::strategies::param_skipped(e)),
     };
     let ma = match zlema(&ZlemaInput::from_slice(
         close,
         ZlemaParams { period: Some(len) },
     )) {
         Ok(v) => v.values,
-        Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+        Err(e) => return Err(crate::strategies::param_skipped(e)),
     };
     Ok(bbrk_zlema_ema_signals(
         close,
@@ -118,8 +123,8 @@ impl Strategy for BbrkZlemaEmaStrategy {
     }
 
     fn param_str(&self, idx: usize) -> String {
-        let (s, l) = self.pairs[idx];
-        format!("sigma={s},zlemareg={l}")
+        let (s, b, l) = self.pairs[idx];
+        format!("sigma={s},bblen={b},zlemareg={l}")
     }
 
     fn generate_signals_full(
@@ -132,8 +137,8 @@ impl Strategy for BbrkZlemaEmaStrategy {
         _time: &[i64],
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
-        let (s, l) = self.pairs[param_idx];
-        compute(close, s, l)
+        let (s, b, l) = self.pairs[param_idx];
+        compute(close, s, b, l)
     }
 }
 
@@ -162,9 +167,9 @@ mod tests {
     #[test]
     fn test_name_and_params() {
         let s = BbrkZlemaEmaStrategy {
-            pairs: vec![(2.5, 100)],
+            pairs: vec![(2.5, 20, 100)],
         };
         assert_eq!(s.name(), "BBRK_ZLEMA_EMA");
-        assert_eq!(s.param_str(0), "sigma=2.5,zlemareg=100");
+        assert_eq!(s.param_str(0), "sigma=2.5,bblen=20,zlemareg=100");
     }
 }

@@ -51,7 +51,7 @@ impl Strategy for SmaCdStrategy {
         );
         let ma = match sma(&input) {
             Ok(v) => v.values,
-            Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+            Err(e) => return Err(crate::strategies::param_skipped(e)),
         };
         let mut signals = price_cross_signal(&ma, close);
         candle_direction_filter(&mut signals, open, close);
@@ -177,13 +177,22 @@ mod tests {
         );
     }
 
+    /// **契约回归**: 数据短于 period 时**必须**返回 `ParamSkipped`,
+    /// 而不是静默降级为全 Hold。
+    ///
+    /// 可触发场景: 旧实现返回 `Ok(vec![Hold; n])`, 于是这一档在报告里长得
+    /// 和"零波动低风险"的真实结论**一模一样** —— 对参数网格过拟合研究
+    /// (本项目的 PBO 模块)是最该被发现、却无人察觉的失败模式。
     #[test]
-    fn test_sma_cd_short_data_holds() {
+    fn test_sma_cd_short_data_is_skipped_not_silently_held() {
         let close = prices(5);
         let open = mixed_open(&close);
-        let sig = SmaCdStrategy::new(cfg())
+        let e = SmaCdStrategy::new(cfg())
             .generate_signals_full(&open, &[], &[], &close, &[], &[], 0)
-            .unwrap();
-        assert!(sig.iter().all(|&x| x == Signal::Hold));
+            .expect_err("数据不足必须显式跳过, 不得静默降级");
+        assert!(
+            matches!(e, crate::error::AppError::ParamSkipped { .. }),
+            "必须是 ParamSkipped, 实际: {e}"
+        );
     }
 }

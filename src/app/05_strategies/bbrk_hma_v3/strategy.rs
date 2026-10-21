@@ -66,7 +66,7 @@ fn compute(close: &[f64], sigma: f64, bblen: usize) -> crate::error::Result<Vec<
         },
     )) {
         Ok(v) => v,
-        Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+        Err(e) => return Err(crate::strategies::param_skipped(e)),
     };
     Ok(bbrk_hma_v3_signals(
         close,

@@ -79,7 +79,7 @@ pub fn bbrk_hma_v4_sl_signals(
                 pos = 0;
             }
         } else {
-            if high[i] >= entry + stopd {
+            if close[i] >= entry + stopd {
                 sig[i] = Signal::Close;
                 pos = 0;
                 continue;
@@ -120,7 +120,7 @@ fn compute(
         },
     )) {
         Ok(v) => v,
-        Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+        Err(e) => return Err(crate::strategies::param_skipped(e)),
     };
     let av = match atr(&AtrInput::from_slices(
         high,
@@ -217,9 +217,9 @@ mod tests {
         );
         assert_eq!(sig[1], Signal::Sell);
         assert_eq!(sig[2], Signal::Close);
-        // 止损：entry112＋10=122，high123触发。
+        // 止损：entry112＋10=122，**close** 123 触发(收盘价判定, 非盘中 high)。
         let sig2 = bbrk_hma_v4_sl_signals(
-            &[101.0, 112.0, 115.0],
+            &[101.0, 112.0, 123.0],
             &[101.0, 112.0, 123.0],
             &[101.0, 112.0, 115.0],
             &bands(3).0,

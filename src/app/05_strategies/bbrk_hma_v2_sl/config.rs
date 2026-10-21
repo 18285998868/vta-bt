@@ -1,7 +1,7 @@
 use crate::error::AppError;
 use serde::Deserialize;
 
-use crate::config::F64Param;
+use crate::config::{F64Param, PeriodParam};
 
 /// HMA方向变种2止损闩锁版（试点，单参数）：入口同V2，上触逆势空加闩锁+止损；
 /// 其余腿保持原规则与中线离场。网格：σ × bblen × hmalen × stopk × atrlen 全 Single。
@@ -11,13 +11,13 @@ pub struct BbrkHmaV2SlConfig {
     /// 布林带标准差倍数(通道宽度)。
     pub sigma: F64Param,
     /// 布林带周期。
-    pub bblen: F64Param,
+    pub bblen: PeriodParam,
     /// HMA regime 周期。
-    pub hmalen: F64Param,
+    pub hmalen: PeriodParam,
     /// 止损 ATR 倍数。
     pub stopk: F64Param,
     /// ATR 周期。
-    pub atrlen: F64Param,
+    pub atrlen: PeriodParam,
 }
 
 impl BbrkHmaV2SlConfig {
@@ -25,28 +25,22 @@ impl BbrkHmaV2SlConfig {
     #[must_use]
     pub fn quints(&self) -> Vec<(f64, usize, usize, f64, usize)> {
         // 网格规模 = 各维度长度之积(可预知), 一次分配到位(`mem-with-capacity`)。
-        // `saturating_mul`: 笛卡尔积理论上无界, 普通 `*` 在 debug 下会溢出 panic。
-        let cap = self
-            .sigma
-            .values()
-            .len()
-            .saturating_mul(self.bblen.values().len())
-            .saturating_mul(self.hmalen.values().len())
-            .saturating_mul(self.stopk.values().len())
-            .saturating_mul(self.atrlen.values().len());
-        let mut out = Vec::with_capacity(cap.min(crate::strategies::MAX_GRID_PREALLOC));
+        // 乘积的 `saturating_mul` 与封顶逻辑集中在 `grid_prealloc` 一处
+        // (笛卡尔积理论上无界, 普通 `*` 在 debug 下会溢出 panic)。
+        let cap = crate::strategies::grid_prealloc(&[
+            self.sigma.values().len(),
+            self.bblen.values().len(),
+            self.hmalen.values().len(),
+            self.stopk.values().len(),
+            self.atrlen.values().len(),
+        ]);
+        let mut out = Vec::with_capacity(cap);
         for &s in &self.sigma.values() {
             for &b in &self.bblen.values() {
                 for &g in &self.hmalen.values() {
                     for &k in &self.stopk.values() {
                         for &a in &self.atrlen.values() {
-                            out.push((
-                                s,
-                                b.round() as usize,
-                                g.round() as usize,
-                                k,
-                                a.round() as usize,
-                            ));
+                            out.push((s, b, g, k, a));
                         }
                     }
                 }
@@ -66,14 +60,13 @@ impl BbrkHmaV2SlConfig {
     pub fn validate(&self) -> crate::error::Result<()> {
         self.sigma
             .validate_range("bbrk_hma_v2_sl.sigma", 0.1, 10.0)?;
-        self.bblen
-            .validate_range("bbrk_hma_v2_sl.bblen", 2.0, 2000.0)?;
+        self.bblen.validate_range("bbrk_hma_v2_sl.bblen", 2, 2000)?;
         self.hmalen
-            .validate_range("bbrk_hma_v2_sl.hmalen", 2.0, 2000.0)?;
+            .validate_range("bbrk_hma_v2_sl.hmalen", 2, 2000)?;
         self.stopk
             .validate_range("bbrk_hma_v2_sl.stopk", 0.5, 10.0)?;
         self.atrlen
-            .validate_range("bbrk_hma_v2_sl.atrlen", 2.0, 500.0)?;
+            .validate_range("bbrk_hma_v2_sl.atrlen", 2, 500)?;
         if self.quints().is_empty() {
             return Err(AppError::Msg("bbrk_hma_v2_sl 参数组合为空".into()));
         }
@@ -90,10 +83,10 @@ mod tests {
     fn quints_single() {
         let c = BbrkHmaV2SlConfig {
             sigma: F64Param::Single(2.5),
-            bblen: F64Param::Single(20.0),
-            hmalen: F64Param::Single(450.0),
+            bblen: PeriodParam::Single(20),
+            hmalen: PeriodParam::Single(450),
             stopk: F64Param::Single(2.0),
-            atrlen: F64Param::Single(50.0),
+            atrlen: PeriodParam::Single(50),
         };
         assert_eq!(c.quints(), vec![(2.5, 20, 450, 2.0, 50)]);
     }

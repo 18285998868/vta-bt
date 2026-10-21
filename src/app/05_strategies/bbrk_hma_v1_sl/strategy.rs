@@ -99,7 +99,7 @@ pub fn bbrk_hma_v1_sl_signals(
                 pos = 0;
             }
         } else {
-            if low[i] <= entry - stopd {
+            if close[i] <= entry - stopd {
                 sig[i] = Signal::Close;
                 pos = 0;
                 continue;
@@ -142,7 +142,7 @@ fn compute(
         },
     )) {
         Ok(v) => v,
-        Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+        Err(e) => return Err(crate::strategies::param_skipped(e)),
     };
     let ma = match hma(&HmaInput::from_slice(
         close,
@@ -151,7 +151,7 @@ fn compute(
         },
     )) {
         Ok(v) => v.values,
-        Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+        Err(e) => return Err(crate::strategies::param_skipped(e)),
     };
     let av = match atr(&AtrInput::from_slices(
         high,
@@ -246,9 +246,9 @@ mod tests {
         assert_eq!(sig[1], Signal::Buy);
         assert_eq!(sig[2], Signal::Hold);
         assert_eq!(sig[3], Signal::Close);
-        // 止损：entry89−10=79，low78触发。
+        // 止损：entry89−10=79，**close** 78 触发(收盘价判定, 非盘中 low)。
         let sig2 = bbrk_hma_v1_sl_signals(
-            &[101.0, 89.0, 80.0],
+            &[101.0, 89.0, 78.0],
             &[101.0, 89.0, 80.0],
             &[101.0, 89.0, 78.0],
             &bands(3).0,

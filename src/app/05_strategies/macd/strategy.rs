@@ -20,6 +20,7 @@ impl MacdStrategy {
     }
 }
 
+#[must_use]
 fn compute(close: &[f64], fast: usize, slow: usize, sigp: usize) -> Vec<Signal> {
     let n = close.len();
     let mut sig = vec![Signal::Hold; n];

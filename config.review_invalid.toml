@@ -1,0 +1,24 @@
+# 审查用: 验证"参数不可计算"在报告里显式可见 (status = "invalid")。
+#
+# `sma` 的 period = 3000 远超 1d 数据长度(约 1000 根) ⇒ 指标算不出来 ⇒
+# 该档必须被记为 `status = "invalid"`, **不中断**同策略的其余档位。
+[data]
+type = "binance"
+dir = "/data/nutilustrader/data"
+symbol = ["BTCUSDT"]
+timeframe = ["1d"]
+start_date = "2024-01-01"
+end_date = "2026-09-30"
+
+[backtest]
+initial_balance = 10000.0
+delay_bars = 1
+
+[output]
+dir = "/data/nutilustrader/outputs/reports/vta_review_invalid"
+detail = false
+overwrite = true
+
+[[strategy]]
+type = "sma"
+period = { start = 20, end = 3000, step = 700 }

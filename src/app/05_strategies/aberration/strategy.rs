@@ -68,7 +68,7 @@ impl AberrationStrategy {
             AtrParams { length: Some(n) },
         )) {
             Ok(v) => v.values,
-            Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+            Err(e) => return Err(crate::strategies::param_skipped(e)),
         };
         let up: Vec<f64> = hh
             .iter()

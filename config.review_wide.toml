@@ -1,0 +1,111 @@
+# 审查用宽冒烟配置: 覆盖本次审查触及的全部策略路径。
+#
+# 覆盖点:
+#   - 共享 pct_b 的 3 个使用者 (bbrk_orth / bbrk_m2 / bbrk_m3) + bbrk_pctb
+#   - BB 周期常量化的 18 处 (bbrk / bbrk_kdj / bbrk_ttm / bbrk_ttm_fire / bbmr ...)
+#   - 均值窗口径文档修正 (bbrk_vol / bbrk_vol_ema)
+#   - vwap 的四数组最小长度口径
+#   - 网格预分配封顶 (bbrk_* 全家 / swing_fractal / ma_slope_atr_gate)
+#   - ssf 家族的 validate 下沉
+#   - 原子写 + detail/fixedcurve 产出
+[data]
+type = "binance"
+dir = "/data/nutilustrader/data"
+symbol = ["BTCUSDT"]
+timeframe = ["1h", "1d"]
+start_date = "2024-01-01"
+end_date = "2026-09-30"
+
+[backtest]
+initial_balance = 10000.0
+delay_bars = 1
+fee_bps = 2.0
+slippage_bps = 1.0
+
+[output]
+dir = "/data/nutilustrader/outputs/reports/vta_review_wide"
+detail = true
+fixed_curves = true
+overwrite = true
+
+[[strategy]]
+type = "bbrk_orth"
+sigma = { start = 1.0, end = 3.0, step = 1.0 }
+
+[[strategy]]
+type = "bbrk_m2"
+sigma = { start = 1.0, end = 3.0, step = 1.0 }
+
+[[strategy]]
+type = "bbrk_m3"
+sigma = { start = 1.0, end = 3.0, step = 1.0 }
+
+[[strategy]]
+type = "bbrk_pctb"
+sigma = { start = 1.0, end = 3.0, step = 1.0 }
+exitb = 0.8
+
+[[strategy]]
+type = "bbrk_vol"
+sigma = { start = 1.0, end = 3.0, step = 1.0 }
+volmult = { start = 1.0, end = 3.0, step = 1.0 }
+voln = 20
+bblen = 20
+
+[[strategy]]
+type = "bbrk_vol_ema"
+sigma = { start = 1.0, end = 3.0, step = 1.0 }
+volmult = { start = 1.0, end = 3.0, step = 1.0 }
+voln = 20
+
+[[strategy]]
+type = "bbrk_kdj"
+sigma = { start = 1.0, end = 3.0, step = 1.0 }
+
+[[strategy]]
+type = "bbrk_ttm"
+sigma = { start = 1.0, end = 3.0, step = 1.0 }
+kc = { start = 1.0, end = 2.0, step = 1.0 }
+ttmn = 20
+
+[[strategy]]
+type = "bbrk_ttm_fire"
+sigma = { start = 1.0, end = 3.0, step = 1.0 }
+kc = { start = 1.0, end = 2.0, step = 1.0 }
+
+[[strategy]]
+type = "keltner"
+mult = { start = 1.0, end = 3.0, step = 1.0 }
+
+[[strategy]]
+type = "atr_band"
+mult = { start = 1.0, end = 3.0, step = 1.0 }
+
+[[strategy]]
+type = "vwap"
+thresh = { start = 1, end = 3, step = 1 }
+
+[[strategy]]
+type = "vwap_trend"
+reset = { start = 1, end = 3, step = 1 }
+
+[[strategy]]
+type = "swing_fractal"
+left = { start = 3, end = 10, step = 7 }
+right = { start = 2, end = 5, step = 3 }
+
+[[strategy]]
+type = "ssf"
+period = { start = 10, end = 30, step = 10 }
+
+[[strategy]]
+type = "macd"
+groups = [[12, 26, 9]]
+
+[[strategy]]
+type = "ma_slope_atr_gate"
+ma = { start = 10, end = 20, step = 10 }
+slope_k = 5
+atr_n = 14
+z_win = 20
+th = 0.5

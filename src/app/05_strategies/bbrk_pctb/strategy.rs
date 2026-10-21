@@ -11,7 +11,7 @@ use super::config::BbrkPctbConfig;
 /// 带宽为零（upper==lower）或任一输入 NaN → Hold（P7，除零保护）。
 /// exitb=0.5 时逐位等价于中线离场（BBRK），单测锁定。
 pub struct BbrkPctbStrategy {
-    pairs: Vec<(f64, f64)>,
+    pairs: Vec<(f64, usize, f64)>,
 }
 
 impl BbrkPctbStrategy {
@@ -25,15 +25,12 @@ impl BbrkPctbStrategy {
 }
 
 /// 纯决策函数(可手算单测)。
+///
+/// **不含 `mid`**: 原签名带一个 `mid: &[f64]` 形参却**从未使用**(靠 `let _ = mid;`
+/// 压住未用告警) —— 死形参比没有形参更糟: 它让读者以为中线参与了决策。
+/// 需要中线的兄弟策略(`bbrk_orth` / `bbrk_m3`)才真的读它。
 #[must_use]
-pub fn bbrk_pctb_signals(
-    close: &[f64],
-    lower: &[f64],
-    mid: &[f64],
-    upper: &[f64],
-    exitb: f64,
-) -> Vec<Signal> {
-    let _ = mid;
+pub fn bbrk_pctb_signals(close: &[f64], lower: &[f64], upper: &[f64], exitb: f64) -> Vec<Signal> {
     let n = close.len().min(lower.len()).min(upper.len());
     let mut sig = vec![Signal::Hold; n];
     let mut pos: i8 = 0;
@@ -51,10 +48,18 @@ pub fn bbrk_pctb_signals(
                 pos = -1;
             }
         } else {
-            if ![c, lo, up].iter().all(|v| v.is_finite()) || (up - lo).abs() < 1e-12 {
+            if ![c, lo, up].iter().all(|v| v.is_finite()) {
                 continue;
             }
-            let pctb = (c - lo) / (up - lo);
+            // 本函数的口径是"带宽**绝对值**近零即跳过"(`|up−lo| < 1e-12`),
+            // 与 `bbrk_orth`/`bbrk_m2`/`bbrk_m3` 的"宽度非正即 NaN"略有差别。
+            // 入口守卫保持各自原样(行为不变), 只把**比值计算**统一到
+            // `crate::strategies::pct_b` —— 此前这里内联了一份手写公式,
+            // 与另外三份抄本是同库两套口径。
+            if (up - lo).abs() < 1e-12 {
+                continue;
+            }
+            let pctb = crate::strategies::pct_b(c, lo, up);
             if !pctb.is_finite() {
                 continue;
             }
@@ -67,11 +72,16 @@ pub fn bbrk_pctb_signals(
     sig
 }
 
-fn compute(close: &[f64], sigma: f64, exitb: f64) -> crate::error::Result<Vec<Signal>> {
+fn compute(
+    close: &[f64],
+    sigma: f64,
+    bblen: usize,
+    exitb: f64,
+) -> crate::error::Result<Vec<Signal>> {
     let bb = match bollinger_bands(&BollingerBandsInput::from_slice(
         close,
         BollingerBandsParams {
-            period: Some(20),
+            period: Some(bblen),
             devup: Some(sigma),
             devdn: Some(sigma),
             matype: Some("sma".to_string()),
@@ -79,12 +89,11 @@ fn compute(close: &[f64], sigma: f64, exitb: f64) -> crate::error::Result<Vec<Si
         },
     )) {
         Ok(v) => v,
-        Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+        Err(e) => return Err(crate::strategies::param_skipped(e)),
     };
     Ok(bbrk_pctb_signals(
         close,
         &bb.lower_band,
-        &bb.middle_band,
         &bb.upper_band,
         exitb,
     ))
@@ -100,8 +109,8 @@ impl Strategy for BbrkPctbStrategy {
     }
 
     fn param_str(&self, idx: usize) -> String {
-        let (s, b) = self.pairs[idx];
-        format!("sigma={s},exitb={b}")
+        let (s, b, e) = self.pairs[idx];
+        format!("sigma={s},bblen={b},exitb={e}")
     }
 
     fn generate_signals_full(
@@ -115,8 +124,8 @@ impl Strategy for BbrkPctbStrategy {
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
         // %b 只需 close（与 BB 同源），双入口逐位一致。
-        let (s, b) = self.pairs[param_idx];
-        compute(close, s, b)
+        let (s, b, e) = self.pairs[param_idx];
+        compute(close, s, b, e)
     }
 }
 
@@ -131,9 +140,8 @@ mod tests {
         // lower=90, upper=110: 111 Buy(%b=1.05)；105 %b=0.75<0.8 Close。
         let close = vec![105.0, 111.0, 105.0, 100.0];
         let lower = vec![90.0; 4];
-        let mid = vec![100.0; 4];
         let upper = vec![110.0; 4];
-        let sig = bbrk_pctb_signals(&close, &lower, &mid, &upper, 0.8);
+        let sig = bbrk_pctb_signals(&close, &lower, &upper, 0.8);
         assert_eq!(sig[1], Signal::Buy);
         assert_eq!(sig[2], Signal::Close);
     }
@@ -143,9 +151,8 @@ mod tests {
         // exitb=0.5 ⟺ close<mid：100 不走（%b=0.5 不小于 0.5），99 走。
         let close = vec![111.0, 100.0, 99.0];
         let lower = vec![90.0; 3];
-        let mid = vec![100.0; 3];
         let upper = vec![110.0; 3];
-        let sig = bbrk_pctb_signals(&close, &lower, &mid, &upper, 0.5);
+        let sig = bbrk_pctb_signals(&close, &lower, &upper, 0.5);
         assert_eq!(sig[0], Signal::Buy);
         assert_eq!(sig[1], Signal::Hold);
         assert_eq!(sig[2], Signal::Close);
@@ -156,9 +163,8 @@ mod tests {
         // upper==lower 除零保护 → Hold 不崩。
         let close = vec![111.0, 100.0];
         let lower = vec![100.0; 2];
-        let mid = vec![100.0; 2];
         let upper = vec![100.0; 2];
-        let sig = bbrk_pctb_signals(&close, &lower, &mid, &upper, 0.8);
+        let sig = bbrk_pctb_signals(&close, &lower, &upper, 0.8);
         assert_eq!(sig[0], Signal::Buy);
         assert_eq!(sig[1], Signal::Hold);
     }
@@ -166,9 +172,9 @@ mod tests {
     #[test]
     fn test_name_and_params() {
         let s = BbrkPctbStrategy {
-            pairs: vec![(2.5, 0.5)],
+            pairs: vec![(2.5, 20, 0.5)],
         };
         assert_eq!(s.name(), "BBRK_PCTB");
-        assert_eq!(s.param_str(0), "sigma=2.5,exitb=0.5");
+        assert_eq!(s.param_str(0), "sigma=2.5,bblen=20,exitb=0.5");
     }
 }

@@ -22,6 +22,7 @@ impl VwapStrategy {
     }
 }
 
+#[must_use]
 fn session_vwap(
     high: &[f64],
     low: &[f64],
@@ -29,7 +30,12 @@ fn session_vwap(
     volume: &[f64],
     time: &[i64],
 ) -> Vec<f64> {
-    let n = close.len();
+    // 四条数组都按 `n` 索引, 故 `n` 必须是**四者的最小长度** ——
+    // 只取 `close.len()` 时, 任一条更短就会越界 panic。
+    // (生产路径由 `app::validate_columns` 保证六列等长, 但本函数是
+    // crate 内的 `pub` 面, 调用方不该替它承担这个前提。)
+    // 兄弟策略 `vwap_trend::session_vwap` 用的是同一口径。
+    let n = close.len().min(high.len()).min(low.len()).min(volume.len());
     let mut out = vec![f64::NAN; n];
     let mut day = i64::MIN;
     let mut pv = 0.0;

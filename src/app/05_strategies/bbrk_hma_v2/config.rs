@@ -1,7 +1,7 @@
 use crate::error::AppError;
 use serde::Deserialize;
 
-use crate::config::F64Param;
+use crate::config::{F64Param, PeriodParam};
 
 /// HMA方向变种2（试点，单参数）：HMA之下，碰下轨**或**碰上轨都做空；
 /// HMA之上保持原规则（上破做多）。离场统一中线（顺势进场的中线离场
@@ -13,9 +13,9 @@ pub struct BbrkHmaV2Config {
     /// 布林带标准差倍数(通道宽度)。
     pub sigma: F64Param,
     /// 布林带周期。
-    pub bblen: F64Param,
+    pub bblen: PeriodParam,
     /// HMA regime 周期。
-    pub hmalen: F64Param,
+    pub hmalen: PeriodParam,
 }
 
 impl BbrkHmaV2Config {
@@ -23,18 +23,18 @@ impl BbrkHmaV2Config {
     #[must_use]
     pub fn triples(&self) -> Vec<(f64, usize, usize)> {
         // 网格规模 = 各维度长度之积(可预知), 一次分配到位(`mem-with-capacity`)。
-        // `saturating_mul`: 笛卡尔积理论上无界, 普通 `*` 在 debug 下会溢出 panic。
-        let cap = self
-            .sigma
-            .values()
-            .len()
-            .saturating_mul(self.bblen.values().len())
-            .saturating_mul(self.hmalen.values().len());
-        let mut out = Vec::with_capacity(cap.min(crate::strategies::MAX_GRID_PREALLOC));
+        // 乘积的 `saturating_mul` 与封顶逻辑集中在 `grid_prealloc` 一处
+        // (笛卡尔积理论上无界, 普通 `*` 在 debug 下会溢出 panic)。
+        let cap = crate::strategies::grid_prealloc(&[
+            self.sigma.values().len(),
+            self.bblen.values().len(),
+            self.hmalen.values().len(),
+        ]);
+        let mut out = Vec::with_capacity(cap);
         for &s in &self.sigma.values() {
             for &b in &self.bblen.values() {
                 for &g in &self.hmalen.values() {
-                    out.push((s, b.round() as usize, g.round() as usize));
+                    out.push((s, b, g));
                 }
             }
         }
@@ -51,10 +51,8 @@ impl BbrkHmaV2Config {
     /// 任一参数越界或展开为空时返回 [`AppError`](crate::error::AppError)。
     pub fn validate(&self) -> crate::error::Result<()> {
         self.sigma.validate_range("bbrk_hma_v2.sigma", 0.1, 10.0)?;
-        self.bblen
-            .validate_range("bbrk_hma_v2.bblen", 2.0, 2000.0)?;
-        self.hmalen
-            .validate_range("bbrk_hma_v2.hmalen", 2.0, 2000.0)?;
+        self.bblen.validate_range("bbrk_hma_v2.bblen", 2, 2000)?;
+        self.hmalen.validate_range("bbrk_hma_v2.hmalen", 2, 2000)?;
         if self.triples().is_empty() {
             return Err(AppError::Msg("bbrk_hma_v2 参数组合为空".into()));
         }
@@ -71,8 +69,8 @@ mod tests {
     fn triples_single() {
         let c = BbrkHmaV2Config {
             sigma: F64Param::Single(3.5),
-            bblen: F64Param::Single(25.0),
-            hmalen: F64Param::Single(450.0),
+            bblen: PeriodParam::Single(25),
+            hmalen: PeriodParam::Single(450),
         };
         assert_eq!(c.triples(), vec![(3.5, 25, 450)]);
     }

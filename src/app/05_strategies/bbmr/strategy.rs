@@ -12,7 +12,7 @@ use super::config::BBMRConfig;
 /// long + close>=mid → Close; short + close<=mid → Close。NaN→Hold。
 /// vector-ta RSI 为 0–100 经典口径(阈值 30/70，非 nautilus 自带指标的 0–1)。
 pub struct BBMRStrategy {
-    sigmas: Vec<f64>,
+    pairs: Vec<(f64, usize)>,
 }
 
 impl BBMRStrategy {
@@ -20,7 +20,7 @@ impl BBMRStrategy {
     #[must_use]
     pub fn new(config: BBMRConfig) -> Self {
         Self {
-            sigmas: config.values(),
+            pairs: config.pairs(),
         }
     }
 }
@@ -76,11 +76,11 @@ impl Strategy for BBMRStrategy {
     }
 
     fn param_count(&self) -> usize {
-        self.sigmas.len()
+        self.pairs.len()
     }
 
     fn param_str(&self, idx: usize) -> String {
-        format!("sigma={}", self.sigmas[idx])
+        format!("sigma={},bblen={}", self.pairs[idx].0, self.pairs[idx].1)
     }
 
     fn generate_signals_full(
@@ -93,16 +93,21 @@ impl Strategy for BBMRStrategy {
         _time: &[i64],
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
-        self.compute(close, self.sigmas[param_idx])
+        self.compute(close, self.pairs[param_idx].0, self.pairs[param_idx].1)
     }
 }
 
 impl BBMRStrategy {
-    fn compute(&self, close: &[f64], sigma: f64) -> crate::error::Result<Vec<Signal>> {
+    fn compute(
+        &self,
+        close: &[f64],
+        sigma: f64,
+        bblen: usize,
+    ) -> crate::error::Result<Vec<Signal>> {
         let bb = match bollinger_bands(&BollingerBandsInput::from_slice(
             close,
             BollingerBandsParams {
-                period: Some(20),
+                period: Some(bblen),
                 devup: Some(sigma),
                 devdn: Some(sigma),
                 matype: Some("sma".to_string()),
@@ -110,11 +115,11 @@ impl BBMRStrategy {
             },
         )) {
             Ok(v) => v,
-            Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+            Err(e) => return Err(crate::strategies::param_skipped(e)),
         };
         let rsi_vals = match rsi(&RsiInput::from_slice(close, RsiParams { period: Some(14) })) {
             Ok(v) => v.values,
-            Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+            Err(e) => return Err(crate::strategies::param_skipped(e)),
         };
         Ok(bbmr_signals(
             close,
@@ -161,8 +166,10 @@ mod tests {
 
     #[test]
     fn test_name_and_params() {
-        let s = BBMRStrategy { sigmas: vec![2.0] };
+        let s = BBMRStrategy {
+            pairs: vec![(2.0, 20)],
+        };
         assert_eq!(s.name(), "BBMR");
-        assert_eq!(s.param_str(0), "sigma=2");
+        assert_eq!(s.param_str(0), "sigma=2,bblen=20");
     }
 }

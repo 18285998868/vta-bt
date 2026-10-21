@@ -20,7 +20,12 @@ fn main() -> anyhow::Result<()> {
 
     match (cli.config, cli.pbo) {
         (Some(cfg), None) => {
-            app::run(&cfg)?;
+            app::run_with(
+                &cfg,
+                app::RunOptions {
+                    no_cache: cli.no_cache,
+                },
+            )?;
         }
         (None, Some(dir)) => {
             vta::pbo::run_pbo_report(&dir)?;

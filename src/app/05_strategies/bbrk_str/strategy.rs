@@ -13,7 +13,7 @@ use super::config::BbrkStrConfig;
 /// 无 high/low 入口用 close 充当 → high==low → 开仓全拦（P7 不退化，
 /// 离场中线仍可用，与 BBRK_ADX 口径一致）。
 pub struct BbrkStrStrategy {
-    pairs: Vec<(f64, f64)>,
+    pairs: Vec<(f64, usize, f64)>,
 }
 
 impl BbrkStrStrategy {
@@ -94,12 +94,13 @@ fn compute(
     low: &[f64],
     close: &[f64],
     sigma: f64,
+    bblen: usize,
     thr: f64,
 ) -> crate::error::Result<Vec<Signal>> {
     let bb = match bollinger_bands(&BollingerBandsInput::from_slice(
         close,
         BollingerBandsParams {
-            period: Some(20),
+            period: Some(bblen),
             devup: Some(sigma),
             devdn: Some(sigma),
             matype: Some("sma".to_string()),
@@ -107,7 +108,7 @@ fn compute(
         },
     )) {
         Ok(v) => v,
-        Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+        Err(e) => return Err(crate::strategies::param_skipped(e)),
     };
     Ok(bbrk_str_signals(
         open,
@@ -131,8 +132,8 @@ impl Strategy for BbrkStrStrategy {
     }
 
     fn param_str(&self, idx: usize) -> String {
-        let (s, t) = self.pairs[idx];
-        format!("sigma={s},body={t}")
+        let (s, b, t) = self.pairs[idx];
+        format!("sigma={s},bblen={b},body={t}")
     }
 
     fn generate_signals_full(
@@ -145,8 +146,8 @@ impl Strategy for BbrkStrStrategy {
         _time: &[i64],
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
-        let (s, t) = self.pairs[param_idx];
-        compute(open, high, low, close, s, t)
+        let (s, b, t) = self.pairs[param_idx];
+        compute(open, high, low, close, s, b, t)
     }
 }
 
@@ -231,9 +232,9 @@ mod tests {
     #[test]
     fn test_name_and_params() {
         let s = BbrkStrStrategy {
-            pairs: vec![(2.5, 0.5)],
+            pairs: vec![(2.5, 20, 0.5)],
         };
         assert_eq!(s.name(), "BBRK_STR");
-        assert_eq!(s.param_str(0), "sigma=2.5,body=0.5");
+        assert_eq!(s.param_str(0), "sigma=2.5,bblen=20,body=0.5");
     }
 }

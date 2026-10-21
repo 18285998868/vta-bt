@@ -93,7 +93,7 @@ fn compute(
         },
     )) {
         Ok(v) => v,
-        Err(_) => return Ok(vec![Signal::Hold; close.len()]),
+        Err(e) => return Err(crate::strategies::param_skipped(e)),
     };
     let don_low = shift_right_1(&rolling_lowest(low, exitn));
     let don_high = shift_right_1(&rolling_highest(high, exitn));

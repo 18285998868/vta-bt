@@ -47,6 +47,8 @@ pub mod config;
 pub mod engine;
 /// 统一错误类型([`error::AppError`])。
 pub mod error;
+/// 货币金额: 定点十进制([`money::Amount`]), 不用 `f64` 承载货币。
+pub mod money;
 /// Parquet 读写层。
 #[path = "app/04_write_output/mod.rs"]
 pub mod output;

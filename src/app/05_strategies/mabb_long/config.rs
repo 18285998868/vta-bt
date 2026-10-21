@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-use crate::config::F64Param;
+use crate::config::{F64Param, PeriodParam};
 
 use super::MABB_MA_NAMES;
 
@@ -13,13 +13,13 @@ pub struct MabbLongConfig {
     /// 均线类型名列表(取值见对应策略的 `*_MA_NAMES`)。
     pub ma: Vec<String>,
     /// 布林带周期。
-    pub bblen: F64Param,
+    pub bblen: PeriodParam,
     /// 布林带标准差倍数(通道宽度)。
     pub sigma: F64Param,
     /// 止损 ATR 倍数。
     pub stopk: F64Param,
     /// ATR 周期。
-    pub atrlen: F64Param,
+    pub atrlen: PeriodParam,
 }
 
 impl MabbLongConfig {
@@ -27,30 +27,25 @@ impl MabbLongConfig {
     #[must_use]
     pub fn quints(&self) -> Vec<(String, usize, f64, f64, usize)> {
         // 网格规模 = 各维度长度之积(可预知), 一次分配到位(`mem-with-capacity`)。
-        // `saturating_mul`: 笛卡尔积理论上无界, 普通 `*` 在 debug 下会溢出 panic。
-        let cap = self
-            .ma
-            .len()
-            .saturating_mul(self.bblen.values().len())
-            .saturating_mul(self.sigma.values().len())
-            .saturating_mul(self.stopk.values().len())
-            .saturating_mul(self.atrlen.values().len());
-        let mut out = Vec::with_capacity(cap.min(crate::strategies::MAX_GRID_PREALLOC));
+        // 乘积的 `saturating_mul` 与封顶逻辑集中在 `grid_prealloc` 一处
+        // (笛卡尔积理论上无界, 普通 `*` 在 debug 下会溢出 panic)。
+        let cap = crate::strategies::grid_prealloc(&[
+            self.ma.len(),
+            self.bblen.values().len(),
+            self.sigma.values().len(),
+            self.stopk.values().len(),
+            self.atrlen.values().len(),
+        ]);
+        let mut out = Vec::with_capacity(cap);
         for name in &self.ma {
             for &l in &self.bblen.values() {
                 for &s in &self.sigma.values() {
                     for &k in &self.stopk.values() {
                         if k == 0.0 {
-                            out.push((name.clone(), l.round() as usize, s, 0.0, 0));
+                            out.push((name.clone(), l, s, 0.0, 0));
                         } else {
                             for &a in &self.atrlen.values() {
-                                out.push((
-                                    name.clone(),
-                                    l.round() as usize,
-                                    s,
-                                    k,
-                                    a.round() as usize,
-                                ));
+                                out.push((name.clone(), l, s, k, a));
                             }
                         }
                     }
@@ -67,9 +62,9 @@ impl MabbLongConfig {
     pub fn validate(&self) -> crate::error::Result<()> {
         // 范围校验(原在 config.rs 的 match 中, 已下沉到本类型)
         self.sigma.validate_range("mabb_long.sigma", 0.1, 10.0)?;
-        self.bblen.validate_range("mabb_long.bblen", 2.0, 2000.0)?;
+        self.bblen.validate_range("mabb_long.bblen", 2, 2000)?;
         self.stopk.validate_range("mabb_long.stopk", 0.0, 10.0)?;
-        self.atrlen.validate_range("mabb_long.atrlen", 0.0, 500.0)?;
+        self.atrlen.validate_range("mabb_long.atrlen", 0, 500)?;
 
         for name in &self.ma {
             if !MABB_MA_NAMES.contains(&name.as_str()) {
@@ -94,10 +89,10 @@ mod tests {
     fn quints_dedupes_zero_stopk() {
         let c = MabbLongConfig {
             ma: vec!["sma".into()],
-            bblen: F64Param::Single(20.0),
+            bblen: PeriodParam::Single(20),
             sigma: F64Param::Single(2.5),
             stopk: F64Param::Single(0.0),
-            atrlen: F64Param::Single(14.0),
+            atrlen: PeriodParam::Single(14),
         };
         assert_eq!(c.quints(), vec![("sma".to_string(), 20, 2.5, 0.0, 0)]);
     }
