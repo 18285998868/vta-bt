@@ -141,6 +141,16 @@ tokio 的 worker 线程只做调度。读 zip（实测 52ms）与跑回测（实
 - Ichimoku 改为自实现：转换线/基准线画在当前 bar，先行 A/B 右移 `displacement` 根；不再直接采用库的“四线同起点”输出。
 - 回归测试：`cd frontend && npm test`。覆盖首有效下标、无 `undefined`、暖机后无空洞、MACD 三线同轴、Ichimoku 位移、振荡指标值域，以及“完整序列 vs 回放前缀”在重叠区间逐点一致。
 
+### UDF 数据源
+
+- 独立的 `/udf/*` 命名空间，复用本地 `DataLoader`，不改变 `/api/*` 契约。Charting Library 的 Datafeed URL 填 `http://127.0.0.1:3011/udf` 即可。
+- 端点：`GET /udf/config`、`/udf/time`、`/udf/symbols?symbol=`、`/udf/search?query=&type=&exchange=&limit=`、`/udf/history?symbol=&resolution=&from=&to=&countback=`。
+- symbol：`BINANCE:BTCUSDT`（binance UM futures）或 `DUKASCOPY:EURUSD`；裸交易对默认按 futures 处理。`Spot` 本地无数据，不对外暴露。
+- resolution：UDF 分钟数映射到本地周期，例如 `1→1m`、`60→1h`、`240→4h`、`1D→1d`；dukascopy 对应 `1→M1`、`60→H1`、`1D→D1`。`/udf/symbols` 会按该交易对实际存在的周期返回 `supported_resolutions`。
+- `/udf/history` 的 `from/to` 是**秒级、闭区间**；返回 `{s:"ok",t,o,h,l,c,v}`，其中 `t` 也是秒。无数据返回 `{s:"no_data"}`，非法 symbol/resolution 返回 `{s:"error",errmsg}`。
+- 单次最多 10000 根；`countback` 用于只要最近 N 根（`from/to` 可为 0）。时间过滤仍在 blocking 线程池执行，读盘结果走现有 moka 缓存。
+- 回归测试：`cargo test -p tradingview-backend --test udf_test`，覆盖五个端点、秒级时间、闭区间边界、`no_data` 与非法 resolution。
+
 状态数据与行情文件分离：行情仍然只读 zip/bi5，SQLite 只存研究终端的 UI 状态。默认路径 `<data_dir>/tradingview.db`，启动时幂等执行 `migrations/001_init.sql`，并开启 WAL。
 
 - `layouts`：命名布局，一行一份**完整会话快照**（`market_type/pair/timeframe/indicators/strategy{TOML,applied}/viewport`）。名称唯一，列表只回摘要，读取详情才回 `payload`。

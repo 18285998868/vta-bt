@@ -4,6 +4,7 @@ pub mod data_loader;
 pub mod routes;
 pub mod state;
 pub mod strategy;
+pub mod udf;
 
 pub use routes::AppState;
 

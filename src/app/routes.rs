@@ -719,6 +719,23 @@ pub fn create_router(app_state: AppState) -> Router {
             "/api/preferences",
             axum::routing::get(get_preferences_handler).put(put_preferences_handler),
         )
+        .route(
+            "/udf/config",
+            axum::routing::get(super::udf::config_handler),
+        )
+        .route("/udf/time", axum::routing::get(super::udf::time_handler))
+        .route(
+            "/udf/symbols",
+            axum::routing::get(super::udf::symbols_handler),
+        )
+        .route(
+            "/udf/search",
+            axum::routing::get(super::udf::search_handler),
+        )
+        .route(
+            "/udf/history",
+            axum::routing::get(super::udf::history_handler),
+        )
         .layer(DefaultBodyLimit::max(2 * 1024 * 1024))
         .with_state(app_state)
 }
