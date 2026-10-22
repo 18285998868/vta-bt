@@ -115,6 +115,9 @@ pub struct DataSection {
     /// 数据源类型(如 `binance`)。
     #[serde(rename = "type")]
     pub source_type: kline_reader::DataSource,
+    /// Binance 市场(spot/futures/um/futures/cm), 缺省 `futures/um`。
+    #[serde(default)]
+    pub market: Option<kline_reader::Market>,
     /// 数据根目录。
     pub dir: PathBuf,
     /// 品种, 单值或列表。
@@ -153,14 +156,25 @@ impl DataSection {
         symbol: &str,
         timeframe: &str,
     ) -> Result<kline_reader::DataConfig, kline_reader::ReaderError> {
-        kline_reader::DataConfig::new(
-            self.source_type,
-            &self.dir,
-            symbol,
-            timeframe,
-            self.start_date.as_deref(),
-            self.end_date.as_deref(),
-        )
+        match self.market {
+            Some(market) => kline_reader::DataConfig::new_with_market(
+                self.source_type,
+                market,
+                &self.dir,
+                symbol,
+                timeframe,
+                self.start_date.as_deref(),
+                self.end_date.as_deref(),
+            ),
+            None => kline_reader::DataConfig::new(
+                self.source_type,
+                &self.dir,
+                symbol,
+                timeframe,
+                self.start_date.as_deref(),
+                self.end_date.as_deref(),
+            ),
+        }
     }
 }
 
@@ -1241,6 +1255,15 @@ mod tests {
         assert_eq!(pair.timeframe().as_str(), "1h");
         assert_eq!(pair.dir(), cfg.data.dir);
         assert_eq!(pair.source_type(), cfg.data.source_type);
+        assert_eq!(pair.market(), kline_reader::Market::Um);
+    }
+
+    #[test]
+    fn for_pair_honours_market_override() {
+        let toml = "[data]\ntype = \"binance\"\nmarket = \"spot\"\ndir = \"/tmp\"\nsymbol = \"BTCUSDT\"\ntimeframe = \"1d\"\n\n[backtest]\ninitial_balance = 10000.0\n\n[[strategy]]\ntype = \"sma\"\nperiod = 20\n";
+        let cfg: Config = toml::from_str(toml).unwrap();
+        let pair = cfg.data.for_pair("BTCUSDT", "1d").unwrap();
+        assert_eq!(pair.market(), kline_reader::Market::Spot);
     }
 
     #[test]

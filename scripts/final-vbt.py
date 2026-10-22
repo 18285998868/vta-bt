@@ -11,7 +11,7 @@ import pandas as pd
 
 import vectorbt as vbt
 
-KROOT = "/data/nutilustrader/data/binance/data/um/daily/klines"
+KROOT = "/data/nutilustrader/data/binance/data/futures/um/daily/klines"
 
 
 def load():

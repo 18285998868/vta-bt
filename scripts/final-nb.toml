@@ -1,5 +1,5 @@
 [data]
-dir = "/data/nutilustrader/data/binance/data/um/daily/klines"
+dir = "/data/nutilustrader/data"
 start_date = "2020-01-01"
 end_date = "2026-09-29"
 
