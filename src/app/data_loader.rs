@@ -18,7 +18,7 @@ const LARGE_DATASET_ROWS: usize = 500_000;
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum MarketType {
-    /// binance U 本位合约（`{dir}/binance/data/um/daily/klines/{symbol}/{tf}/*.zip`）。
+    /// binance U 本位合约（`{dir}/binance/data/futures/um/daily/klines/{symbol}/{tf}/*.zip`）。
     #[default]
     Futures,
     /// binance 现货（本地暂无对应数据）。
@@ -312,8 +312,8 @@ impl DataLoader {
 
     /// 行情根目录。
     ///
-    /// - Futures：`{dir}/binance/data/um/daily/klines`（binance um daily 布局，
-    ///   周期是**子目录**）。
+    /// - Futures：`{dir}/binance/data/futures/um/daily/klines`（binance futures/um
+    ///   daily 布局，周期是**子目录**）。
     /// - Dukascopy：`{dir}/dukascopy`（周期不是目录，而是同一批 `.bi5` 的不同聚合粒度）。
     /// - Spot：本地暂无对应数据源，返回 `None`，调用方按空/404 处理。
     fn base_path(&self, market_type: MarketType) -> Option<PathBuf> {
@@ -322,6 +322,7 @@ impl DataLoader {
                 self.data_dir
                     .join("binance")
                     .join("data")
+                    .join("futures")
                     .join("um")
                     .join("daily")
                     .join("klines"),
@@ -510,6 +511,7 @@ mod tests {
     fn binance_tf_dir(dir: &Path, pair: &str, timeframe: &str) -> PathBuf {
         dir.join("binance")
             .join("data")
+            .join("futures")
             .join("um")
             .join("daily")
             .join("klines")

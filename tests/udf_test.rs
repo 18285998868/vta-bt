@@ -14,6 +14,7 @@ fn write_zip(dir: &Path, pair: &str, timeframe: &str, rows: &[(i64, f64, f64, f6
     let tf_dir = dir
         .join("binance")
         .join("data")
+        .join("futures")
         .join("um")
         .join("daily")
         .join("klines")

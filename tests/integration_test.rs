@@ -13,6 +13,7 @@ fn write_zip(
     let tf_dir = dir
         .join("binance")
         .join("data")
+        .join("futures")
         .join("um")
         .join("daily")
         .join("klines")
