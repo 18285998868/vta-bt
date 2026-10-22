@@ -134,7 +134,12 @@ tokio 的 worker 线程只做调度。读 zip（实测 52ms）与跑回测（实
 - 策略回放请求带 `before = 下一根 bar 时间`（开区间，等价于“只回测到当前 bar”）；请求按 300ms 节流、只接受最后一次结果，避免高速播放时旧结果覆盖新游标。
 - 回放游标属于临时交互状态，不写入 SQLite；`last_session` 仍只保存交易对/周期/指标/策略/视口。
 
+### 指标 parity
 
+- 26 个指标以 Pine/TradingView 的“首有效 bar + null 暖机”为口径；未暖机位置一律 `null`，不会画成 0。
+- 修正了对齐偏差：PSAR、Ichimoku、Chandelier、ADX、MFI、KST、TRIX、OBV、AO，以及 MACD/Stoch 的暖机段。
+- Ichimoku 改为自实现：转换线/基准线画在当前 bar，先行 A/B 右移 `displacement` 根；不再直接采用库的“四线同起点”输出。
+- 回归测试：`cd frontend && npm test`。覆盖首有效下标、无 `undefined`、暖机后无空洞、MACD 三线同轴、Ichimoku 位移、振荡指标值域，以及“完整序列 vs 回放前缀”在重叠区间逐点一致。
 
 状态数据与行情文件分离：行情仍然只读 zip/bi5，SQLite 只存研究终端的 UI 状态。默认路径 `<data_dir>/tradingview.db`，启动时幂等执行 `migrations/001_init.sql`，并开启 WAL。
 

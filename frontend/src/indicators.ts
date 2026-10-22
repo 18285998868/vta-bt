@@ -91,11 +91,41 @@ function lows(klines: Kline[]): number[] {
 function volumes(klines: Kline[]): number[] {
   return klines.map((k) => k.volume);
 }
-function padLeft(raw: number[], n: number, len: number): (number | null)[] {
+/**
+ * 把指标库输出对齐到输入 K 线：raw[0] 对应第 firstIndex 根。
+ * 未暖机 / NaN / undefined 一律落成 null，避免把“还没有值”画成 0。
+ */
+function padLeft(
+  raw: readonly (number | null | undefined)[],
+  firstIndex: number,
+  len: number,
+): (number | null)[] {
   const out: (number | null)[] = new Array(len).fill(null);
-  for (let i = 0; i < raw.length && n + i < len; i++) out[n + i] = raw[i];
+  for (let i = 0; i < raw.length; i++) {
+    const idx = firstIndex + i;
+    if (idx < 0) continue;
+    if (idx >= len) break;
+    const v = raw[i];
+    if (typeof v === 'number' && Number.isFinite(v)) out[idx] = v;
+  }
   return out;
 }
+
+/** period 根 high/low 的中点；不足 period 根的位置为 null。 */
+function rollingMid(high: number[], low: number[], period: number): (number | null)[] {
+  const out: (number | null)[] = new Array(high.length).fill(null);
+  for (let i = period - 1; i < high.length; i++) {
+    let hi = -Infinity;
+    let lo = Infinity;
+    for (let j = i - period + 1; j <= i; j++) {
+      if (high[j] > hi) hi = high[j];
+      if (low[j] < lo) lo = low[j];
+    }
+    out[i] = (hi + lo) / 2;
+  }
+  return out;
+}
+
 
 // ───── Main chart overlays ─────
 
@@ -163,7 +193,7 @@ register({
   ],
   calculate(klines, p) {
     const raw = TI.PSAR.calculate({ step: p.step, max: p.max, high: highs(klines), low: lows(klines) });
-    return { overlay: [{ label: `PSAR(${p.step})`, color: '#f38ba8', values: padLeft(raw, 1, klines.length) }] };
+    return { overlay: [{ label: `PSAR(${p.step})`, color: '#f38ba8', values: padLeft(raw, 0, klines.length) }] };
   },
 });
 
@@ -189,17 +219,28 @@ register({
     { key: 'displacement', name: '位移', type: 'number', default: 26, min: 1, max: 100, step: 1 },
   ],
   calculate(klines, p) {
-    const raw = TI.IchimokuCloud.calculate({
-      conversionPeriod: p.conversion, basePeriod: p.base, spanPeriod: p.span, displacement: p.displacement,
-      high: highs(klines), low: lows(klines),
-    });
-    const pad = Math.max(p.base, p.conversion) - 1;
+    const len = klines.length;
+    const high = highs(klines);
+    const low = lows(klines);
+    const conversion = rollingMid(high, low, p.conversion);
+    const base = rollingMid(high, low, p.base);
+    const spanBMid = rollingMid(high, low, p.span);
+    const spanA: (number | null)[] = new Array(len).fill(null);
+    const spanB: (number | null)[] = new Array(len).fill(null);
+    // TradingView：转换线/基准线画在当前 bar，先行 A/B 向右位移 displacement 根。
+    for (let i = p.displacement; i < len; i++) {
+      const src = i - p.displacement;
+      const c = conversion[src];
+      const b = base[src];
+      if (c !== null && b !== null) spanA[i] = (c + b) / 2;
+      spanB[i] = spanBMid[src];
+    }
     return {
       overlay: [
-        { label: `转换线(${p.conversion})`, color: '#89b4fa', values: padLeft(raw.map((r) => r.conversion), pad, klines.length) },
-        { label: `基准线(${p.base})`, color: '#f9e2af', values: padLeft(raw.map((r) => r.base), pad, klines.length) },
-        { label: '先行A', color: '#a6e3a1', values: padLeft(raw.map((r) => r.spanA), pad, klines.length) },
-        { label: '先行B', color: '#f38ba8', values: padLeft(raw.map((r) => r.spanB), pad, klines.length) },
+        { label: `转换线(${p.conversion})`, color: '#89b4fa', values: conversion },
+        { label: `基准线(${p.base})`, color: '#f9e2af', values: base },
+        { label: '先行A', color: '#a6e3a1', values: spanA },
+        { label: '先行B', color: '#f38ba8', values: spanB },
       ],
     };
   },
@@ -243,7 +284,7 @@ register({
       period: p.period, multiplier: p.multiplier,
       high: highs(klines), low: lows(klines), close: closes(klines),
     }) as unknown as ChandelierExitResult[];
-    const pad = p.period - 1;
+    const pad = p.period;
     return {
       overlay: [
         { label: `CE长(${p.period})`, color: '#a6e3a1', values: padLeft(raw.map((r) => r.exitLong), pad, klines.length) },
@@ -284,9 +325,9 @@ register({
     return {
       sub: [{
         series: [
-          { label: `MACD(${p.fast},${p.slow})`, color: '#89dceb', type: 'line', values: padLeft(raw.map((r) => r.MACD ?? 0), pad, klines.length) },
-          { label: 'Signal', color: '#f9e2af', type: 'line', values: padLeft(raw.map((r) => r.signal ?? 0), pad, klines.length) },
-          { label: 'Histogram', color: '#a6e3a1', type: 'histogram', values: padLeft(raw.map((r) => r.histogram ?? 0), pad + p.signal - 1, klines.length) },
+          { label: `MACD(${p.fast},${p.slow})`, color: '#89dceb', type: 'line', values: padLeft(raw.map((r) => r.MACD), pad, klines.length) },
+          { label: 'Signal', color: '#f9e2af', type: 'line', values: padLeft(raw.map((r) => r.signal), pad, klines.length) },
+          { label: 'Histogram', color: '#a6e3a1', type: 'histogram', values: padLeft(raw.map((r) => r.histogram), pad, klines.length) },
         ],
       }],
     };
@@ -306,7 +347,7 @@ register({
       period: p.period, signalPeriod: p.signalPeriod,
       high: highs(klines), low: lows(klines), close: closes(klines),
     });
-    const pad = p.period + p.signalPeriod - 2;
+    const pad = p.period - 1;
     return {
       sub: [{
         series: [
@@ -334,7 +375,8 @@ register({
       kPeriod: p.kPeriod, dPeriod: p.dPeriod,
       values: closes(klines),
     });
-    const pad = p.rsiPeriod + p.stochPeriod + p.kPeriod + p.dPeriod - 4;
+    // RSI 首值在 rsiPeriod；随后 Stoch/K/D 各消耗 (周期-1) 根。
+    const pad = p.rsiPeriod + p.stochPeriod + p.kPeriod + p.dPeriod - 3;
     return {
       sub: [{
         series: [
@@ -375,7 +417,7 @@ register({
   paramDefs: [{ key: 'period', name: '周期', type: 'number', default: 14, min: 2, max: 100, step: 1 }],
   calculate(klines, p) {
     const raw = TI.ADX.calculate({ period: p.period, high: highs(klines), low: lows(klines), close: closes(klines) }) as ADXResult[];
-    const pad = p.period * 2 - 2;
+    const pad = p.period * 2 - 1;
     return {
       sub: [{
         series: [
@@ -431,11 +473,17 @@ register({
       SMAROCPer1: p.sma1, SMAROCPer2: p.sma2, SMAROCPer3: p.sma3, SMAROCPer4: p.sma4,
       signalPeriod: p.signal, values: closes(klines),
     });
-    const pad = Math.max(p.roc4 + p.sma4, p.signal);
+    const pad = Math.max(
+      p.roc1 + p.sma1 - 1,
+      p.roc2 + p.sma2 - 1,
+      p.roc3 + p.sma3 - 1,
+      p.roc4 + p.sma4 - 1,
+    );
     return {
       sub: [{
         series: [
           { label: 'KST', color: '#89dceb', type: 'line', values: padLeft(raw.map((r) => r.kst), pad, klines.length) },
+          // 库输出的前 signalPeriod-1 个 signal 是 undefined：padLeft 会把它们留成 null。
           { label: 'Signal', color: '#f9e2af', type: 'line', values: padLeft(raw.map((r) => r.signal), pad, klines.length) },
         ],
       }],
@@ -453,7 +501,7 @@ register({
   ],
   calculate(klines, p) {
     const raw = TI.TRIX.calculate({ period: p.period, values: closes(klines) });
-    const trixPad = p.period * 3 - 3;
+    const trixPad = p.period * 3 - 2;
     const trix = padLeft(raw, trixPad, klines.length);
     const sigRaw = TI.SMA.calculate({ period: p.signal, values: raw });
     const sig = padLeft(sigRaw, trixPad + p.signal - 1, klines.length);
@@ -470,7 +518,7 @@ register({
   defaultParams: {}, paramDefs: [],
   calculate(klines, _p) {
     const raw = TI.OBV.calculate({ close: closes(klines), volume: volumes(klines) });
-    return { sub: [{ series: [{ label: 'OBV', color: '#94e2d5', type: 'line', values: raw }] }] };
+    return { sub: [{ series: [{ label: 'OBV', color: '#94e2d5', type: 'line', values: padLeft(raw, 1, klines.length) }] }] };
   },
 });
 
@@ -491,7 +539,7 @@ register({
   paramDefs: [{ key: 'period', name: '周期', type: 'number', default: 14, min: 2, max: 100, step: 1 }],
   calculate(klines, p) {
     const raw = TI.MFI.calculate({ period: p.period, high: highs(klines), low: lows(klines), close: closes(klines), volume: volumes(klines) });
-    return { sub: [{ series: [{ label: `MFI(${p.period})`, color: '#cba6f7', type: 'line', values: padLeft(raw, p.period, klines.length) }] }] };
+    return { sub: [{ series: [{ label: `MFI(${p.period})`, color: '#cba6f7', type: 'line', values: padLeft(raw, p.period + 1, klines.length) }] }] };
   },
 });
 
@@ -516,7 +564,7 @@ register({
   ],
   calculate(klines, p) {
     const raw = TI.AwesomeOscillator.calculate({ fastPeriod: p.fast, slowPeriod: p.slow, high: highs(klines), low: lows(klines) });
-    return { sub: [{ series: [{ label: `AO(${p.fast},${p.slow})`, color: '#a6e3a1', type: 'histogram', values: padLeft(raw, p.slow, klines.length) }] }] };
+    return { sub: [{ series: [{ label: `AO(${p.fast},${p.slow})`, color: '#a6e3a1', type: 'histogram', values: padLeft(raw, p.slow - 1, klines.length) }] }] };
   },
 });
 

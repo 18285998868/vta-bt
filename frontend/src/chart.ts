@@ -276,9 +276,10 @@ export function createChartManager(
   // ---- indicator data helpers: include ALL kline timestamps for visual alignment ----
   function buildLineData(values: (number | null)[], klines: Kline[]): LineData[] {
     const out: LineData[] = [];
-    for (let i = 0; i < values.length; i++) {
-      if (values[i] !== null) {
-        out.push({ time: (klines[i].time / 1000) as UTCTimestamp, value: values[i]! });
+    for (let i = 0; i < values.length && i < klines.length; i++) {
+      const v = values[i];
+      if (v !== null && v !== undefined && Number.isFinite(v)) {
+        out.push({ time: (klines[i].time / 1000) as UTCTimestamp, value: v });
       }
     }
     return out;
@@ -286,9 +287,10 @@ export function createChartManager(
 
   function buildHistogramData(values: (number | null)[], klines: Kline[], color: string): HistogramData[] {
     const out: HistogramData[] = [];
-    for (let i = 0; i < values.length; i++) {
-      if (values[i] !== null) {
-        out.push({ time: (klines[i].time / 1000) as UTCTimestamp, value: values[i]!, color });
+    for (let i = 0; i < values.length && i < klines.length; i++) {
+      const v = values[i];
+      if (v !== null && v !== undefined && Number.isFinite(v)) {
+        out.push({ time: (klines[i].time / 1000) as UTCTimestamp, value: v, color });
       }
     }
     return out;
