@@ -131,7 +131,7 @@ fn compute(
         },
     )) {
         Ok(v) => v.values,
-        Err(_) => vec![f64::NAN; close.len()],
+        Err(e) => return Err(crate::strategies::param_skipped(e)),
     };
     Ok(bbrk_hma_v4_sl_signals(
         close,
@@ -238,5 +238,24 @@ mod tests {
         };
         assert_eq!(s.name(), "BBRK_HMA_V4_SL");
         assert_eq!(s.param_str(0), "sigma=2.5,bblen=20,stopk=2,atrlen=50");
+    }
+
+    /// **契约**: ATR 算不出来时必须 `ParamSkipped`, 不得静默退化为无追踪止损。
+    #[test]
+    fn short_series_is_param_skipped() {
+        let n = 8;
+        let close: Vec<f64> = (0..n).map(|i| 100.0 + i as f64).collect();
+        let high: Vec<f64> = close.iter().map(|c| c + 1.0).collect();
+        let low: Vec<f64> = close.iter().map(|c| c - 1.0).collect();
+        let s = BbrkHmaV4SlStrategy {
+            quads: vec![(2.0, 5, 2.0, 14)],
+        };
+        let err = s
+            .generate_signals_full(&close, &high, &low, &close, &[], &[], 0)
+            .expect_err("ATR(14) 在 8 根 bar 上不可计算");
+        assert!(
+            matches!(err, crate::error::AppError::ParamSkipped { .. }),
+            "必须是 ParamSkipped, 实际: {err}"
+        );
     }
 }

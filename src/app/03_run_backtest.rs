@@ -22,7 +22,10 @@ pub struct SummaryMetrics {
     pub sortino_ratio: f64,
     /// 最大回撤(百分数)。
     pub max_drawdown_pct: f64,
-    /// 盈利笔数占比(百分数)。
+    /// 盈利笔数占**已决笔数**(盈利 + 亏损, 不含保本)的比例(百分数)。
+    ///
+    /// 保本(`pnl == 0`)既不算赢也不算亏, 故不进入分母 —— 否则"零盈亏"
+    /// 会被读成一次失败交易, 系统性拉低胜率。
     pub win_rate: f64,
     /// 总盈利 / 总亏损。无亏损时取总盈利。
     pub profit_factor: f64,
@@ -40,8 +43,13 @@ pub struct SummaryMetrics {
     /// 与 [`Self::fixed_expectancy_bps`] 的差就是佣金拖累。
     pub expectancy: f64,
     /// 最长连续盈利笔数。
+    ///
+    /// 保本笔**不计入也不打断**连续段(它不构成一次盈利或亏损)。
     pub consecutive_wins: u32,
     /// 最长连亏笔数。
+    ///
+    /// 保本笔**不计入也不打断**连续段: 否则"零盈亏"会被当作一次亏损,
+    /// 把连亏段人为拉长。
     pub consecutive_losses: u32,
     /// 末根权益(货币; 定点十进制)。空头浮空时可为负。
     pub final_equity: crate::money::Amount,
@@ -98,6 +106,20 @@ pub struct SummaryMetrics {
     pub fixed_profit_factor: f64,
 }
 
+impl SummaryMetrics {
+    /// 回填执行口径字段(`delay_bars` / `fee_bps` / `slippage_bps`)。
+    ///
+    /// 这三列描述的是**本次运行的执行假设**, 不是从交易序列算出的指标。
+    /// 引擎存在多条返回路径(正常计算、数据不足提前返回、报告层构造的
+    /// `invalid` 行), 若各写一份就容易出现"同一列有的行是 0、有的行是真实值"。
+    /// 故收敛到这一个方法: 凡是产出 `SummaryMetrics` 的路径都必须调用它。
+    pub fn apply_exec(&mut self, exec: &ExecConfig) {
+        self.delay_bars = exec.delay_u32();
+        self.fee_bps = exec.fee_rate * 10_000.0;
+        self.slippage_bps = exec.slip_rate * 10_000.0;
+    }
+}
+
 /// 成交执行假设。`delay_bars = 1` 为推荐口径(信号次根 fill bar 成交,
 /// `fill_close=false` 取开盘, `fill_close=true` 取收盘)。费率按单边名义扣除。
 ///
@@ -108,9 +130,10 @@ pub struct SummaryMetrics {
 pub struct ExecConfig {
     /// 信号到成交的 bar 间隔, 恒 ≥ 1(类型保证)。1 = 次根 fill bar。
     pub delay_bars: NonZeroUsize,
-    /// 单边佣金率(= bps / 10000)。
+    /// 单边佣金率(= bps / 10000)。**必须 >= 0 且有限**; 构造期与引擎入口
+    /// ([`simulate`] / [`simulate_detailed`]) 都会校验。
     pub fee_rate: f64,
-    /// 单边逆向滑点率(= bps / 10000)。
+    /// 单边逆向滑点率(= bps / 10000)。约束同 [`Self::fee_rate`]。
     pub slip_rate: f64,
     /// fill bar 取收盘(true)还是开盘(false, 默认)。
     pub fill_close: bool,
@@ -129,10 +152,17 @@ impl Default for ExecConfig {
 }
 
 impl ExecConfig {
-    /// 构造执行配置。`delay_bars = 0` 直接拒绝(前视乐观口径已删除)。
+    /// 构造执行配置。`delay_bars = 0`、负/非有限的费率或滑点、或换算回 bps
+    /// 会溢出的费率直接拒绝。
     ///
     /// # Errors
-    /// `delay_bars == 0` 时返回 [`AppError::Msg`](crate::error::AppError::Msg)。
+    /// `delay_bars == 0`、`fee_bps`/`slippage_bps` 为负或 `NaN`/`Inf`、或
+    /// 派生 bps 非有限时返回 [`AppError::Msg`](crate::error::AppError::Msg)。
+    ///
+    /// 配置路径在反序列化期已用 newtype 保证非负有限; 这里再校验一次, 是因为
+    /// [`ExecConfig`] 是**公开的引擎 API**, 调用方可以绕过
+    /// [`crate::config::BacktestConfig`] 直接构造。负费率会让每笔交易"倒赚钱",
+    /// `NaN` 会污染整条权益曲线 —— 都属于必须在入口拒绝而不是静默传播的输入。
     pub fn try_from_bps_fill(
         delay_bars: usize,
         fee_bps: f64,
@@ -144,23 +174,36 @@ impl ExecConfig {
                 "delay_bars 必须 >= 1: 信号当根成交为前视乐观口径, 已移除".to_string(),
             )
         })?;
-        Ok(Self {
+        if !fee_bps.is_finite() || fee_bps < 0.0 {
+            return Err(crate::error::AppError::Msg(format!(
+                "fee_bps 必须 >= 0 且为有限值, 当前为 {fee_bps}"
+            )));
+        }
+        if !slippage_bps.is_finite() || slippage_bps < 0.0 {
+            return Err(crate::error::AppError::Msg(format!(
+                "slippage_bps 必须 >= 0 且为有限值, 当前为 {slippage_bps}"
+            )));
+        }
+        let config = Self {
             delay_bars,
             fee_rate: fee_bps / 10_000.0,
             slip_rate: slippage_bps / 10_000.0,
             fill_close,
-        })
+        };
+        // 费率本身有限不代表 `rate * 10_000` 有限; 后者会写进报告的 bps 列。
+        config.validate_rates()?;
+        Ok(config)
     }
 
     /// [`Self::try_from_bps_fill`] 的 infallible 版本(固定 `fill_close = false`)。
     ///
     /// # Panics
-    /// `delay_bars == 0` 时 panic(前视乐观口径已移除)。
+    /// `delay_bars == 0`、负/非有限的费率或滑点时 panic。
     ///
     /// 这个 `expect` 是**故意的"bug 探测器"**(`err-expect-bugs-only`):
-    /// `delay_bars == 0` 不是用户输入错误 —— 配置路径在**反序列化期**就把它
-    /// 拒了(`BacktestConfig::try_from`), 能走到这里的 `0` 一定是代码写错了,
-    /// 应当立刻炸掉而不是返回一个"前视乐观"的执行口径。
+    /// 这些值不是用户输入错误 —— 配置路径在**反序列化期**就拒了
+    /// (`BacktestConfig::try_from`), 能走到这里的非法值一定是代码写错了,
+    /// 应当立刻炸掉而不是返回一个"前视乐观/倒赚手续费"的执行口径。
     #[allow(clippy::expect_used)]
     #[must_use]
     pub fn from_bps_fill(
@@ -170,7 +213,36 @@ impl ExecConfig {
         fill_close: bool,
     ) -> Self {
         Self::try_from_bps_fill(delay_bars, fee_bps, slippage_bps, fill_close)
-            .expect("delay_bars >= 1: 前视乐观口径(delay=0)已在引擎层移除")
+            .expect("执行参数必须合法: delay>=1 且 fee/slip 非负有限")
+    }
+
+    /// 引擎入口的最终校验: 即使调用方绕过构造函数直接写公开字段, 也不能把
+    /// 负费率 / `NaN` 带进账本。
+    fn validate_rates(&self) -> crate::error::Result<()> {
+        if !self.fee_rate.is_finite() || self.fee_rate < 0.0 {
+            return Err(crate::error::AppError::Msg(format!(
+                "fee_rate 必须 >= 0 且为有限值, 当前为 {}",
+                self.fee_rate
+            )));
+        }
+        if !self.slip_rate.is_finite() || self.slip_rate < 0.0 {
+            return Err(crate::error::AppError::Msg(format!(
+                "slip_rate 必须 >= 0 且为有限值, 当前为 {}",
+                self.slip_rate
+            )));
+        }
+        // `apply_exec` 会写回 `rate * 10_000`; 该派生值也必须是有限数。
+        if !(self.fee_rate * 10_000.0).is_finite() {
+            return Err(crate::error::AppError::Msg(
+                "fee_rate 过大: 换算回 fee_bps 时溢出".to_string(),
+            ));
+        }
+        if !(self.slip_rate * 10_000.0).is_finite() {
+            return Err(crate::error::AppError::Msg(
+                "slip_rate 过大: 换算回 slippage_bps 时溢出".to_string(),
+            ));
+        }
+        Ok(())
     }
 
     /// [`Self::from_bps_fill`] 的 `fill_close = false` 简写。
@@ -622,6 +694,12 @@ struct MetricsSource {
     acc: TradeAccum,
     eq: CurveAccum,
     fx: CurveAccum,
+    /// 末根权益的**精确定点值**(不是从 f64 曲线回造的近似值)。
+    ///
+    /// 报告里的 `final_equity` 与 `total_return` 必须由账本直接给出: 先转成
+    /// `f64` 再 `Amount::from_f64` 会把 15 位之后的精度丢掉, 与逐笔
+    /// `sum(pnl)` 对不上(实测差 1.75e-7)。
+    final_equity: crate::money::Amount,
 }
 
 /// 仅详细路径需要落盘的产物。
@@ -653,7 +731,13 @@ struct ScanOut {
 /// 才改变 `cur_pos`/`cash`。因此 bar `i` 的权益只由 bar `i` 及之前已发生的
 /// 成交决定, 不会按未来成交价盯市(见 `equity_curve_does_not_mark_to_future_fill_price`)。
 ///
-/// `collect_curves`: 是否物化两条权益曲线。false = O(1) 内存(见 [`CurveAccum`])。
+/// `collect_curves`: 是否物化两条权益曲线与逐笔 [`Trade`]。false 时曲线由
+/// [`CurveAccum`] 在线累计(O(1)); 但 [`TradeAccum`] 仍保留逐笔 pnl 序列
+/// (O(交易笔数), 最坏 O(T))用于 SQN/偏度/峰度/分半 PF —— 不保留 T×16B 的两条曲线。
+///
+/// `open` 允许比 `close` 短(公共 API 的宽松契约): 缺失的开盘价由 [`fill_at`]
+/// 退回收盘价, **不会**因此少回测末尾的 bar。旧实现把 `open.len()` 也算进
+/// `n` 的 `min`, 于是 `open = []` 时整段信号被静默丢弃、一笔都不成交。
 fn scan_trades(
     close: &[f64],
     open: &[f64],
@@ -663,7 +747,7 @@ fn scan_trades(
     exec: &ExecConfig,
     collect_curves: bool,
 ) -> crate::error::Result<ScanOut> {
-    let n = close.len().min(signals.len()).min(open.len());
+    let n = close.len().min(signals.len());
     let ts = |i: usize| if i < time.len() { time[i] } else { i as i64 };
     // 钱账本: 全部定点十进制(`domain-fintech`: 不用 f64 承载货币)。
     let mut cash = initial_cash;
@@ -698,11 +782,15 @@ fn scan_trades(
     }
     // 末根权益暂存: 强制平仓会把它从"盯市值"改写为"已实现 cash", 而在线累加器
     // 无法撤回已消费的点, 故末根**推迟**到平仓之后再入累加器/曲线。
+    // 同时保留**精确定点值**: 报告的 `final_equity` 不能从 f64 曲线回造。
     let mut tail_eq = initial_cash.to_f64();
+    let mut tail_eq_amt = initial_cash;
     let mut tail_feq = initial_cash.to_f64();
     let mut fixed_realized = crate::money::Amount::ZERO;
     let mut fixed_qty = crate::money::Amount::ZERO;
     let mut fixed_entry = 0.0;
+    // 破产告警只打一次, 避免逐 bar 刷屏。
+    let mut bankrupt_warned = false;
 
     let mut trade_mfe: f64 = 0.0;
     let mut trade_mae: f64 = 0.0;
@@ -760,27 +848,39 @@ fn scan_trades(
 
             // 开仓(含反手后的立刻反向开仓)。平仓失败时 `cur_pos` 仍持仓, 这里
             // 不会开新仓, 从而保证同一 bar 不会同时持有多空两条腿。
-            if !cur_pos.is_open()
-                && due.is_open()
-                && let Some(entry_price) = fill_at(i, due, close, open, exec)
-            {
-                let qty = cash.div_price(entry_price)?;
-                let fee = qty.mul_price(entry_price)?.mul_ratio(exec.fee_rate)?;
-                pos_entry = entry_price;
-                pos_entry_time = ts(i);
-                pos_entry_bar = i;
-                pos_qty = qty;
-                fixed_qty = initial_cash.div_price(entry_price)?;
-                fixed_entry = entry_price;
-                let notional = qty.mul_price(entry_price)?;
-                if due == Side::Long {
-                    cash = cash.minus(notional.plus(fee)?)?;
-                } else {
-                    cash = cash.plus(notional.minus(fee)?)?;
+            //
+            // **破产保护**: 现金 <= 0 时禁止开仓。成交量 = `cash / price`, 现金为负
+            // 会得到负的数量 —— 空头"负负得正"变成做多、多头则越亏越多, 且现金
+            // 永远无法回正。旧实现没有这道闸门, 爆仓后仍可无限开仓。
+            if !cur_pos.is_open() && due.is_open() {
+                if cash <= crate::money::Amount::ZERO {
+                    if !bankrupt_warned {
+                        tracing::warn!(
+                            bar = i,
+                            cash = %cash,
+                            "现金 <= 0, 拒绝再开仓(账户已破产)"
+                        );
+                        bankrupt_warned = true;
+                    }
+                } else if let Some(entry_price) = fill_at(i, due, close, open, exec) {
+                    let qty = cash.div_price(entry_price)?;
+                    let fee = qty.mul_price(entry_price)?.mul_ratio(exec.fee_rate)?;
+                    pos_entry = entry_price;
+                    pos_entry_time = ts(i);
+                    pos_entry_bar = i;
+                    pos_qty = qty;
+                    fixed_qty = initial_cash.div_price(entry_price)?;
+                    fixed_entry = entry_price;
+                    let notional = qty.mul_price(entry_price)?;
+                    if due == Side::Long {
+                        cash = cash.minus(notional.plus(fee)?)?;
+                    } else {
+                        cash = cash.plus(notional.minus(fee)?)?;
+                    }
+                    cur_pos = due;
+                    trade_mfe = 0.0;
+                    trade_mae = 0.0;
                 }
-                cur_pos = due;
-                trade_mfe = 0.0;
-                trade_mae = 0.0;
             }
         }
 
@@ -809,12 +909,12 @@ fn scan_trades(
         // `log_ret` 的定义域保护吃掉, 记 0 收益); 现在退化为"现金 + 浮动盈亏
         // 不可估 ⇒ 只记现金" —— 同样是有限的, 且不再把 NaN 写进曲线。
         let px = close[i];
-        let eq = match cur_pos {
+        let eq_amt = match cur_pos {
             Side::Long if px.is_finite() => cash.plus(pos_qty.mul_price(px)?)?,
             Side::Short if px.is_finite() => cash.minus(pos_qty.mul_price(px)?)?,
             _ => cash,
-        }
-        .to_f64();
+        };
+        let eq = eq_amt.to_f64();
         let feq = match cur_pos {
             Side::Long if px.is_finite() => initial_cash
                 .plus(fixed_realized)?
@@ -834,6 +934,7 @@ fn scan_trades(
             }
         } else {
             tail_eq = eq;
+            tail_eq_amt = eq_amt;
             tail_feq = feq;
         }
 
@@ -871,6 +972,7 @@ fn scan_trades(
             fixed_realized = fixed_realized.plus(out.fixed_pnl)?;
             // 强制平仓: 末根权益由盯市值改写为已实现 cash(扣掉平仓费与滑点)。
             tail_eq = cash.to_f64();
+            tail_eq_amt = cash;
             tail_feq = initial_cash.plus(fixed_realized)?.to_f64();
         }
     }
@@ -889,6 +991,7 @@ fn scan_trades(
             acc,
             eq: eq_acc,
             fx: fx_acc,
+            final_equity: tail_eq_amt,
         },
         detail: DetailArtifacts {
             trades,
@@ -987,7 +1090,10 @@ impl TradeAccum {
                 .total_win
                 .plus(o.pnl)
                 .map_err(|e| crate::error::AppError::Msg(format!("累计盈利溢出: {e}")))?;
-        } else {
+        } else if o.pnl < crate::money::Amount::ZERO {
+            // 保本(pnl == 0)既不计盈利也不计亏损: 旧实现走 `else` 分支,
+            // 把 0 记成一次"亏损"(金额为 0), 于是 avg_loss 的分母被稀释,
+            // 胜率与连亏也被拉低/拉长。
             self.total_loss = self
                 .total_loss
                 .plus(o.pnl.abs())
@@ -1197,8 +1303,14 @@ fn compute_metrics(
 
     // 曲线统计全部来自在线累加器(与物化口径逐位一致, 见 CurveAccum 的文档)。
     let st = out.eq.stats(bars_per_year);
-    let final_eq = out.eq.last();
-    let total_return = st.total_return;
+    // 末点权益取**账本精确值**, 而不是 f64 曲线的最后一点: 后者再经
+    // `Amount::from_f64` 回造会丢掉 15 位之后的有效数字, 与逐笔 pnl 之和对不上。
+    let final_eq = out.final_equity.to_f64();
+    let total_return = if initial_cash > crate::money::Amount::ZERO {
+        out.final_equity.minus(initial_cash)?.to_f64() / initial_cash.to_f64()
+    } else {
+        0.0
+    };
     let max_dd = st.max_dd;
     let pnls = &out.acc.pnls;
 
@@ -1259,28 +1371,31 @@ fn compute_metrics(
     };
 
     for &p in pnls.iter() {
-        let cur_win = p > 0.0;
-        match prev_win {
-            None => runs = 1,
-            Some(prev) if prev != cur_win => runs += 1,
-            _ => {}
-        }
-        prev_win = Some(cur_win);
-
-        if cur_win {
+        // 保本(p == 0)既不算赢也不算亏, 且**不打断**连胜/连亏段; runs 检验
+        // 也直接跳过它(带并列值的符号序列没有唯一的 runs 定义, 忽略是标准做法)。
+        if p > 0.0 {
             num_wins += 1;
             cw += 1;
             cl = 0;
             if cw > max_cw {
                 max_cw = cw;
             }
-        } else {
+        } else if p < 0.0 {
             num_losses += 1;
             cl += 1;
             cw = 0;
             if cl > max_cl {
                 max_cl = cl;
             }
+        }
+        if p != 0.0 {
+            let cur_win = p > 0.0;
+            match prev_win {
+                None => runs = 1,
+                Some(prev) if prev != cur_win => runs += 1,
+                _ => {}
+            }
+            prev_win = Some(cur_win);
         }
 
         let d = p - pnl_mean;
@@ -1438,7 +1553,7 @@ fn compute_metrics(
     for &f in out.acc.fixed_pnls.iter() {
         if f > 0.0 {
             fixed_win += f;
-        } else {
+        } else if f < 0.0 {
             fixed_loss += f.abs();
         }
     }
@@ -1459,10 +1574,15 @@ fn compute_metrics(
         sharpe_ratio: sharpe,
         sortino_ratio: sortino,
         max_drawdown_pct: max_dd * 100.0,
-        win_rate: if num_trades > 0 {
-            num_wins as f64 / num_trades as f64 * 100.0
-        } else {
-            0.0
+        // 胜率分母是**已决笔数**(胜 + 负), 保本不进分母: 把零盈亏算作
+        // 一次非胜交易会系统性拉低胜率, 与"排除出亏损统计"的口径自相矛盾。
+        win_rate: {
+            let decided = num_wins + num_losses;
+            if decided > 0 {
+                num_wins as f64 / f64::from(decided) * 100.0
+            } else {
+                0.0
+            }
         },
         profit_factor,
         calmar_ratio: calmar,
@@ -1472,7 +1592,7 @@ fn compute_metrics(
         expectancy,
         consecutive_wins: max_cw,
         consecutive_losses: max_cl,
-        final_equity: crate::money::Amount::from_f64(final_eq)?,
+        final_equity: out.final_equity,
         volatility,
         recovery_factor,
         avg_hold_bars,
@@ -1523,8 +1643,11 @@ fn erf(x: f64) -> f64 {
 
 /// 执行一次回测并返回全部指标。
 ///
-/// **不物化权益曲线**(内存 O(1) 而非 O(T))。`--detail` 开关不影响任何指标数值,
-/// 详见 [`crate::lib`] 的不变量 2。
+/// **不物化权益曲线**(曲线统计 O(1))。`--detail` 开关不影响任何指标数值,
+/// 详见 `crate::lib` 的不变量 2。
+///
+/// 注意: 逐笔 pnl 序列仍需保留用于 SQN/偏度/峰度/分半 PF, 最坏 O(交易笔数),
+/// 但远小于「每条 bar 两条 f64 曲线」的 O(T) 物化成本。
 pub fn simulate(
     close: &[f64],
     open: &[f64],
@@ -1533,20 +1656,27 @@ pub fn simulate(
     bars_per_year: f64,
     exec: &ExecConfig,
 ) -> crate::error::Result<SummaryMetrics> {
+    exec.validate_rates()?;
     let n = close.len().min(signals.len());
     if n < 2 {
-        return Ok(SummaryMetrics::default());
+        // 无成交 ⇒ 权益就是初始资金; 执行口径仍需回填, 否则报告里同一列
+        // 会出现"数据不足的行是 0、正常行是真实值"的混排。
+        let mut summary = SummaryMetrics {
+            final_equity: initial_cash,
+            ..SummaryMetrics::default()
+        };
+        summary.apply_exec(exec);
+        return Ok(summary);
     }
-    // collect_curves = false: 不物化曲线与逐笔 Trade, 统计量在线累计(内存 O(1))。
+    // collect_curves = false: 不物化曲线与逐笔 Trade; 曲线统计在线累计,
+    // 逐笔 pnl 仍保留(O(交易笔数))用于高阶矩与分半 PF。
     let out = scan_trades(close, open, signals, &[], initial_cash, exec, false)?;
     debug_assert!(
         !out.collect_curves && out.detail.trades.is_empty(),
         "simulate 不得物化落盘产物"
     );
     let mut summary = compute_metrics(&out.metrics, initial_cash, bars_per_year)?;
-    summary.delay_bars = exec.delay_u32();
-    summary.fee_bps = exec.fee_rate * 10_000.0;
-    summary.slippage_bps = exec.slip_rate * 10_000.0;
+    summary.apply_exec(exec);
     Ok(summary)
 }
 
@@ -1562,10 +1692,16 @@ pub fn simulate_detailed(
     bars_per_year: f64,
     exec: &ExecConfig,
 ) -> crate::error::Result<SimResult> {
+    exec.validate_rates()?;
     let n = close.len().min(signals.len());
     if n < 2 {
+        let mut summary = SummaryMetrics {
+            final_equity: initial_cash,
+            ..SummaryMetrics::default()
+        };
+        summary.apply_exec(exec);
         return Ok(SimResult {
-            summary: SummaryMetrics::default(),
+            summary,
             trades: Vec::new(),
             equity_curve: Vec::new(),
             fixed_curve: Vec::new(),
@@ -1575,9 +1711,7 @@ pub fn simulate_detailed(
     // 注意指标仍只经 `out.metrics` 计算 —— 与 `simulate` 完全同源。
     let out = scan_trades(close, open, signals, time, initial_cash, exec, true)?;
     let mut summary = compute_metrics(&out.metrics, initial_cash, bars_per_year)?;
-    summary.delay_bars = exec.delay_u32();
-    summary.fee_bps = exec.fee_rate * 10_000.0;
-    summary.slippage_bps = exec.slip_rate * 10_000.0;
+    summary.apply_exec(exec);
 
     let detail = out.detail;
     let equity_curve: Vec<(f64, f64)> = detail
@@ -1751,6 +1885,86 @@ mod tests {
         // from_bps / from_bps_fill 是 try_from 的 infallible 包装, 遇 0 直接 panic。
         let panicked = std::panic::catch_unwind(|| ExecConfig::from_bps(0, 0.0, 0.0)).is_err();
         assert!(panicked, "from_bps(0) 应 panic");
+    }
+
+    /// **入口契约**: 负/非有限费率与滑点必须在 `ExecConfig` 构造期拒绝。
+    ///
+    /// 配置路径已有 newtype 保证, 但 `ExecConfig` 是公开引擎 API; 负费率会让
+    /// 每笔交易"倒赚", `NaN` 会沿权益曲线污染全部指标。两者都不应等到回测
+    /// 结束才以 `NaN` 的形式暴露。
+    #[test]
+    fn exec_rejects_negative_or_nonfinite_costs() {
+        for (fee, slip) in [
+            (-1.0, 0.0),
+            (0.0, -1.0),
+            (f64::NAN, 0.0),
+            (0.0, f64::NAN),
+            (f64::INFINITY, 0.0),
+            (0.0, f64::INFINITY),
+            (f64::NEG_INFINITY, 0.0),
+        ] {
+            assert!(
+                ExecConfig::try_from_bps_fill(1, fee, slip, false).is_err(),
+                "fee={fee}, slip={slip} 必须被拒"
+            );
+        }
+        let ok = ExecConfig::try_from_bps_fill(1, 2.0, 1.0, true).expect("合法成本应通过");
+        assert!((ok.fee_rate - 0.0002).abs() < 1e-15);
+        assert!((ok.slip_rate - 0.0001).abs() < 1e-15);
+        let panicked = std::panic::catch_unwind(|| ExecConfig::from_bps(1, -1.0, 0.0)).is_err();
+        assert!(panicked, "from_bps 遇负费率应 panic(调用方 bug)");
+    }
+
+    /// 公开字段仍可被直接构造; 引擎入口必须再校验一次, 不能只依赖构造函数。
+    #[test]
+    fn engine_rejects_invalid_exec_fields_even_without_constructor() {
+        let prices = [100.0, 101.0, 102.0];
+        let bad = ExecConfig {
+            fee_rate: -0.01,
+            ..ExecConfig::default()
+        };
+        let err = simulate(
+            &prices,
+            &prices,
+            &[],
+            crate::money::Amount::from_i64(1000),
+            252.0,
+            &bad,
+        )
+        .expect_err("负费率必须在引擎入口被拒");
+        assert!(format!("{err}").contains("fee_rate"), "{err}");
+        let bad_nan = ExecConfig {
+            slip_rate: f64::NAN,
+            ..ExecConfig::default()
+        };
+        assert!(
+            simulate(
+                &prices,
+                &prices,
+                &[],
+                crate::money::Amount::from_i64(1000),
+                252.0,
+                &bad_nan,
+            )
+            .is_err(),
+            "NaN 滑点必须在引擎入口被拒"
+        );
+        let bad_huge = ExecConfig {
+            fee_rate: f64::MAX,
+            ..ExecConfig::default()
+        };
+        assert!(
+            simulate(
+                &prices,
+                &prices,
+                &[],
+                crate::money::Amount::from_i64(1000),
+                252.0,
+                &bad_huge,
+            )
+            .is_err(),
+            "换算回 bps 会溢出的费率必须在引擎入口被拒"
+        );
     }
 
     #[test]
@@ -1954,7 +2168,12 @@ mod tests {
         fx.push(1000.0);
         fx.push(1000.0);
         let m = compute_metrics(
-            &MetricsSource { acc, eq, fx },
+            &MetricsSource {
+                acc,
+                eq,
+                fx,
+                final_equity: crate::money::Amount::from_i64(1000),
+            },
             crate::money::Amount::from_i64(1000),
             252.0,
         )
@@ -2259,7 +2478,10 @@ mod tests {
         }
     }
 
-    /// [`simulate`] 必须**不物化**落盘产物(内存 O(1) 而非 O(T)); 这是 O2 的全部意义。
+    /// [`simulate`] 必须**不物化**落盘产物(曲线/Trade 均不保留); 这是 O2 的全部意义。
+    ///
+    /// 允许保留 O(交易笔数) 的 pnl 统计序列 —— 它远小于 O(T) 的双曲线,
+    /// 且是 SQN/偏度/峰度/分半 PF 的必需输入。
     #[test]
     fn test_simulate_does_not_materialize_equity_curve() {
         let close = make_prices(100_000);
@@ -2571,6 +2793,153 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// **回归 #2**: 现金 <= 0 后必须拒绝再开仓。
+    ///
+    /// 场景: 100 做空 → 300 平仓, 亏损 2 倍本金, 现金 = -1000; 随后再次做空。
+    /// 旧实现直接按 `cash / price` 计算数量, 得到**负数量**(方向反转),
+    /// 报告里出现无法解释的仓位与权益。
+    #[test]
+    fn no_reentry_after_cash_is_wiped_out() {
+        let close = vec![100.0, 100.0, 300.0, 300.0, 300.0, 300.0];
+        let sig = vec![
+            Signal::Sell,
+            Signal::Hold,
+            Signal::Close,
+            Signal::Sell,
+            Signal::Hold,
+            Signal::Hold,
+        ];
+        let exec = ExecConfig::from_bps_fill(1, 0.0, 0.0, true);
+        let d = simulate_detailed(
+            &[0, 1, 2, 3, 4, 5],
+            &close,
+            &close,
+            &sig,
+            crate::money::Amount::from_i64(1000),
+            252.0,
+            &exec,
+        )
+        .expect("合法回测必须成功");
+        assert_eq!(d.trades.len(), 1, "爆仓后不得再开仓");
+        assert_eq!(d.summary.num_trades, 1);
+        assert_eq!(
+            d.summary.final_equity,
+            crate::money::Amount::from_i64(-1000),
+            "现金 = 1000 + 1000 - 3000 = -1000, 且不再产生新仓位"
+        );
+        for t in &d.trades {
+            assert!(
+                t.qty > crate::money::Amount::ZERO,
+                "持仓数量必须为正(方向由 side 表达): {}",
+                t.qty
+            );
+        }
+    }
+
+    /// **回归 #3**: `open` 缺失时成交价退回收盘价, 而不是把整段数据截掉。
+    ///
+    /// 旧实现 `n = min(close, signals, open)`, `open = []` 时 n = 0,
+    /// `fill_at` 里精心写的回退分支**永远不可达**, 报告显示"零交易"。
+    #[test]
+    fn missing_open_falls_back_to_close_instead_of_truncating_bars() {
+        let close = vec![100.0, 110.0, 120.0, 130.0];
+        let sig = vec![Signal::Buy, Signal::Hold, Signal::Hold, Signal::Hold];
+        let m = simulate(
+            &close,
+            &[],
+            &sig,
+            crate::money::Amount::from_i64(1000),
+            252.0,
+            &ExecConfig::default(),
+        )
+        .expect("open 缺失是允许的宽松契约");
+        assert_eq!(m.num_trades, 1, "不得因 open 缺失而少回测 bar");
+        // bar0 信号 -> bar1 收盘(回退)成交, 末根 130 平仓。
+        let expect = (130.0 - 110.0) / 110.0 * 1000.0;
+        assert!(
+            (m.total_fixed_pnl.to_f64() - expect).abs() < 1e-9,
+            "{} vs {expect}",
+            m.total_fixed_pnl
+        );
+    }
+
+    /// **回归 #7**: `final_equity` 必须来自定点账本, 不得经 f64 曲线回造。
+    ///
+    /// 旧实现把末点权益先转 `f64` 再 `Amount::from_f64`, 只有约 15 位有效数字;
+    /// 与逐笔 `sum(pnl)` 对不上(实测差 1.75e-7)。本用例用 13bp 佣金放大误差。
+    #[test]
+    fn final_equity_keeps_the_exact_decimal_ledger_value() {
+        let price = 100.123_456_789;
+        let close = vec![price, price];
+        let sig = vec![Signal::Buy, Signal::Hold];
+        let initial = crate::money::Amount::from_f64(1_000_000_000.0).expect("有限金额");
+        let exec = ExecConfig::from_bps_fill(1, 13.0, 0.0, true);
+        let d = simulate_detailed(&[0, 1], &close, &close, &sig, initial, 252.0, &exec)
+            .expect("合法回测必须成功");
+        assert_eq!(d.trades.len(), 1);
+        // 开仓与平仓同价 ⇒ 期末权益 = 初始资金 - 两笔佣金, 全部为精确十进制。
+        let exact_sum = initial.plus(d.trades[0].pnl).expect("金额累加不得溢出");
+        assert_eq!(
+            d.summary.final_equity, exact_sum,
+            "final_equity 必须与逐笔 pnl 之和精确相等, 不能有 f64 往返误差"
+        );
+        let qty = initial.div_price(price).expect("正价格");
+        let fee = qty
+            .mul_price(price)
+            .expect("有限价格")
+            .mul_ratio(0.0013)
+            .expect("有限费率");
+        assert_eq!(
+            d.summary.final_equity,
+            initial.minus(fee).expect("金额").minus(fee).expect("金额")
+        );
+    }
+
+    /// **回归 #10**: 零盈亏交易是"保本", 不得计入亏损/连亏/胜率分母。
+    ///
+    /// 序列 `[+1, 0, +2, -1, 0, -2, -3]`: 2 胜 / 3 负 / 2 保本。
+    /// 旧实现把两个 0 算作亏损 ⇒ 胜率 2/7、连亏 4、avg_loss 被稀释到 1.2。
+    #[test]
+    fn breakeven_trades_are_not_losses() {
+        let acc = TradeAccum {
+            num_trades: 7,
+            pnls: vec![1.0, 0.0, 2.0, -1.0, 0.0, -2.0, -3.0],
+            total_win: crate::money::Amount::from_i64(3),
+            total_loss: crate::money::Amount::from_i64(6),
+            ..TradeAccum::default()
+        };
+        let mut eq = CurveAccum::new(1000.0);
+        eq.push(1000.0);
+        eq.push(1000.0);
+        let mut fx = CurveAccum::new(1000.0);
+        fx.push(1000.0);
+        fx.push(1000.0);
+        let m = compute_metrics(
+            &MetricsSource {
+                acc,
+                eq,
+                fx,
+                final_equity: crate::money::Amount::from_i64(1000),
+            },
+            crate::money::Amount::from_i64(1000),
+            252.0,
+        )
+        .expect("指标计算必须成功");
+        assert!((m.win_rate - 40.0).abs() < 1e-12, "win_rate={}", m.win_rate);
+        assert_eq!(m.consecutive_wins, 2, "保本不得打断连胜");
+        assert_eq!(m.consecutive_losses, 3, "保本不得计入/打断连亏");
+        assert!(
+            (m.avg_loss.to_f64() - 2.0).abs() < 1e-12,
+            "avg_loss 只能用 3 笔亏损作分母: {}",
+            m.avg_loss
+        );
+        assert!(
+            (m.profit_factor - 0.5).abs() < 1e-12,
+            "profit_factor={}",
+            m.profit_factor
+        );
     }
 
     /// `exit_reason` 的取值集合必须封闭(落盘层按它做字典序统计)。

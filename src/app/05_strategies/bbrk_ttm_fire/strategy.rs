@@ -88,8 +88,12 @@ pub fn bbrk_ttm_fire_signals(
 
 /// StockCharts口径动量柱：Donchian中轴(20)与SMA20取平均得重心，
 /// delta=close−重心，linreg(20)平滑。NaN（预热）向上传。
-#[must_use]
-fn momentum(high: &[f64], low: &[f64], close: &[f64]) -> Vec<f64> {
+///
+/// # Errors
+/// SMA / 线性回归不可计算(数据不足、非法周期)时返回
+/// [`crate::error::AppError`]; 调用方转成 `ParamSkipped`, **不得**用全 NaN
+/// 静默降级(全 NaN 会让信号全 Hold, 与"策略没信号"不可区分)。
+fn momentum(high: &[f64], low: &[f64], close: &[f64]) -> crate::error::Result<Vec<f64>> {
     let n = close.len();
     let hh = rolling_highest(high, MOM_LEN);
     let ll = rolling_lowest(low, MOM_LEN);
@@ -100,7 +104,7 @@ fn momentum(high: &[f64], low: &[f64], close: &[f64]) -> Vec<f64> {
         },
     )) {
         Ok(v) => v.values,
-        Err(_) => return vec![f64::NAN; n],
+        Err(e) => return Err(crate::strategies::param_skipped(e)),
     };
     let mut delta = vec![f64::NAN; n];
     for i in 0..n {
@@ -118,8 +122,8 @@ fn momentum(high: &[f64], low: &[f64], close: &[f64]) -> Vec<f64> {
             period: Some(MOM_LEN),
         },
     )) {
-        Ok(v) => v.values,
-        Err(_) => vec![f64::NAN; n],
+        Ok(v) => Ok(v.values),
+        Err(e) => Err(crate::strategies::param_skipped(e)),
     }
 }
 
@@ -177,7 +181,7 @@ fn compute(
         }
         sqz[i] = up_b < em + kc_mult * a && lo_b > em - kc_mult * a;
     }
-    let hist = momentum(high, low, close);
+    let hist = momentum(high, low, close)?;
     Ok(bbrk_ttm_fire_signals(close, &bb.middle_band, &sqz, &hist))
 }
 
@@ -227,7 +231,17 @@ impl Strategy for BbrkTtmFireStrategy {
         use vector_ta::indicators::bollinger_bands::{
             BollingerBandsInput, BollingerBandsParams, bollinger_bands,
         };
-        let hist = momentum(high, low, close);
+        let hist = match momentum(high, low, close) {
+            Ok(v) => v,
+            Err(e) => {
+                // 动量柱算不出来是整批共同的失败原因: 逐档记 Skipped,
+                // 而不是让一个共享指标问题把整个策略组合变成硬错误。
+                let reason = format!("BBRK_TTM_FIRE: {e}");
+                return Ok(range
+                    .map(|_| ParamOutcome::Skipped(reason.clone()))
+                    .collect());
+            }
+        };
         let basis: Option<Vec<f64>> = ema(&EmaInput::from_slice(
             close,
             EmaParams {
@@ -405,5 +419,29 @@ mod tests {
         };
         assert_eq!(s.name(), "BBRK_TTM_FIRE");
         assert_eq!(s.param_str(0), "sigma=2.5,bblen=20,kc=1.5");
+    }
+
+    /// **契约**: 动量柱算不出来时整档必须 `ParamSkipped`, 不得全 NaN 全 Hold。
+    #[test]
+    fn short_series_is_param_skipped() {
+        let close = vec![100.0; 5];
+        assert!(momentum(&close, &close, &close).is_err());
+        let s = BbrkTtmFireStrategy {
+            pairs: vec![(2.0, 5, 1.0)],
+        };
+        let err = s
+            .generate_signals_full(&close, &close, &close, &close, &[], &[], 0)
+            .expect_err("动量柱在 5 根 bar 上不可计算");
+        assert!(
+            matches!(err, crate::error::AppError::ParamSkipped { .. }),
+            "必须是 ParamSkipped, 实际: {err}"
+        );
+        let batch = s
+            .generate_signals_batch(&close, &close, &close, &close, &[], &[], 0..1)
+            .expect("单档失败不应中断 batch");
+        assert!(matches!(
+            &batch[0],
+            crate::strategies::ParamOutcome::Skipped(_)
+        ));
     }
 }

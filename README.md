@@ -41,7 +41,7 @@ initial_balance = 10000.0 # 必填，初始资金（>0）
 [output]
 dir = "/tmp/vta-smoke" # 可选，输出目录，默认 "reports"
 detail = true # 可选，是否导出逐笔交易/权益曲线，默认 false
-fixed_curves = false # 可选，是否写 *_fixedcurve.parquet（--pbo 的 T×N 输入），默认 false
+fixed_curves = false # 可选，是否写 *_fixedcurve.parquet（--pbo 的 T×N 输入）；依赖 detail = true，默认 false
 overwrite = true # 可选，是否覆盖已存在结果，默认 false（跳过已完成组合）
 
 [[strategy]]
@@ -49,7 +49,7 @@ type = "sma" # 必填
 period = { start = 5, end = 100, step = 5 } # 必填，参数范围；单值可写 period = 20
 ```
 
-## 关键设计约束（改动前必读，17 条）
+## 关键设计约束（改动前必读，18 条）
 
 这些不是风格偏好，而是踩过坑之后定下来的硬约束。违反它们会**静默产出错误结果**。
 
@@ -117,15 +117,21 @@ period = { start = 5, end = 100, step = 5 } # 必填，参数范围；单值可�
 不代表可实现的亏损 —— 加总假设每笔都押初始资金；链式口径的下限是 −100%，
 两者之差是波动率拖累与破产下限的合计。
 
+`calmar = CAGR / max_drawdown`，`recovery_factor = total_return / max_drawdown`。
+旧列 `return_mdd` 把后者又算了一遍（`total_return_pct / max_drawdown_pct`），
+与 `recovery_factor` 完全重复，已从 schema 删除。
+
 新增列若不在 `COLUMNS` 表里声明单位，`test_every_report_column_declares_its_unit`
 会失败。
 
 ### 5b. 退化结果必须可被识别：`bars_used` + `status`
 
-> `status` 有 4 个取值：`ok` / `no_signals` / `no_trades` / **`invalid`**。
+> `status` 有 5 个取值：`ok` / `no_signals` / `no_trades` / **`invalid`** / **`bankrupt`**。
 > `invalid` = **该参数档位不可计算**（数据/参数不足，如 `period` 超过可用 bar 数），
 > 与"跑了但没信号"**必须**区分 —— 对参数网格过拟合研究，前者是最该被发现的
 > 失败模式，绝不能与"零波动低风险"混为一谈。详见「设计决策复核」D1。
+> `bankrupt` = 权益（现金）已降到 ≤ 0，引擎拒绝再开新仓；它**跑出来了**，
+> 但收益率已失去可比性。`invalid` / `bankrupt` 都不得进入胜率分母或 PBO。
 
 指标全 0 有两种截然不同的成因：**真的零波动低风险**，或**策略根本没跑起来**
 （数据长度 < 策略窗口 → 全程 Hold）。实测反例：同一 `params` 串 `period=400`
@@ -136,7 +142,7 @@ period = { start = 5, end = 100, step = 5 } # 必填，参数范围；单值可�
 `params` 只描述参数、不描述数据规模，两者无法区分。报告因此带两列：
 
 - `bars_used`：本次求值实际喂给策略的 bar 数
-- `status`：`ok` / `no_signals`（全程 Hold）/ `no_trades`（有信号但一笔未成交）
+- `status`：`ok` / `no_signals`（全程 Hold）/ `no_trades`（有信号但一笔未成交）/ `invalid`（该档不可计算）/ `bankrupt`（权益 ≤ 0）
 
 **读表时必须按 `status == "ok"` 过滤，并结合 `bars_used` 判断样本量。**
 `no_signals` 同时覆盖"窗口 > 数据长度"与"该参数本就无信号"两种成因（引擎层
@@ -193,7 +199,7 @@ period = { start = 5, end = 100, step = 5 } # 必填，参数范围；单值可�
 而 detail 产物（逐笔交易 / 权益曲线 / fixed 曲线）只由该分支写出。开关不进指纹时，
 "先 `detail=false` 跑一次、再 `detail=true` 跑第二次"会**全部命中缓存**，
 `detail/` 目录一个文件都没有，而用户以为自己拿到了 detail 数据；紧接着
-`vta --pbo` 报"未找到 `*_fixedcurve.parquet`，请先用 `detail=true` 重跑" —— 而用户
+`vta --pbo` 报"缺少 detail 索引，请先用 `detail=true` 且 `fixed_curves=true` 重跑" —— 而用户
 **确实**设了 `detail=true`。死循环。指纹的定义即"这次要产出什么"，产出集不同 ⇒
 身份不同 ⇒ 必然重算。回归测试 `fingerprint_covers_output_set_switches`。
 
@@ -242,6 +248,12 @@ period = { start = 5, end = 100, step = 5 } # 必填，参数范围；单值可�
 schema 发生增删列或改类型，旧缓存要到 merge 阶段的 `read_parquet`（按列名取值）
 才会报"必需列缺失"。**改 schema 后必须删 `temps/` 或加 `--no-cache`。**
 
+**detail 模式还要求整组产物完整**：每个组合文件旁有 `{stem}.detail.toml`，记录
+本次写出的 trades / equitycurve / fixedcurve 文件名与字节数。缓存命中时逐项校验
+文件存在、大小未变、schema metadata 的 `combo` 属于该组合；任一不符就重算该组合
+（而不是只补写"看起来缺"的一个文件）。这解决了"手动删 `detail/` 后全部命中缓存、
+一个 detail 文件都不补"以及"同名文件被另一轮数据窗口覆盖"两类静默错误。
+
 ### 11. `RunResult` 只有一个构造点
 
 detail 与非 detail 两条分支共用 `ComboCtx::run_row`。此前两份 16 字段字面量
@@ -263,8 +275,10 @@ detail 与非 detail 两条分支共用 `ComboCtx::run_row`。此前两份 16 �
 
 ### 13. 引擎不做无谓分配
 
-- `CurveAccum`：`simulate()` 只算统计量，**不物化权益曲线**（O(1) 内存而非
-  O(T)）。与"物化后单遍遍历"**逐位一致**，由
+- `CurveAccum`：`simulate()` 只算统计量，**不物化权益曲线**（曲线部分 O(1)）。
+  注意逐笔 pnl 统计序列仍需保留（O(交易笔数)，最坏 O(T)）用于 SQN/偏度/峰度/
+  分半 PF；这仍远小于"每条 bar 两条 f64 曲线"的物化成本。与"物化后单遍遍历"
+  **逐位一致**，由
   `test_curve_accum_is_bit_identical_to_materialized_reference` 锁定。
 - `CloseOutcome`/`TradeAccum`：非 detailed 路径不构造 `Vec<Trade>`，
   `exit_reason` 是 `&'static str`（原为每笔一个堆 `String`）。
@@ -274,9 +288,13 @@ detail 与非 detail 两条分支共用 `ComboCtx::run_row`。此前两份 16 �
 
 ### 14. K 线六列必须等长
 
-引擎内部用 `close.len().min(open.len())` 截断，列短了只会少算几根 bar 而
-**不报错**；`time` 短了更会让 `ts(i)` 退化成用 bar 序号当时间戳。
-`assert_columns_aligned` 在进入回测前一次性拒绝。
+生产路径由 `assert_columns_aligned` 在进入回测前一次性拒绝六列不等长，**不报错
+地少算几根 bar** 不是可接受行为。
+
+引擎 `scan_trades` 的循环上界只用 `close.len().min(signals.len())`，**不再**把
+`open.len()` 算进去：旧实现下 `open = []` 会让整段信号被静默丢弃。`open` 短于
+`close` 时，缺失的开盘价由 `fill_at` 退回收盘价（公共 API 的宽松契约）；`time`
+短于 `close` 时 `ts(i)` 退化为 bar 序号，仅影响 detail 的时间列。
 
 **策略层也必须自己取四列的最小长度**：`vwap::session_vwap` 曾用 `close.len()`
 当循环上界却索引 `high[i]`/`low[i]`/`volume[i]` —— 生产路径由上面的等长校验兜住，
@@ -296,6 +314,10 @@ detail 与非 detail 两条分支共用 `ComboCtx::run_row`。此前两份 16 �
 **边界（刻意仍是 `f64`）**：价格（要参与 `ln`/`sqrt`）、比率（无量纲）、
 权益曲线**序列**（供 `CurveAccum` 与 PBO 的 CSCV 用）。逐条写在 `src/money.rs`。
 
+detail trades 的金额列是 `qty` / `pnl` / `fixed_pnl`。旧列名 `total_return`
+存的其实是**单笔盈亏金额**，与报告里的同名比率列 `total_return` 同名不同量纲，
+已改名为 `pnl`。
+
 **代价**：报告与 detail 的**历史文件不兼容**（金额列类型变了）。
 
 ### 16. 信号只在 fill bar 改变持仓与权益（不得在信号 bar 提前记账）
@@ -312,6 +334,22 @@ Buy、bar1 开盘从 100 跳到 200 时，bar0 权益被记成 500 而非 1000�
 
 回归测试 `equity_curve_does_not_mark_to_future_fill_price`。成交价、交易笔数与
 MFE/MAE 的取值区间与旧口径一致；变化的是**曲线时点**与由它派生的指标。
+
+### 17. detail 产物可追溯，PBO 只比较同网格的 `ok` 曲线
+
+- 每个组合文件旁有侧车 `{stem}.detail.toml`，记录本次写出的 trades /
+  equitycurve / fixedcurve 文件名与字节数。缓存命中时逐项校验存在、大小、
+  文件 metadata 的 `combo`；任一不符即重算该组合。
+- detail 每条曲线/交易文件的 schema metadata 带 `combo`（产出组合）与 `status`
+  （该档位状态）。fixedcurve 用 `time`（毫秒）而非 `bar_idx`，PBO 才能确认两条
+  曲线共享**同一时间网格**。
+- `detail/manifest.toml` 是 `--pbo` 的唯一入口：每轮回测开始时删除，结束时按本轮
+  组合重写，只列 fixed 曲线；每条记录带文件名、`combo` 与字节数。`--pbo` 不再扫
+  目录 —— 参数已删除或上一轮遗留的曲线不会静默参与 CSCV；文件被截断/替换时
+  索引校验会直接报错。
+- PBO 只取 `status == ok`、时间列严格递增且与值等长的曲线，按精确时间网格分组，
+  选样本数最大的 cohort；不再按 `min(len)` 截断。
+- 索引/文件缺失或 `combo` 不一致时**报错并要求重跑**，不得少读几条继续算 φ。
 
 ## 逻辑编排
 
@@ -332,12 +370,14 @@ v
 v
       data_fp = data_fingerprint(cols)   # 策略层循环**外**算一次, 供全部策略复用
       run_combo(strategy, symbol, tf, cols, bpy, data_fp, ctx):
-        a. 非 overwrite 且缓存 temps/{sym}_{tf}_{strat}_{参数指纹}.parquet 可读 → 跳过（仍并入合并）
+        a. 非 overwrite 且缓存 temps/{sym}_{tf}_{strat}_{参数指纹}.parquet 可读
+           [+ detail 模式: 侧车清单/文件大小/combo 元数据全部校验通过] → 跳过（仍并入合并）
         b. (0..n).into_par_iter 参数并行：一波 生成信号 → simulate(/detailed)
         c. detail 模式收集 trades/equity_curve → detail_rows
-        d. 写出 write_single_parquet(temps/) [+ write_detail_parquet(detail/)]
+        d. 写出 write_single_parquet(temps/) [+ write_detail_parquet(detail/) + 侧车清单]
 v
 合并 -> merge_parquet_files(combo_files) → {out_dir}/result.parquet   # 只合并本次运行组合（新算+跳过），整文件重建
+detail 模式 -> write_detail_index(detail/manifest.toml)                # 只列本轮 fixed 曲线
 ```
 
 ## 架构设计
@@ -387,7 +427,7 @@ app/05_strategies/{alma,dema,...,zlema}/… # 单 MA 策略（周期遍历 → v
 
 #### run_combo（缓存 + 参数并行 + 写盘）
 
-`params_fingerprint()`（FNV-1a 混入 balance/window/delay/fee/slip/fill + **detail/fixed_curves 开关** + 各 param_str）定位 `temps/{sym}_{tf}_{stg}_{fp:016x}.parquet`：`overwrite = false` 且可读即跳过；否则 `(0..n).into_par_iter` 生成信号+模拟一波完成；`detail` 模式按 `DETAIL_MEM_BUDGET = 4GiB` 分批（`per_param = len×200B`）防爆内存。产出集开关进指纹的理由见「关键设计约束」第 7 条。
+`params_fingerprint()`（FNV-1a 混入 balance/window/delay/fee/slip/fill + **detail/fixed_curves 开关** + 各 param_str）定位 `temps/{sym}_{tf}_{stg}_{fp:016x}.parquet`：`overwrite = false` 且可读即跳过；`detail` 模式还要求侧车 `{stem}.detail.toml` 及全部产物存在、大小/combo 元数据一致，否则重算该组合。否则 `(0..n).into_par_iter` 生成信号+模拟一波完成；`detail` 模式按 `DETAIL_MEM_BUDGET = 4GiB` 分批（`per_param = len×200B`）防爆内存。产出集开关进指纹的理由见「关键设计约束」第 7 条。
 
 #### 合并
 
@@ -406,12 +446,17 @@ app/05_strategies/{alma,dema,...,zlema}/… # 单 MA 策略（周期遍历 → v
 > 与 `cscv_matches_materialized_reference`（对照物化参照实现，φ 逐位一致）。
 
 ```bash
-# 1. 先用 detail=true 跑出逐笔 fixed 曲线（detail/ 下 *_fixedcurve.parquet）
+# 1. 先用 detail=true + fixed_curves=true 跑一轮；结束时写 detail/manifest.toml
 # 2. 按（币，周期，策略）分组实算 CSCV（Bailey et al. 2016，S=16→12870 logits）
 cargo run --release -- --pbo /path/to/reports_XXX
 ```
 
 - 与 `-c` 二选一；T×N 常驻内存，1m×500 级约 24GB——PBO 建议 TF≥30m 或小 N。
+- **只读 `detail/manifest.toml` 索引列出的 fixed 曲线，不再扫目录**；索引缺失/过期
+  会直接报错要求重跑，避免上一轮遗留或参数已删除的曲线静默参与 CSCV。
+- 只使用 `status == ok` 的曲线；`no_signals` / `no_trades` / `bankrupt` 显式筛掉并
+  `warn!` 条数。时间列必须严格递增；按**精确时间网格**分组，选样本数最大的 cohort，
+  不再按 `min(len)` 截断（旧实现会让一条短曲线把整组 T 拉小且无提示）。
 - T<32 或 N<10 的组跳过并明示；φ>0.05 按 Neyman-Pearson 惯例拒绝。
 - 源码：`src/pbo.rs`（纯 CSCV + 单测：噪声φ高/植入边际φ低）+ detail fixedcurve 写读。
 
@@ -664,9 +709,12 @@ cargo run --release -- --pbo /path/to/reports_XXX
 
 ### 正确性 / 可观测性（次要）
 
-- **PBO 同组重复 `params` 曲线未剔除**（Medium）
+- **PBO 同组重复 `params` / 非 `ok` / 不同时间网格的曲线未剔除**（Medium）
   - 重复跑或复制 `detail/` 会让同一参数的曲线出现多次，CSCV 把它当成多个
     "策略" ⇒ N 虚增、φ 被稀释。现按 `params` 去重并 `warn!` 去掉的条数。
+  - 同时只取 `status == ok`；`no_signals` / `no_trades` / `bankrupt` 的收益率
+    没有可比性，混入会稀释 φ。不同时间网格的曲线按精确 `time` 向量分组，
+    选样本数最大的 cohort，不再按 `min(len)` 静默截断。
 - **`validate_columns` 用 `lens[4].1` 取 close 长度**（Low）
   - 魔法下标与"按列名索引"的项目规则冲突；改为显式 `cols.close().len()`。
 - **`build.rs` 每次成功构建都打 `cargo:warning`**（Low）
@@ -685,6 +733,51 @@ cargo run --release -- --pbo /path/to/reports_XXX
   是手写多形态解析器：两者都值得后续收敛（前者可改直返 `Box`，后者可用
   `param_str` 的结构化编码替代），但改动面大、与本轮正确性修复无关，列为
   后续项。
+
+## 2026-10 代码审查修复（rust-skills）· 第四轮（账目 / 策略契约 / 缓存 / PBO）
+
+按“引擎账目 → 策略契约 → 缓存与 PBO → schema 与文档”四批落地，每批都过了
+`fmt → check → clippy -D warnings → test → 冒烟`。
+
+### 引擎账目
+
+- 现金 ≤ 0 时禁止**新开仓**（只允许平掉已有仓位），并新增 `RunStatus::bankrupt`；
+  旧引擎会以负现金继续计算持仓量，数量变负即方向反转，报告出现无法解释的权益。
+- `open` 短于 `close` 时，缺失的开盘价回退到收盘价；不再把 `open.len()` 算进
+  `n` 的 `min`，避免 `open = []` 时整段信号被静默丢弃。
+- `final_equity` 直接取账本精确值，不再由 f64 曲线末点回造。
+- 所有返回路径（包括提前返回）都回填执行口径，报告不再出现“数据不足行是 0、
+  正常行是真实值”的混排。
+- 保本交易（pnl = 0）不再计入亏损：胜率分母为“胜 + 负”，零盈亏不打断连赢/连亏，
+  runs 检验跳过。
+
+### 策略契约
+
+- 12 个仍有“算不出来就全 Hold”残余降级的策略改为返回 `ParamSkipped`：
+  `macd`、`vwap`、`ma_atr`、`ma_slope_atr_gate`、`mabb_long`、`mabb_short`、
+  `bbrk_ttm_fire`、`bbrk_hma_v{1..5}_sl`。`invalid` 与 `no_signals` 不再混为一谈。
+
+### 缓存与 PBO
+
+- `output.fixed_curves = true` 必须同时 `detail = true`，否则配置期报错。
+- detail 产物增加组合侧车清单、全局 `detail/manifest.toml` 索引、`combo`/`status`
+  metadata；fixedcurve 改 `time` 列。缓存命中要校验整组产物，`--pbo` 只读索引。
+- PBO 只取 `status == ok`，按精确时间网格选最大 cohort，不再 `min(len)` 截断；
+  状态/窗口/重复参数的丢弃量都 `warn!`。
+
+### schema 与文档
+
+- 删除与 `recovery_factor` 完全重复的 `return_mdd` 列；`calmar` 保留（CAGR/MDD）。
+- detail trades 的金额列 `total_return` → `pnl`，与报告的比率列 `total_return`
+  彻底分开。
+- `ExecConfig::try_from_bps_fill` 拒绝负/非有限费率与滑点；配置路径之外的公开
+  引擎 API 也不能绕过这条约束。
+- 修正“`simulate` 内存 O(1)”的过度声明：不物化曲线，但逐笔 pnl 序列仍需
+  O(交易笔数) 用于高阶矩与分半 PF。
+
+**兼容性**：`result.parquet` 少一列、detail trades 改列名、fixedcurve 改列名，
+历史文件不兼容；源码哈希已变，正常缓存会自动失效。detail 目录建议删除后重跑，
+让侧车清单与索引重建。
 
 ## 设计决策复核（已确认并实施）
 
@@ -802,7 +895,7 @@ build.rs            # 构建期源码内容哈希 → VTA_SOURCE_HASH(进缓存�
 config.rs           # Config{data/backtest/output/strategy} + DataSection::for_pair 降单值
 error.rs            # thiserror AppError(Io/Config/Data/Parquet/Arrow/Msg)
 pbo.rs              # CSCV 实算 + 单测
-app/mod.rs          # run/run_combo：validate → build → 双层串行取数 → 策略层 → temps/detail → merge result.parquet
+app/mod.rs          # run/run_combo：validate → build → 双层串行取数 → 策略层 → temps/detail → merge result.parquet → detail 索引
 app/03_run_backtest.rs # engine：simulate/simulate_detailed + CurveAccum(在线统计) + SummaryMetrics
 app/04_write_output/parquet.rs # temps/detail 写 + ColumnIndex(按列名读) + 单位契约 COLUMNS + merge
 app/05_strategies/  # Strategy trait + shared + build + ~80 策略叶
@@ -827,6 +920,7 @@ initial_balance = 10000.0 # 必填，>0
 [output]
 dir = "/data/nutilustrader/outputs/reports/vta" # 可选，默认 "reports"
 detail = false # 可选，默认 false
+fixed_curves = false # 可选，默认 false；仅当 detail = true 时允许
 overwrite = false # 可选，默认 false
 [[strategy]] # 必填，至少一个
 type = "sma"
@@ -849,7 +943,7 @@ period = { start = 5, end = 100, step = 5 } # 范围或单值
 - error.rs
   - `AppError`（thiserror）：Io/Config/Data/Parquet/Arrow/Msg
 - app/mod.rs
-  - `run`：预算目录 → 双层串行 → `load_columns`（失败跳过）→ `run_combo`（缓存/并行/写盘）→ `merge` → `result.parquet`
+  - `run`：预算目录 → 双层串行 → `load_columns`（失败跳过）→ `run_combo`（缓存/并行/写盘）→ `merge` → `result.parquet` → `detail/manifest.toml`
 - app/03_run_backtest.rs
   - `simulate`/`simulate_detailed`：信号→持仓→成交→30 项绩效
 - app/04_write_output/parquet.rs
@@ -857,7 +951,7 @@ period = { start = 5, end = 100, step = 5 } # 范围或单值
 - app/05_strategies/
   - `build.rs` 工厂按 `[[strategy]]` 展开参数实例
 - pbo.rs
-  - 读 `detail/` fixed 曲线 → 分组 CSCV → 报告
+  - 读 `detail/manifest.toml` 索引 → 筛 `status == ok` / 同时间网格 → 分组 CSCV → 报告
 
 ## 命令
 

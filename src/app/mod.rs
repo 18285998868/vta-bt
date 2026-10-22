@@ -85,6 +85,16 @@ pub enum RunStatus {
     /// 读表时**必须**把 `Invalid` 单独筛掉: 它不是"策略没信号", 而是"这一档
     /// 不可用", 把它混进统计会稀释样本并高估/低估胜率。
     Invalid,
+    /// **账户已破产**: 权益(现金)降到 ≤ 0, 引擎拒绝再开仓。
+    ///
+    /// 与 [`Self::Invalid`] 不同: 这一档**跑出来了**, 只是资金曲线归零/转负。
+    /// 典型成因是空头在上涨行情中亏损超过本金。旧引擎没有开仓闸门, 爆仓后
+    /// 会继续以负现金计算持仓量(数量变负 ⇒ 方向反转), 报告里出现无法解释的
+    /// 巨额权益; 现在只允许平掉已有仓位, 不再开新仓。
+    ///
+    /// 读表时同样**不能**把它当作正常 `ok` 参与排名/PBO: 收益率已失去意义
+    /// (本金归零后任何比例都不可比)。
+    Bankrupt,
 }
 
 impl RunStatus {
@@ -96,13 +106,40 @@ impl RunStatus {
             Self::NoSignals => "no_signals",
             Self::NoTrades => "no_trades",
             Self::Invalid => "invalid",
+            Self::Bankrupt => "bankrupt",
         }
     }
 
-    /// 从信号序列与交易数判定状态。
+    /// 从 `as_str` 的落盘文本解析。
+    ///
+    /// 用 `Option` 而不是 `Default`: 读到未知状态必须让调用方报错, 不能把
+    /// "别的版本写的新状态"静默当成 `ok` 混入 PBO。
     #[must_use]
-    pub fn classify(signals: &[crate::strategies::Signal], num_trades: u32) -> Self {
-        if num_trades > 0 {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "ok" => Some(Self::Ok),
+            "no_signals" => Some(Self::NoSignals),
+            "no_trades" => Some(Self::NoTrades),
+            "invalid" => Some(Self::Invalid),
+            "bankrupt" => Some(Self::Bankrupt),
+            _ => None,
+        }
+    }
+
+    /// 从信号序列与回测指标判定状态。
+    ///
+    /// `Bankrupt` 优先于 `Ok`: 账户权益 ≤ 0 的运行即使产生过成交, 也不能作为
+    /// 正常结果参与排名(收益率的分母已失效)。判定条件用**末点权益**而非
+    /// 单笔盈亏 —— 爆仓可能由多笔累计亏损造成。
+    #[must_use]
+    pub fn classify(
+        signals: &[crate::strategies::Signal],
+        metrics: &engine::SummaryMetrics,
+    ) -> Self {
+        if metrics.num_trades > 0 && metrics.final_equity <= crate::money::Amount::ZERO {
+            return Self::Bankrupt;
+        }
+        if metrics.num_trades > 0 {
             return Self::Ok;
         }
         if signals
@@ -127,6 +164,12 @@ pub struct DetailResult {
     pub strategy: String,
     /// 参数串原文。
     pub params: String,
+    /// 该档位的运行状态。
+    ///
+    /// `no_signals` / `no_trades` / `bankrupt` 也会产生曲线文件, 但**不得**参与
+    /// PBO 排名: 它们的收益率没有可比性(全 0 或本金已归零)。状态随曲线落盘,
+    /// `--pbo` 才能把它们显式筛掉而不是当成正常策略。
+    pub status: RunStatus,
     /// 逐笔已平仓交易。
     pub trades: Vec<engine::Trade>,
     /// 复利腿逐 bar `(时间戳, 权益)`。
@@ -356,12 +399,15 @@ impl ComboCtx {
         tf: &str,
         strategy: &dyn crate::strategies::Strategy,
         params: &str,
-        metrics: engine::SummaryMetrics,
+        mut metrics: engine::SummaryMetrics,
         bars_used: usize,
         status: RunStatus,
         bh_pnl: crate::money::Amount,
         bh_ret: f64,
     ) -> RunResult {
+        // 执行口径是"本次运行假设", 不是从交易序列算出的指标; 在唯一构造点
+        // 统一回填, 保证 invalid / 数据不足 / 正常行三者的三列完全一致。
+        metrics.apply_exec(&self.exec);
         RunResult {
             symbol: symbol.to_string(),
             timeframe: tf.to_string(),
@@ -387,8 +433,9 @@ impl ComboCtx {
     /// 约束」第 11 条)—— 区别只在 `status` 与 `metrics`:
     /// - `status = RunStatus::Invalid`: 明确告知"这一档**没算出来**",
     ///   而不是"跑了但没信号";
-    /// - `metrics` 全零, 但 `final_equity = balance`(该档未开仓, 权益就是
-    ///   初始资金) —— 若留 0, `final_equity` 会与 `total_return = 0` 自相矛盾。
+    /// - `metrics` 除 `final_equity` 与执行口径三列外全零, 但 `final_equity = balance`
+    ///   (该档未开仓, 权益就是初始资金) —— 若留 0, `final_equity` 会与
+    ///   `total_return = 0` 自相矛盾。
     ///
     /// `buy_hold_*` 与 `bars_used` 仍是**真实值**(基准与数据规模不因该档
     /// 不可算而改变)。
@@ -533,6 +580,14 @@ fn run_combo(
         ),
     );
 
+    // 组合缓存文件名本身就是本轮的身份(含源码/数据/执行口径/产出集指纹)。
+    // detail 产物以它作为 metadata 里的 `combo` 字段, 使"同名参数文件被另一轮
+    // 覆盖"也能在缓存命中时被发现。
+    let combo_id = combo_path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+
     // L4: 指纹相同**不保证**文件完整 —— 文件可能被截断/写坏/被旧版本写入。
     // 少行的话下游合并会得到"缺一半参数"的结果而毫无提示, 故行数也必须对得上。
     if !ctx.overwrite && !ctx.no_cache && combo_path.exists() {
@@ -541,8 +596,19 @@ fn run_combo(
         // merge 阶段的 `read_parquet`。
         match output::parquet_row_count(&combo_path) {
             Ok(rows) if rows == n => {
-                tracing::debug!("[{}]: 已存在, 跳过 ({rows} 条结果)", strategy.name());
-                return Ok((combo_path, false));
+                // 组合 parquet 只是结果的一部分: detail 模式还承诺 trades /
+                // equitycurve(/fixedcurve) 文件。历史上只看行数就跳过, 于是
+                // 手动清理 detail/ 后再跑会全部命中缓存、一个 detail 文件都不补,
+                // 而 `--pbo` 只能报"未找到曲线"。侧车清单 + 文件大小/所属组合
+                // 校验把"缓存命中"限定为**整个产出集**都完整。
+                if !ctx.detail || output::detail_cache_is_complete(&combo_path, &ctx.detail_dir)? {
+                    tracing::debug!("[{}]: 已存在, 跳过 ({rows} 条结果)", strategy.name());
+                    return Ok((combo_path, false));
+                }
+                tracing::warn!(
+                    "  [{}] 组合缓存命中但 detail 产物缺失/过期, 本次重算该组合",
+                    strategy.name()
+                );
             }
             Ok(rows) => {
                 tracing::warn!(
@@ -559,6 +625,9 @@ fn run_combo(
     use rayon::prelude::*;
 
     if ctx.detail {
+        // 旧清单必须先失效, 再覆盖任何 detail 文件。否则中途崩溃会留下
+        // "旧清单 + 新 detail + 旧组合 parquet" 的假完整缓存。
+        output::invalidate_combo_detail_manifest(&combo_path)?;
         let (bh_pnl, bh_ret) = crate::engine::buy_hold_pnl(cols.close(), ctx.balance)?;
         // detail 预检与自适应分块: 曲线(trades+equity+fixed)常驻内存曾导致整机 swap。
         // 单 param 约 T×200B; 峰值钳在 DETAIL_MEM_BUDGET, 超量分批, 单批都装不下则拒绝。
@@ -592,6 +661,7 @@ fn run_combo(
         );
 
         let mut run_rows = Vec::with_capacity(n);
+        let mut detail_files: Vec<PathBuf> = Vec::new();
         for start in (0..n).step_by(chunk.max(1)) {
             let end = (start + chunk).min(n);
             let batch = strategy.generate_signals_batch(
@@ -622,7 +692,7 @@ fn run_combo(
                                 bpy,
                                 &ctx.exec,
                             )?;
-                            let status = RunStatus::classify(&signals, sim.summary.num_trades);
+                            let status = RunStatus::classify(&signals, &sim.summary);
                             Ok((strategy.param_str(i), Some(sim), status))
                         }
                         crate::strategies::ParamOutcome::Skipped(reason) => {
@@ -675,15 +745,27 @@ fn run_combo(
                     timeframe: tf.to_string(),
                     strategy: strategy.name().to_string(),
                     params,
+                    status,
                     trades,
                     equity_curve,
                     fixed_curve,
                 });
             }
-            output::write_detail_parquet(&detail_rows, &ctx.detail_dir, ctx.fixed_curves)?;
+            detail_files.extend(output::write_detail_parquet(
+                &detail_rows,
+                &ctx.detail_dir,
+                ctx.fixed_curves,
+                &combo_id,
+            )?);
         }
 
+        detail_files.sort();
+        detail_files.dedup();
         output::write_single_parquet(&run_rows, &combo_path, ctx.balance)?;
+        // 组合 parquet 与侧车清单的写入顺序: 先写组合, 再写清单。若中途崩溃,
+        // 下次缓存命中会因缺清单而重算; 反过来则会留下"清单说文件齐全, 但组合
+        // parquet 不存在"的假缓存。
+        output::write_combo_detail_manifest(&combo_path, &ctx.detail_dir, &detail_files)?;
     } else {
         let (bh_pnl, bh_ret) = crate::engine::buy_hold_pnl(cols.close(), ctx.balance)?;
         // 非 detail 也按信号内存分块: 全量 batch 常驻曾 OOM (35k×2.6M)。
@@ -732,7 +814,7 @@ fn run_combo(
                                 bpy,
                                 &ctx.exec,
                             )?;
-                            let status = RunStatus::classify(&signals, metrics.num_trades);
+                            let status = RunStatus::classify(&signals, &metrics);
                             Ok(ctx.run_row(
                                 symbol,
                                 tf,
@@ -844,6 +926,22 @@ pub fn run_with(config_path: &std::path::Path, opts: RunOptions) -> crate::error
         .unwrap_or_else(|| PathBuf::from("reports"));
     let temps_dir = out_dir.join("temps");
     let detail_dir = out_dir.join("detail");
+    // detail 索引标记"当前报告目录的 detail 产物属于哪一轮"。运行一开始就删掉:
+    // 若本轮中途失败, 旧索引会继续指向可能已被部分覆盖的曲线, `--pbo` 会读到
+    // 混合数据。删掉后 PBO 会明确要求重跑, 而不是静默给出错误 φ。
+    // 非 detail 运行同样删除 —— 本轮没有产出 detail, 旧 detail 与新的
+    // result.parquet 不再属于同一次运行。
+    let detail_index_path = detail_dir.join(output::DETAIL_INDEX_FILE);
+    match std::fs::remove_file(&detail_index_path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(crate::error::AppError::Msg(format!(
+                "删除旧 detail 索引失败 {}: {e}",
+                detail_index_path.display()
+            )));
+        }
+    }
 
     let mut combo_files: Vec<PathBuf> = Vec::new();
     let mut skipped = 0u64;
@@ -961,7 +1059,9 @@ pub fn run_with(config_path: &std::path::Path, opts: RunOptions) -> crate::error
     }
     tracing::info!("合并 Parquet 已保存: {}", out_path.display());
     if detail {
+        output::write_detail_index(&detail_dir, &combo_files)?;
         tracing::info!("详细数据 Parquet 已保存至: {}", detail_dir.display());
+        tracing::info!("detail 索引: {}", detail_index_path.display());
     }
 
     Ok(())
@@ -1690,6 +1790,12 @@ mod tests {
             "未开仓 ⇒ 权益就是初始资金, 不得为 0"
         );
         assert_eq!(r.metrics.total_return, 0.0);
+        // 执行口径必须与正常行同源: invalid 行也是"本次运行"的一部分,
+        // 旧实现只填外层 RunResult, 内层 SummaryMetrics 的 delay 留 0。
+        assert_eq!(r.metrics.delay_bars, r.delay_bars);
+        assert_eq!(r.metrics.fee_bps, r.fee_bps);
+        assert_eq!(r.metrics.slippage_bps, r.slippage_bps);
+        assert_ne!(r.metrics.delay_bars, 0, "delay_bars 恒 >= 1");
         assert_eq!(r.bars_used, 300, "数据规模不因该档不可算而改变");
         assert_eq!(
             r.buy_hold_pnl,
@@ -1698,7 +1804,7 @@ mod tests {
         );
     }
 
-    /// 四个 `status` 取值的落盘文本必须互不相同且稳定。
+    /// 五个 `status` 取值的落盘文本必须互不相同且稳定。
     #[test]
     fn run_status_texts_are_distinct() {
         let all = [
@@ -1706,6 +1812,7 @@ mod tests {
             RunStatus::NoSignals,
             RunStatus::NoTrades,
             RunStatus::Invalid,
+            RunStatus::Bankrupt,
         ];
         let mut seen = std::collections::HashSet::new();
         for s in all {
@@ -1715,6 +1822,57 @@ mod tests {
         assert_eq!(RunStatus::NoSignals.as_str(), "no_signals");
         assert_eq!(RunStatus::NoTrades.as_str(), "no_trades");
         assert_eq!(RunStatus::Invalid.as_str(), "invalid");
+        assert_eq!(RunStatus::Bankrupt.as_str(), "bankrupt");
+        // 落盘文本必须能无损回读; 未知文本必须拒绝, 不得静默当 ok。
+        for s in all {
+            assert_eq!(RunStatus::parse(s.as_str()), Some(s), "{}", s.as_str());
+        }
+        assert_eq!(RunStatus::parse("bogus"), None);
+        assert_eq!(RunStatus::parse(""), None);
+    }
+
+    /// `Bankrupt` 必须优先于 `Ok`: 跑出过成交但权益归零, 仍不能当正常结果。
+    #[test]
+    fn classify_marks_wiped_out_accounts_as_bankrupt() {
+        let signals = [crate::strategies::Signal::Buy];
+        let healthy = engine::SummaryMetrics {
+            num_trades: 1,
+            final_equity: crate::money::Amount::from_i64(100),
+            ..engine::SummaryMetrics::default()
+        };
+        assert_eq!(RunStatus::classify(&signals, &healthy), RunStatus::Ok);
+
+        let wiped = engine::SummaryMetrics {
+            num_trades: 1,
+            final_equity: crate::money::Amount::ZERO,
+            ..engine::SummaryMetrics::default()
+        };
+        assert_eq!(RunStatus::classify(&signals, &wiped), RunStatus::Bankrupt);
+
+        let negative = engine::SummaryMetrics {
+            num_trades: 3,
+            final_equity: crate::money::Amount::from_i64(-5),
+            ..engine::SummaryMetrics::default()
+        };
+        assert_eq!(
+            RunStatus::classify(&signals, &negative),
+            RunStatus::Bankrupt
+        );
+
+        // 没产生过成交(本金仍为正) 时不能误判为破产。
+        let no_trades = engine::SummaryMetrics {
+            num_trades: 0,
+            final_equity: crate::money::Amount::from_i64(10_000),
+            ..engine::SummaryMetrics::default()
+        };
+        assert_eq!(
+            RunStatus::classify(&signals, &no_trades),
+            RunStatus::NoTrades
+        );
+        assert_eq!(
+            RunStatus::classify(&[crate::strategies::Signal::Hold], &no_trades),
+            RunStatus::NoSignals
+        );
     }
 
     #[test]
@@ -1756,6 +1914,11 @@ mod tests {
         assert!((r.fee_bps - 2.0).abs() < 1e-12);
         assert!((r.slippage_bps - 1.0).abs() < 1e-12);
         assert!(r.fill_close);
+        // 内层指标里的执行口径也必须被回填(此前只有 simulate 负责填,
+        // 经 run_row 构造的 invalid 行会留下 0)。
+        assert_eq!(r.metrics.delay_bars, r.delay_bars);
+        assert!((r.metrics.fee_bps - r.fee_bps).abs() < 1e-12);
+        assert!((r.metrics.slippage_bps - r.slippage_bps).abs() < 1e-12);
         // params 派生的两列也在此处统一
         assert_eq!(
             r.strategy_params,

@@ -446,10 +446,10 @@ fn single_underscore_form(s: &str) -> Option<u64> {
 /// 构造结果表的 Arrow `RecordBatch`。
 ///
 /// # Errors
-/// Arrow schema 与列数不匹配时返回 [`AppError`]。
+/// Arrow schema 与列数不匹配时返回 [`AppError`](crate::error::AppError)。
 ///
 /// 此前这里用 `.expect("Parquet schema/column count mismatch")` 直接 panic, 而
-/// `write_parquet` 的 `# Errors` 段却承诺"schema 与列数不匹配时返回 [`AppError`]"——
+/// `write_parquet` 的 `# Errors` 段却承诺"schema 与列数不匹配时返回 [`AppError`](crate::error::AppError)"——
 /// **文档与实现直接矛盾**。且 `cols` 与 `fields` 是两份手工同步的平行数组
 /// (各 51 项), 加一列忘了改另一列就会在**生产路径**上崩掉整轮回测。
 fn build_parquet(results: &[RunResult], balance: crate::money::Amount) -> Result<RecordBatch> {
@@ -470,7 +470,6 @@ fn build_parquet(results: &[RunResult], balance: crate::money::Amount) -> Result
     let mut win_rate = Float64Builder::new();
     let mut pf = Float64Builder::new();
     let mut calmar = Float64Builder::new();
-    let mut return_mdd = Float64Builder::new();
     let mut avg_win = money_builder()?;
     let mut avg_loss = money_builder()?;
     let mut expectancy = Float64Builder::new();
@@ -525,12 +524,6 @@ fn build_parquet(results: &[RunResult], balance: crate::money::Amount) -> Result
         win_rate.append_value(m.win_rate / 100.0);
         pf.append_value(m.profit_factor);
         calmar.append_value(m.calmar_ratio);
-        let rmdd = if m.max_drawdown_pct > 0.0 {
-            m.total_return_pct / m.max_drawdown_pct
-        } else {
-            0.0
-        };
-        return_mdd.append_value(rmdd);
         avg_win.append_value(money_mantissa(m.avg_win)?);
         avg_loss.append_value(money_mantissa(m.avg_loss)?);
         expectancy.append_value(m.expectancy);
@@ -584,7 +577,6 @@ fn build_parquet(results: &[RunResult], balance: crate::money::Amount) -> Result
         Arc::new(win_rate.finish()),
         Arc::new(pf.finish()),
         Arc::new(calmar.finish()),
-        Arc::new(return_mdd.finish()),
         Arc::new(avg_win.finish()),
         Arc::new(avg_loss.finish()),
         Arc::new(expectancy.finish()),
@@ -646,7 +638,6 @@ fn build_parquet(results: &[RunResult], balance: crate::money::Amount) -> Result
         Field::new("win_rate", DataType::Float64, false),
         Field::new("profit_factor", DataType::Float64, false),
         Field::new("calmar", DataType::Float64, false),
-        Field::new("return_mdd", DataType::Float64, false),
         Field::new(
             "avg_win",
             DataType::Decimal128(MONEY_PRECISION, MONEY_SCALE_I8),
@@ -733,7 +724,7 @@ const MONEY_SCALE_I8: i8 = MONEY_SCALE as i8;
 /// 把结果行写成单个 Parquet 文件(父目录自动创建)。
 ///
 /// # Errors
-/// IO 失败, 或 Arrow schema 与列数不匹配时返回 [`AppError`]。
+/// IO 失败, 或 Arrow schema 与列数不匹配时返回 [`AppError`](crate::error::AppError)。
 pub fn write_parquet(
     path: &Path,
     results: &[RunResult],
@@ -824,13 +815,18 @@ fn sanitize_params_for_filename(params: &str) -> String {
 /// 每组 (symbol, timeframe, strategy, params) 一个文件组。`write_curves` 为 false
 /// 时跳过 GB 级的 fixed 曲线 I/O(做 PBO 时才需开启)。
 ///
+/// 每条曲线/交易文件的 schema metadata 都带 `combo`(产出它的组合缓存 id)与
+/// `status`(该档位运行状态); fixed 曲线另用 `time` 列而非下标, 使 PBO 只能
+/// 对齐**同一时间网格**的曲线。返回本次实际写出的文件路径, 供调用方写侧车清单。
+///
 /// # Errors
-/// 目录创建、文件写入或 Arrow 构造失败时返回 [`AppError`]。
+/// 目录创建、文件写入或 Arrow 构造失败时返回 [`AppError`](crate::error::AppError)。
 pub fn write_detail_parquet(
     details: &[crate::app::DetailResult],
     dir: &Path,
     write_curves: bool,
-) -> Result<()> {
+    combo: &str,
+) -> Result<Vec<PathBuf>> {
     use parquet::arrow::ArrowWriter;
     use parquet::file::properties::WriterProperties;
     use std::collections::HashMap;
@@ -838,6 +834,7 @@ pub fn write_detail_parquet(
 
     let path = dir;
     std::fs::create_dir_all(path)?;
+    let mut written = Vec::new();
 
     let mut groups: HashMap<(String, String, String, String), Vec<&crate::app::DetailResult>> =
         HashMap::new();
@@ -857,6 +854,33 @@ pub fn write_detail_parquet(
         let clean_params = sanitize_params_for_filename(params);
         let filename = format!("{}_{}_{}_{}.parquet", symbol, tf, strategy, clean_params);
         let filepath = path.join(filename);
+
+        // 同一 params 组只能有一个状态。若出现两个状态, 说明调用方把不同
+        // (symbol, tf, strategy, params) 的批次混在一起, 后续 PBO 无法判断
+        // 该曲线该不该参与 —— 直接报错, 不静默取第一个。
+        let status = group
+            .first()
+            .map_or(crate::app::RunStatus::Ok, |d| d.status);
+        if let Some(bad) = group.iter().find(|d| d.status != status) {
+            return Err(crate::error::AppError::Msg(format!(
+                "detail 分组 {symbol}/{tf}/{strategy}/{params} 内 status 不一致: {} vs {}",
+                status.as_str(),
+                bad.status.as_str()
+            )));
+        }
+
+        // 分组元数据进 schema metadata, 文件名含 params 明文(含 `_` 清洗)故不
+        // 做反向解析。两条曲线的 stem 相同, 只有 kind 后缀不同。
+        // `combo` 让缓存命中校验能发现"同名文件被另一轮覆盖"; `status` 让
+        // `--pbo` 能显式筛掉 no_signals/no_trades/bankrupt。
+        // trades 文件也写同一份 metadata: 侧车清单的完整性校验会遍历全部产物。
+        let curve_meta = arrow::datatypes::Metadata::new()
+            .with("combo", combo.to_string())
+            .with("status", status.as_str().to_string())
+            .with("symbol", symbol.clone())
+            .with("timeframe", tf.clone())
+            .with("strategy", strategy.clone())
+            .with("params", params.clone());
 
         let mut trade_entry_time = Int64Builder::new();
         let mut trade_exit_time = Int64Builder::new();
@@ -918,7 +942,7 @@ pub fn write_detail_parquet(
                 false,
             ),
             Field::new(
-                "total_return",
+                "pnl",
                 DataType::Decimal128(MONEY_PRECISION, MONEY_SCALE_I8),
                 false,
             ),
@@ -934,7 +958,8 @@ pub fn write_detail_parquet(
             Field::new("exit_reason", DataType::Utf8, false),
         ];
 
-        let trade_schema = arrow::datatypes::Schema::new(trade_fields);
+        let trade_schema =
+            arrow::datatypes::Schema::new_with_metadata(trade_fields, curve_meta.clone());
         let trade_batch = RecordBatch::try_new(Arc::new(trade_schema), trade_cols)?;
 
         write_atomic(&filepath, |tmp| {
@@ -945,14 +970,8 @@ pub fn write_detail_parquet(
             writer.close()?;
             Ok(())
         })?;
+        written.push(filepath);
 
-        // 分组元数据进 schema metadata, 文件名含 params 明文(含 `_` 清洗)故不
-        // 做反向解析。两条曲线的 stem 相同, 只有 kind 后缀不同。
-        let curve_meta = arrow::datatypes::Metadata::new()
-            .with("symbol", symbol.clone())
-            .with("timeframe", tf.clone())
-            .with("strategy", strategy.clone())
-            .with("params", params.clone());
         let stem = format!("{}_{}_{}_{}", symbol, tf, strategy, clean_params);
 
         // 复利腿逐 bar 权益。README 承诺 `detail/` 导出"逐笔交易/权益曲线",
@@ -965,7 +984,7 @@ pub fn write_detail_parquet(
                 equity.append_value(eq);
             }
         }
-        write_curve_file(
+        written.push(write_curve_file(
             path,
             &stem,
             "equitycurve",
@@ -974,34 +993,44 @@ pub fn write_detail_parquet(
             Arc::new(bar_time.finish()),
             Field::new("equity", DataType::Float64, false),
             Arc::new(equity.finish()),
-        )?;
+        )?);
 
         // fixed 腿逐 bar 权益: `--pbo` 的 T×N 输入。
         // `write_curves=false`（默认）时跳过: GB 级 I/O 只在做 PBO 时花。
         if !write_curves {
             continue;
         }
-        let mut bar_idx = UInt64Builder::new();
+        let mut fixed_time = Int64Builder::new();
         let mut fixed_equity = Float64Builder::new();
         for d in group {
-            for (i, v) in d.fixed_curve.iter().enumerate() {
-                bar_idx.append_value(i as u64);
-                fixed_equity.append_value(*v);
+            if d.equity_curve.len() != d.fixed_curve.len() {
+                return Err(crate::error::AppError::Msg(format!(
+                    "detail 分组 {symbol}/{tf}/{strategy}/{params}: equity_curve {} 行 != fixed_curve {} 行",
+                    d.equity_curve.len(),
+                    d.fixed_curve.len()
+                )));
+            }
+            // 时间必须取自 equity_curve 的同一根 bar; 只写 bar_idx 时,
+            // 不同数据窗口的同名参数文件在 PBO 里无法区分, 只能静默按
+            // `min(len)` 截断。
+            for (&(ts, _), value) in d.equity_curve.iter().zip(d.fixed_curve.iter()) {
+                fixed_time.append_value(ts as i64);
+                fixed_equity.append_value(*value);
             }
         }
-        write_curve_file(
+        written.push(write_curve_file(
             path,
             &stem,
             "fixedcurve",
             &curve_meta,
-            Field::new("bar_idx", DataType::UInt64, false),
-            Arc::new(bar_idx.finish()),
+            Field::new("time", DataType::Int64, false),
+            Arc::new(fixed_time.finish()),
             Field::new("fixed_equity", DataType::Float64, false),
             Arc::new(fixed_equity.finish()),
-        )?;
+        )?);
     }
 
-    Ok(())
+    Ok(written)
 }
 
 /// 写一条逐 bar 曲线到 `{dir}/{stem}_{kind}.parquet`。
@@ -1018,7 +1047,7 @@ fn write_curve_file(
     idx_col: ArrayRef,
     val_field: Field,
     val_col: ArrayRef,
-) -> Result<()> {
+) -> Result<PathBuf> {
     use parquet::arrow::ArrowWriter;
     use parquet::file::properties::WriterProperties;
     use std::fs::File;
@@ -1037,7 +1066,8 @@ fn write_curve_file(
         writer.write(&batch)?;
         writer.close()?;
         Ok(())
-    })
+    })?;
+    Ok(path)
 }
 
 /// 按**列名**取列序号; 缺列时返回错误并列出实际列名。
@@ -1046,7 +1076,7 @@ fn write_curve_file(
 /// 调整后**静默读错列**(类型恰好兼容时不报错, 数值静默错位)。
 ///
 /// # Errors
-/// schema 中不存在 `name` 列时返回 [`AppError`], 消息里列出实际存在的列名。
+/// schema 中不存在 `name` 列时返回 [`AppError`](crate::error::AppError), 消息里列出实际存在的列名。
 pub fn col_by_name(
     schema: &arrow::datatypes::Schema,
     name: &str,
@@ -1092,7 +1122,7 @@ pub struct EquityCurve {
 ///
 /// # Errors
 /// 目录读取失败、文件打开/解析失败、缺列、缺分组元数据, 或列类型不符时
-/// 返回 [`AppError`]。
+/// 返回 [`AppError`](crate::error::AppError)。
 pub fn read_equity_curves(dir: &Path) -> Result<Vec<EquityCurve>> {
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
     use std::fs;
@@ -1158,9 +1188,15 @@ pub fn read_equity_curves(dir: &Path) -> Result<Vec<EquityCurve>> {
     Ok(out)
 }
 
-/// fixed 曲线文件元组(供 `--pbo` 按(币,周期,策略)分组)。
 /// fixed 曲线文件元组(供 `--pbo` 按 (币, 周期, 策略) 分组)。
+#[derive(Debug, Clone)]
 pub struct FixedCurve {
+    /// 产出该曲线的组合缓存 id(`temps/` 文件名 stem)。
+    ///
+    /// detail 文件名只含参数串, 不同数据窗口/源码版本会用**同一个文件名**互相
+    /// 覆盖。`combo` 记录"这个文件是哪一轮写的", 缓存命中校验与 `--pbo` 索引
+    /// 用它发现"索引说 A 轮, 文件其实是 B 轮"的静默错配。
+    pub combo: String,
     /// 品种。
     pub symbol: String,
     /// 周期。
@@ -1169,19 +1205,311 @@ pub struct FixedCurve {
     pub strategy: String,
     /// 参数串原文。
     pub params: String,
+    /// 该档位的运行状态。
+    pub status: crate::app::RunStatus,
+    /// bar 时间戳(毫秒), 与 [`Self::values`] 等长。
+    ///
+    /// 取代旧的 `bar_idx`: PBO 只应比较**同一时间网格**上的曲线。仅凭下标
+    /// 无法发现两条曲线来自不同数据窗口, 只能按 `min(len)` 静默截断。
+    pub times: Vec<i64>,
     /// fixed 腿逐 bar 权益。
     pub values: Vec<f64>,
 }
 
+/// detail 目录索引文件名(位于 `detail/manifest.toml`)。
+pub const DETAIL_INDEX_FILE: &str = "manifest.toml";
+// v2: 索引条目增加 `size` 字段, 读取时校验文件未被截断/替换。
+const DETAIL_MANIFEST_VERSION: u32 = 2;
+
+/// 单个组合的 detail 侧车清单: 记录该组合写出的全部文件及大小。
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct ComboDetailManifest {
+    version: u32,
+    combo: String,
+    files: Vec<DetailArtifact>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct DetailArtifact {
+    name: String,
+    bytes: u64,
+}
+
+/// `detail/manifest.toml`: 只列**当前一轮**产出且仍有效的 fixed 曲线。
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct DetailIndex {
+    version: u32,
+    entries: Vec<DetailIndexEntry>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct DetailIndexEntry {
+    name: String,
+    combo: String,
+    /// 写入索引时的字节数; 读取时校验, 防止文件被截断/替换后仍参与 PBO。
+    size: u64,
+}
+
+fn combo_id(combo_path: &Path) -> String {
+    combo_path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+fn combo_manifest_path(combo_path: &Path) -> PathBuf {
+    combo_path.with_extension("detail.toml")
+}
+
+/// 只接受"单个普通文件名", 防止索引中的 `../` 把读取带出 detail 目录。
+fn is_plain_filename(name: &str) -> bool {
+    let mut comps = Path::new(name).components();
+    matches!(comps.next(), Some(std::path::Component::Normal(_))) && comps.next().is_none()
+}
+
+/// 写入单个组合的 detail 侧车清单。
+///
+/// 文件已由 [`write_detail_parquet`] 落盘; 这里记录**文件名 + 字节数**, 供
+/// 下一次缓存命中时校验"整组产物是否仍在、是否被截断"。清单本身不是缓存
+/// 指纹的一部分 —— 缺失/损坏只会触发一次重算, 不会让错误结果继续传播。
+///
+/// # Errors
+/// 任一产物不存在, 或清单写入失败时返回 [`AppError`](crate::error::AppError)。
+pub fn write_combo_detail_manifest(
+    combo_path: &Path,
+    detail_dir: &Path,
+    files: &[PathBuf],
+) -> Result<()> {
+    let combo = combo_id(combo_path);
+    let mut artifacts = Vec::with_capacity(files.len());
+    for file in files {
+        if file.parent() != Some(detail_dir) {
+            return Err(crate::error::AppError::Msg(format!(
+                "detail 产物不在 detail 目录 {}: {}",
+                detail_dir.display(),
+                file.display()
+            )));
+        }
+        let meta = std::fs::metadata(file).map_err(|e| {
+            crate::error::AppError::Msg(format!("detail 产物写后校验失败 {}: {e}", file.display()))
+        })?;
+        let name = file
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .ok_or_else(|| {
+                crate::error::AppError::Msg(format!("detail 产物没有文件名: {}", file.display()))
+            })?;
+        if !is_plain_filename(&name) {
+            return Err(crate::error::AppError::Msg(format!(
+                "detail 产物文件名非法: {name:?}"
+            )));
+        }
+        artifacts.push(DetailArtifact {
+            name,
+            bytes: meta.len(),
+        });
+    }
+    artifacts.sort_by(|a, b| a.name.cmp(&b.name));
+    artifacts.dedup_by(|a, b| a.name == b.name);
+    let manifest = ComboDetailManifest {
+        version: DETAIL_MANIFEST_VERSION,
+        combo,
+        files: artifacts,
+    };
+    let text = toml::to_string(&manifest)
+        .map_err(|e| crate::error::AppError::Msg(format!("序列化 detail 清单失败: {e}")))?;
+    let path = combo_manifest_path(combo_path);
+    write_atomic(&path, |tmp| {
+        std::fs::write(tmp, text.as_bytes())?;
+        Ok(())
+    })
+}
+
+/// 重算组合前删除旧侧车清单。
+///
+/// 必须**在写任何 detail 文件之前**调用: 重算会覆盖同名 detail 文件, 但组合
+/// parquet 要到最后才写。若中途崩溃而旧清单仍在, 下一轮会把"新 detail + 旧
+/// result"误判为完整缓存(文件名、大小、`combo` 都可能相同), 静默产出错配数据。
+/// 先删清单 ⇒ 崩溃后下一轮必然重算。
+///
+/// # Errors
+/// 删除失败(非"文件不存在")时返回 [`AppError`](crate::error::AppError)。
+pub fn invalidate_combo_detail_manifest(combo_path: &Path) -> Result<()> {
+    let path = combo_manifest_path(combo_path);
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+fn read_combo_detail_manifest(combo_path: &Path) -> Result<ComboDetailManifest> {
+    let path = combo_manifest_path(combo_path);
+    let text = std::fs::read_to_string(&path).map_err(|e| {
+        crate::error::AppError::Msg(format!(
+            "缺少 detail 侧车清单 {}: {e}; 该组合的 detail 产物不完整, 请重跑",
+            path.display()
+        ))
+    })?;
+    let manifest: ComboDetailManifest = toml::from_str(&text)?;
+    if manifest.version != DETAIL_MANIFEST_VERSION {
+        return Err(crate::error::AppError::Msg(format!(
+            "{}: 不支持的 detail 清单版本 {}",
+            path.display(),
+            manifest.version
+        )));
+    }
+    if manifest.combo != combo_id(combo_path) {
+        return Err(crate::error::AppError::Msg(format!(
+            "{}: 清单 combo={} 与组合文件名不符(文件可能被复制/改名)",
+            path.display(),
+            manifest.combo
+        )));
+    }
+    Ok(manifest)
+}
+
+/// 校验组合缓存对应的 detail 产物是否完整且属于该组合。
+///
+/// 返回 `Ok(false)` 表"需要重算"(已 `warn!` 说明原因); 只有无法判断的 IO
+/// 错误才上抛。校验项:
+/// 1. 侧车清单存在、版本/组合 id 匹配;
+/// 2. 清单中每个文件存在且字节数未变(截断/半写会被发现);
+/// 3. 文件 metadata 的 `combo` 与清单一致(同名文件被另一轮数据窗口覆盖会被发现)。
+///
+/// # Errors
+/// 清单读取遇到非文件不存在的 IO 错误时返回 [`AppError`](crate::error::AppError)。
+pub fn detail_cache_is_complete(combo_path: &Path, detail_dir: &Path) -> Result<bool> {
+    let combo = combo_id(combo_path);
+    let manifest_path = combo_manifest_path(combo_path);
+    let text = match std::fs::read_to_string(&manifest_path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e.into()),
+    };
+    let manifest: ComboDetailManifest = match toml::from_str(&text) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!(
+                "解析 detail 清单失败 {}: {e}; 重算",
+                manifest_path.display()
+            );
+            return Ok(false);
+        }
+    };
+    if manifest.version != DETAIL_MANIFEST_VERSION || manifest.combo != combo {
+        tracing::warn!(
+            "detail 清单版本/组合 id 不符 {}; 重算",
+            manifest_path.display()
+        );
+        return Ok(false);
+    }
+    for art in &manifest.files {
+        if !is_plain_filename(&art.name) {
+            tracing::warn!("detail 清单含非法文件名 {:?}; 重算", art.name);
+            return Ok(false);
+        }
+        let path = detail_dir.join(&art.name);
+        let meta = match std::fs::metadata(&path) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!("detail 产物缺失 {}: {e}; 重算", path.display());
+                return Ok(false);
+            }
+        };
+        if meta.len() != art.bytes {
+            tracing::warn!(
+                "detail 产物大小变化 {} (清单 {} B, 实际 {} B); 重算",
+                path.display(),
+                art.bytes,
+                meta.len()
+            );
+            return Ok(false);
+        }
+        match curve_combo(&path) {
+            Ok(c) if c == combo => {}
+            Ok(c) => {
+                tracing::warn!(
+                    "detail 产物属于另一轮组合 {} (期望 {}); 重算: {}",
+                    c,
+                    combo,
+                    path.display()
+                );
+                return Ok(false);
+            }
+            Err(e) => {
+                tracing::warn!("detail 产物不可读 {}: {e}; 重算", path.display());
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
+}
+
+fn curve_combo(path: &Path) -> Result<String> {
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+    let file = std::fs::File::open(path)?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+    builder
+        .schema()
+        .metadata()
+        .get("combo")
+        .cloned()
+        .ok_or_else(|| {
+            crate::error::AppError::Msg(format!(
+                "{}: 缺 metadata combo; 该文件可能由旧版本写出, 请删掉后重跑",
+                path.display()
+            ))
+        })
+}
+
+/// 汇总本轮全部组合的侧车清单, 写 `detail/manifest.toml`。
+///
+/// 索引**只列 fixed 曲线**: `--pbo` 只消费它们。目录里上一轮遗留、或参数已从
+/// 网格中删除的曲线不会进索引, 因而不会静默参与 CSCV。
+///
+/// # Errors
+/// 任一组合缺侧车清单, 或索引写入失败时返回 [`AppError`](crate::error::AppError)。
+pub fn write_detail_index(detail_dir: &Path, combo_paths: &[PathBuf]) -> Result<()> {
+    let mut entries = Vec::new();
+    for combo_path in combo_paths {
+        let manifest = read_combo_detail_manifest(combo_path)?;
+        for file in &manifest.files {
+            if file.name.ends_with("_fixedcurve.parquet") {
+                entries.push(DetailIndexEntry {
+                    name: file.name.clone(),
+                    combo: manifest.combo.clone(),
+                    size: file.bytes,
+                });
+            }
+        }
+    }
+    entries.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.combo.cmp(&b.combo)));
+    entries.dedup_by(|a, b| a.name == b.name && a.combo == b.combo);
+    let index = DetailIndex {
+        version: DETAIL_MANIFEST_VERSION,
+        entries,
+    };
+    let text = toml::to_string(&index)
+        .map_err(|e| crate::error::AppError::Msg(format!("序列化 detail 索引失败: {e}")))?;
+    let path = detail_dir.join(DETAIL_INDEX_FILE);
+    write_atomic(&path, |tmp| {
+        std::fs::write(tmp, text.as_bytes())?;
+        Ok(())
+    })
+}
+
 /// 读取目录下全部 `*_fixedcurve.parquet`(一般为 detail/ 目录)。
+///
+/// 这是**目录扫描**版本, 会把上一轮遗留的多余文件也读进来。`--pbo` 走
+/// [`read_fixed_curves_from_manifest`], 只读当前索引列出的文件; 本函数保留给
+/// 需要查看目录全貌的调用方/测试。
 ///
 /// # Errors
 /// 目录读取失败、文件打开/解析失败、缺列、缺分组元数据, 或列类型不符时
-/// 返回 [`AppError`]。
+/// 返回 [`AppError`](crate::error::AppError)。
 pub fn read_fixed_curves(dir: &Path) -> Result<Vec<FixedCurve>> {
-    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
     use std::fs;
-    use std::fs::File;
 
     let mut out = Vec::new();
     let entries = fs::read_dir(dir).map_err(|e| {
@@ -1204,40 +1532,119 @@ pub fn read_fixed_curves(dir: &Path) -> Result<Vec<FixedCurve>> {
     }
     paths.sort();
     for path in paths {
-        let file = File::open(&path)?;
-        let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
-        let schema = builder.schema().clone();
-        // 按列名取值列, 而非魔法下标 1: 理由同 `read_equity_curves` —— 下标会在
-        // schema 调整后静默读到类型恰好兼容的另一列(不报错, 数值错位)。
-        let val_idx = col_by_name(&schema, "fixed_equity", &path)?;
-        let meta = schema.metadata().clone();
-        let get = |k: &str| -> Result<String> {
-            meta.get(k).cloned().ok_or_else(|| {
-                crate::error::AppError::Msg(format!(
-                    "fixedcurve 缺分组元数据 {k}: {}",
-                    path.display()
-                ))
-            })
-        };
-        let symbol = get("symbol")?;
-        let timeframe = get("timeframe")?;
-        let strategy = get("strategy")?;
-        let params = get("params")?;
-        let reader = builder.build()?;
-        let mut values = Vec::new();
-        for batch in reader {
-            let batch = batch?;
-            values.extend(f64_col(&batch, val_idx, &path)?);
-        }
-        out.push(FixedCurve {
-            symbol,
-            timeframe,
-            strategy,
-            params,
-            values,
-        });
+        out.push(read_fixed_curve(&path)?);
     }
     Ok(out)
+}
+
+/// 读取 `detail/manifest.toml` 列出的 fixed 曲线(不扫描目录)。
+///
+/// # Errors
+/// 索引缺失/解析失败、索引列出的文件缺失、文件内 `combo` 与索引不一致,
+/// 或曲线 schema/metadata 不合法时返回 [`AppError`](crate::error::AppError)。
+pub fn read_fixed_curves_from_manifest(dir: &Path) -> Result<Vec<FixedCurve>> {
+    let path = dir.join(DETAIL_INDEX_FILE);
+    let text = std::fs::read_to_string(&path).map_err(|e| {
+        crate::error::AppError::Msg(format!(
+            "缺少 detail 索引 {}: {e}; 请先用 detail=true 且 fixed_curves=true 重跑",
+            path.display()
+        ))
+    })?;
+    let index: DetailIndex = toml::from_str(&text)?;
+    if index.version != DETAIL_MANIFEST_VERSION {
+        return Err(crate::error::AppError::Msg(format!(
+            "{}: 不支持的 detail 索引版本 {}",
+            path.display(),
+            index.version
+        )));
+    }
+    let mut out = Vec::with_capacity(index.entries.len());
+    for entry in index.entries {
+        if !is_plain_filename(&entry.name) {
+            return Err(crate::error::AppError::Msg(format!(
+                "detail 索引含非法文件名 {:?}",
+                entry.name
+            )));
+        }
+        let file = dir.join(&entry.name);
+        let actual = std::fs::metadata(&file)?.len();
+        if actual != entry.size {
+            return Err(crate::error::AppError::Msg(format!(
+                "{}: 索引记录 {} B, 实际 {} B; 文件被截断/替换或目录未同步, 请重跑",
+                file.display(),
+                entry.size,
+                actual
+            )));
+        }
+        let curve = read_fixed_curve(&file)?;
+        if curve.combo != entry.combo {
+            return Err(crate::error::AppError::Msg(format!(
+                "{}: 索引记录 combo={}, 文件内 combo={}; detail 目录可能被另一轮运行覆盖, 请重跑",
+                file.display(),
+                entry.combo,
+                curve.combo
+            )));
+        }
+        out.push(curve);
+    }
+    Ok(out)
+}
+
+fn read_fixed_curve(path: &Path) -> Result<FixedCurve> {
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+    use std::fs::File;
+
+    let file = File::open(path)?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+    let schema = builder.schema().clone();
+    let time_idx = col_by_name(&schema, "time", path)?;
+    // 按列名取值列, 而非魔法下标 1: 理由同 `read_equity_curves` —— 下标会在
+    // schema 调整后静默读到类型恰好兼容的另一列(不报错, 数值错位)。
+    let val_idx = col_by_name(&schema, "fixed_equity", path)?;
+    let meta = schema.metadata().clone();
+    let get = |k: &str| -> Result<String> {
+        meta.get(k).cloned().ok_or_else(|| {
+            crate::error::AppError::Msg(format!("fixedcurve 缺分组元数据 {k}: {}", path.display()))
+        })
+    };
+    let combo = get("combo")?;
+    let symbol = get("symbol")?;
+    let timeframe = get("timeframe")?;
+    let strategy = get("strategy")?;
+    let params = get("params")?;
+    let status_text = get("status")?;
+    let status = crate::app::RunStatus::parse(&status_text).ok_or_else(|| {
+        crate::error::AppError::Msg(format!(
+            "{}: 未知 status {status_text:?}; 文件可能由其它版本产出, 请删掉后重跑",
+            path.display()
+        ))
+    })?;
+    let reader = builder.build()?;
+    let mut times = Vec::new();
+    let mut values = Vec::new();
+    for batch in reader {
+        let batch = batch?;
+        times.extend(i64_col(&batch, time_idx, path)?);
+        values.extend(f64_col(&batch, val_idx, path)?);
+    }
+    if times.len() != values.len() {
+        return Err(crate::error::AppError::Msg(format!(
+            "{}: time 列 {} 行 != fixed_equity 列 {} 行; 文件被截断或损坏",
+            path.display(),
+            times.len(),
+            values.len()
+        )));
+    }
+    Ok(FixedCurve {
+        combo,
+        symbol,
+        timeframe,
+        strategy,
+        params,
+        status,
+        times,
+        values,
+    })
 }
 
 /// 列类型不符时的错误消息。
@@ -1445,7 +1852,6 @@ pub const COLUMNS: &[(&str, Unit)] = &[
     ("win_rate", Unit::Ratio),
     ("profit_factor", Unit::Dimensionless),
     ("calmar", Unit::Dimensionless),
-    ("return_mdd", Unit::Dimensionless),
     ("avg_win", Unit::Money),
     ("avg_loss", Unit::Money),
     // `expectancy` 是**逐笔 pnl_pct 的均值**(比率), 不是货币金额 ——
@@ -1496,7 +1902,7 @@ pub const COLUMNS: &[(&str, Unit)] = &[
 /// 第一次发生时就炸掉。
 ///
 /// - [`ColumnIndex::req`] 必须存在, 缺则 `Err` 并列出实际列名。
-/// - [`ColumnIndex::opt`] 可选(旧缓存文件没有该列), 由调用方决定回退值。
+/// - `ColumnIndex::opt` 可选(旧缓存文件没有该列), 由调用方决定回退值。
 #[derive(Debug, Clone)]
 struct ColumnIndex {
     map: std::collections::HashMap<String, usize>,
@@ -1542,7 +1948,7 @@ impl ColumnIndex {
 /// [`read_parquet`] / [`merge_parquet_files`] 在读取数据时完成。
 ///
 /// # Errors
-/// 文件打开/footer 解析失败, 或行数超出 `usize` 时返回 [`AppError`]。
+/// 文件打开/footer 解析失败, 或行数超出 `usize` 时返回 [`AppError`](crate::error::AppError)。
 pub fn parquet_row_count(path: &Path) -> Result<usize> {
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
     use std::fs::File;
@@ -1562,11 +1968,11 @@ pub fn parquet_row_count(path: &Path) -> Result<usize> {
 ///
 /// 兼容策略: `turnover_per_year` 及其后的列都是**历史上逐次追加**的, 旧缓存文件
 /// 没有它们。原先用 `batch.num_columns() > 37` 这类**列数**判断, 一旦有人调整列
-/// 顺序就会把"有但不同名"的列误判成"没有"。现在统一走 [`ColumnIndex::opt`]:
+/// 顺序就会把"有但不同名"的列误判成"没有"。现在统一走 `ColumnIndex::opt`:
 /// 按名字找, 找不到才回退。
 ///
 /// # Errors
-/// 文件打开/解析失败、缺必需列, 或列类型不符时返回 [`AppError`]。
+/// 文件打开/解析失败、缺必需列, 或列类型不符时返回 [`AppError`](crate::error::AppError)。
 pub fn read_parquet(path: &Path) -> Result<Vec<RunResult>> {
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
     use std::fs::File;
@@ -1681,6 +2087,8 @@ pub fn read_parquet(path: &Path) -> Result<Vec<RunResult>> {
                     // 变成 `NoSignals` —— 那正是本项目要消除的"不可计算"与
                     // "无信号"混为一谈。
                     "invalid" => crate::app::RunStatus::Invalid,
+                    // 破产是"跑出来了但账户归零", 同样不能落进 `NoSignals`.
+                    "bankrupt" => crate::app::RunStatus::Bankrupt,
                     // 未知取值(未来版本新增的 status)⇒ 保守落 `NoSignals`:
                     // 未知状态**不是**"算不出来", 不可臆断。
                     _ => crate::app::RunStatus::NoSignals,
@@ -1811,7 +2219,7 @@ fn opt_u8(
 /// 把结果行写入单个组合缓存文件(父目录自动创建)。
 ///
 /// # Errors
-/// IO 失败时返回 [`AppError`]。
+/// IO 失败时返回 [`AppError`](crate::error::AppError)。
 pub fn write_single_parquet(
     results: &[RunResult],
     path: &Path,
@@ -1830,7 +2238,7 @@ pub fn write_single_parquet(
 /// 现在返回 [`MergeStats`], 失败数进入最终摘要; 全部失败才报错。
 ///
 /// # Errors
-/// 全部输入文件都读不出来, 或写出合并报告失败时返回 [`AppError`]。
+/// 全部输入文件都读不出来, 或写出合并报告失败时返回 [`AppError`](crate::error::AppError)。
 pub fn merge_parquet_files(
     paths: &[PathBuf],
     output_path: &Path,
@@ -1999,13 +2407,16 @@ mod tests {
             timeframe: "1h".into(),
             strategy: "BBRK".into(),
             params: "sigma=2.5".into(),
+            status: crate::app::RunStatus::Ok,
             trades: vec![],
-            equity_curve: vec![],
+            equity_curve: (0..3)
+                .map(|i| (1_700_000_000.0 + i as f64, 100.0 + i as f64))
+                .collect(),
             fixed_curve: vec![1.0, 2.0, 3.0],
         };
         let dir = std::env::temp_dir().join("vta_test_nocurves");
         let _ = std::fs::remove_dir_all(&dir);
-        write_detail_parquet(std::slice::from_ref(&d), &dir, false).unwrap();
+        write_detail_parquet(std::slice::from_ref(&d), &dir, false, "combo-test").unwrap();
         let names: Vec<String> = std::fs::read_dir(&dir)
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
@@ -2014,7 +2425,7 @@ mod tests {
         assert!(!names.iter().any(|f| f.contains("fixedcurve")), "{names:?}");
         let dir2 = std::env::temp_dir().join("vta_test_curves");
         let _ = std::fs::remove_dir_all(&dir2);
-        write_detail_parquet(std::slice::from_ref(&d), &dir2, true).unwrap();
+        write_detail_parquet(std::slice::from_ref(&d), &dir2, true, "combo-test").unwrap();
         let names2: Vec<String> = std::fs::read_dir(&dir2)
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
@@ -2100,6 +2511,7 @@ mod tests {
             timeframe: "1d".into(),
             strategy: "sma".into(),
             params: param.into(),
+            status: crate::app::RunStatus::Ok,
             trades: Vec::new(),
             equity_curve: (0..5)
                 .map(|i| {
@@ -2113,7 +2525,7 @@ mod tests {
         };
         // write_curves = false: fixedcurve 跳过, equitycurve 仍必须落盘
         let details = vec![mk("period=10", 0.0), mk("period=20", 500.0)];
-        write_detail_parquet(&details, &dir, false).unwrap();
+        write_detail_parquet(&details, &dir, false, "combo-test").unwrap();
 
         let files: Vec<String> = std::fs::read_dir(&dir)
             .unwrap()
@@ -2168,18 +2580,19 @@ mod tests {
             timeframe: "1h".into(),
             strategy: "ema".into(),
             params: "period=9".into(),
+            status: crate::app::RunStatus::Ok,
             trades: Vec::new(),
             equity_curve: (0..3)
                 .map(|i| (1_700_000_000.0 + i as f64 * 3600.0, 500.0 + i as f64))
                 .collect(),
             fixed_curve: vec![500.0, 501.0, 502.0],
         }];
-        write_detail_parquet(&details, &dir, true).unwrap();
+        write_detail_parquet(&details, &dir, true, "combo-test").unwrap();
 
         use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
         for (name, expect) in [
             ("_equitycurve.parquet", vec!["time", "equity"]),
-            ("_fixedcurve.parquet", vec!["bar_idx", "fixed_equity"]),
+            ("_fixedcurve.parquet", vec!["time", "fixed_equity"]),
         ] {
             let p = std::fs::read_dir(&dir)
                 .unwrap()
@@ -2197,7 +2610,216 @@ mod tests {
                 .collect();
             assert_eq!(cols, expect, "{name} 列名/语义不符");
         }
+
+        // detail trades 的货币列必须叫 `pnl`: 旧名 `total_return` 与报告里的
+        // **比率**列同名不同量纲(一个是 Decimal 金额, 一个是 f64 小数), 下游
+        // 按名字取列会把“这一笔赚了多少钱”当成“总收益率”。
+        let trade_path = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .find(|p| {
+                p.extension().is_some_and(|x| x == "parquet")
+                    && !p.to_string_lossy().contains("_equitycurve")
+                    && !p.to_string_lossy().contains("_fixedcurve")
+            })
+            .expect("应有 trades parquet");
+        let f = std::fs::File::open(&trade_path).unwrap();
+        let b = ParquetRecordBatchReaderBuilder::try_new(f).unwrap();
+        let trade_cols: Vec<String> = b
+            .schema()
+            .fields()
+            .iter()
+            .map(|fld| fld.name().clone())
+            .collect();
+        assert!(trade_cols.iter().any(|c| c == "pnl"), "{trade_cols:?}");
+        assert!(
+            !trade_cols.iter().any(|c| c == "total_return"),
+            "detail trades 不得再用 total_return 命名金额列: {trade_cols:?}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// fixed 曲线必须携带 `time` / `status` / `combo`: PBO 靠它们筛状态、对齐
+    /// 时间网格、识别"同名文件被另一轮覆盖"。
+    #[test]
+    fn fixed_curve_carries_time_status_and_combo() {
+        use crate::app::DetailResult;
+
+        let dir = std::env::temp_dir().join(format!("vta-fixed-meta-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let d = DetailResult {
+            symbol: "BTCUSDT".into(),
+            timeframe: "1h".into(),
+            strategy: "macd".into(),
+            params: "fast=12,slow=26".into(),
+            status: crate::app::RunStatus::NoTrades,
+            trades: Vec::new(),
+            equity_curve: (0..3)
+                .map(|i| (1_700_000_000.0 + i as f64 * 3600.0, 1000.0 + i as f64))
+                .collect(),
+            fixed_curve: vec![1000.0, 1001.0, 1002.0],
+        };
+        let files = write_detail_parquet(std::slice::from_ref(&d), &dir, true, "combo-x").unwrap();
+        assert_eq!(files.len(), 3, "trades + equitycurve + fixedcurve");
+        let curves = read_fixed_curves(&dir).unwrap();
+        assert_eq!(curves.len(), 1);
+        let c = &curves[0];
+        assert_eq!(c.combo, "combo-x");
+        assert_eq!(c.status, crate::app::RunStatus::NoTrades);
+        assert_eq!(c.times, vec![1_700_000_000, 1_700_003_600, 1_700_007_200]);
+        assert_eq!(c.values, vec![1000.0, 1001.0, 1002.0]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 侧车清单必须能发现"文件被删"和"同名文件被另一轮覆盖"。
+    #[test]
+    fn detail_manifest_detects_missing_and_overwritten_artifacts() {
+        use crate::app::DetailResult;
+
+        let root = std::env::temp_dir().join(format!("vta-manifest-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let detail = root.join("detail");
+        let temps = root.join("temps");
+        let combo_id = "BTCUSDT_1d_sma_0123456789abcdef";
+        let combo_path = temps.join(format!("{combo_id}.parquet"));
+        let d = DetailResult {
+            symbol: "BTCUSDT".into(),
+            timeframe: "1d".into(),
+            strategy: "sma".into(),
+            params: "period=10".into(),
+            status: crate::app::RunStatus::Ok,
+            trades: Vec::new(),
+            equity_curve: (0..4)
+                .map(|i| (1_700_000_000.0 + i as f64 * 86_400.0, 100.0 + i as f64))
+                .collect(),
+            fixed_curve: vec![100.0, 101.0, 102.0, 103.0],
+        };
+        let files =
+            write_detail_parquet(std::slice::from_ref(&d), &detail, true, combo_id).unwrap();
+        write_combo_detail_manifest(&combo_path, &detail, &files).unwrap();
+        assert!(
+            detail_cache_is_complete(&combo_path, &detail).unwrap(),
+            "刚写完的产物必须判定为完整"
+        );
+
+        // 重算前先删清单: 即使中途崩溃, 下一轮也不得把旧清单当完整缓存。
+        invalidate_combo_detail_manifest(&combo_path).unwrap();
+        // 幂等: 清单已不存在时再删一次不得报错。
+        invalidate_combo_detail_manifest(&combo_path).unwrap();
+        assert!(
+            !detail_cache_is_complete(&combo_path, &detail).unwrap(),
+            "清单被主动失效后必须重算"
+        );
+        write_combo_detail_manifest(&combo_path, &detail, &files).unwrap();
+
+        let victim = files
+            .iter()
+            .find(|p| p.to_string_lossy().contains("_fixedcurve"))
+            .expect("应有 fixedcurve");
+        std::fs::remove_file(victim).unwrap();
+        assert!(
+            !detail_cache_is_complete(&combo_path, &detail).unwrap(),
+            "缺失 fixedcurve 必须判定缓存失效"
+        );
+
+        // 同名文件被另一轮(不同 combo)覆盖, 字节数相同 => 只能靠 metadata combo 发现。
+        write_detail_parquet(std::slice::from_ref(&d), &detail, true, "another-combo").unwrap();
+        assert!(
+            !detail_cache_is_complete(&combo_path, &detail).unwrap(),
+            "文件归属另一轮时必须判定缓存失效"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 全局索引只列 fixed 曲线, 且读取时校验文件内 combo 与索引一致。
+    #[test]
+    fn detail_index_lists_only_fixed_curves_and_validates_combo() {
+        use crate::app::DetailResult;
+
+        let root = std::env::temp_dir().join(format!("vta-index-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let detail = root.join("detail");
+        let temps = root.join("temps");
+        let mk = |combo: &str, status| {
+            let d = DetailResult {
+                symbol: "BTCUSDT".into(),
+                timeframe: "1d".into(),
+                strategy: "sma".into(),
+                params: format!("period={}", if combo.ends_with('a') { 10 } else { 20 }),
+                status,
+                trades: Vec::new(),
+                equity_curve: (0..3)
+                    .map(|i| (1_700_000_000.0 + i as f64 * 86_400.0, 100.0 + i as f64))
+                    .collect(),
+                fixed_curve: vec![100.0, 101.0, 102.0],
+            };
+            (d, temps.join(format!("{combo}.parquet")))
+        };
+        let (d_a, combo_a) = mk("BTCUSDT_1d_sma_aaaaaaaaaaaaaaaa", crate::app::RunStatus::Ok);
+        let (d_b, combo_b) = mk(
+            "BTCUSDT_1d_sma_bbbbbbbbbbbbbbbb",
+            crate::app::RunStatus::NoTrades,
+        );
+        let files_a = write_detail_parquet(
+            std::slice::from_ref(&d_a),
+            &detail,
+            true,
+            "BTCUSDT_1d_sma_aaaaaaaaaaaaaaaa",
+        )
+        .unwrap();
+        let files_b = write_detail_parquet(
+            std::slice::from_ref(&d_b),
+            &detail,
+            true,
+            "BTCUSDT_1d_sma_bbbbbbbbbbbbbbbb",
+        )
+        .unwrap();
+        write_combo_detail_manifest(&combo_a, &detail, &files_a).unwrap();
+        write_combo_detail_manifest(&combo_b, &detail, &files_b).unwrap();
+        write_detail_index(&detail, &[combo_a, combo_b]).unwrap();
+
+        let curves = read_fixed_curves_from_manifest(&detail).unwrap();
+        assert_eq!(curves.len(), 2, "索引应列出两条 fixed 曲线");
+        assert!(
+            curves
+                .iter()
+                .any(|c| c.combo == "BTCUSDT_1d_sma_aaaaaaaaaaaaaaaa"
+                    && c.status == crate::app::RunStatus::Ok)
+        );
+        assert!(
+            curves
+                .iter()
+                .any(|c| c.combo == "BTCUSDT_1d_sma_bbbbbbbbbbbbbbbb"
+                    && c.status == crate::app::RunStatus::NoTrades)
+        );
+        assert_eq!(curves[0].times.len(), 3);
+
+        // 索引列出的文件缺失 => 必须报错, 不得静默少读一条。
+        let victim = files_a
+            .iter()
+            .find(|p| p.to_string_lossy().contains("_fixedcurve"))
+            .expect("组合 A 应有 fixedcurve");
+        // 文件被追加一个字节(大小变化) => 索引校验必须报错, 即使 parquet 仍可读。
+        let original = std::fs::read(victim).unwrap();
+        let mut changed = original.clone();
+        changed.push(0);
+        std::fs::write(victim, &changed).unwrap();
+        assert!(
+            read_fixed_curves_from_manifest(&detail).is_err(),
+            "索引大小不符必须报错"
+        );
+        std::fs::write(victim, &original).unwrap();
+        assert!(
+            read_fixed_curves_from_manifest(&detail).is_ok(),
+            "恢复原文件后索引应重新可用"
+        );
+        std::fs::remove_file(victim).unwrap();
+        assert!(
+            read_fixed_curves_from_manifest(&detail).is_err(),
+            "索引列出的文件缺失必须报错"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// L5: 退化结果必须在报告里**可被筛掉**, 且 `bars_used` 必须落盘。
@@ -2498,6 +3120,14 @@ mod tests {
         assert_eq!(unit_of("avg_mfe_price"), Unit::Price);
         // 百分数。
         assert_eq!(unit_of("volatility_pct"), Unit::Percent);
+        // `return_mdd` 曾与 `recovery_factor` 完全重复(都是 total_return / max_dd);
+        // `calmar` 才是 CAGR / max_dd。删除重复列后只保留后两者。
+        assert!(
+            !COLUMNS.iter().any(|(name, _)| *name == "return_mdd"),
+            "return_mdd 是 recovery_factor 的重复列, 不得回到 schema"
+        );
+        assert_eq!(unit_of("recovery_factor"), Unit::Dimensionless);
+        assert_eq!(unit_of("calmar"), Unit::Dimensionless);
     }
 
     /// **null 槽位必须报错**, 不得被静默读成默认值。
@@ -2642,7 +3272,7 @@ mod tests {
         }
     }
 
-    /// **回归**: `status = "invalid"` 必须**如实**往返。
+    /// **回归**: `status = "invalid"` / `"bankrupt"` 必须**如实**往返。
     ///
     /// 可触发场景: 读回时未知的 status 取值会落进 `_ =>` 兜底分支变成
     /// `NoSignals` —— 于是"这一档**没算出来**"会被还原成"跑了但没信号",
@@ -2678,13 +3308,14 @@ mod tests {
                 mk(crate::app::RunStatus::NoSignals),
                 mk(crate::app::RunStatus::NoTrades),
                 mk(crate::app::RunStatus::Invalid),
+                mk(crate::app::RunStatus::Bankrupt),
             ],
             crate::money::Amount::from_i64(10_000),
         )
         .unwrap();
 
         let back = read_parquet(&p).expect("必须能读回");
-        assert_eq!(back.len(), 4);
+        assert_eq!(back.len(), 5);
         assert_eq!(back[0].status, crate::app::RunStatus::Ok);
         assert_eq!(back[1].status, crate::app::RunStatus::NoSignals);
         assert_eq!(back[2].status, crate::app::RunStatus::NoTrades);
@@ -2692,6 +3323,11 @@ mod tests {
             back[3].status,
             crate::app::RunStatus::Invalid,
             "invalid 必须如实还原, 不得落进 _ => 兜底变成 no_signals"
+        );
+        assert_eq!(
+            back[4].status,
+            crate::app::RunStatus::Bankrupt,
+            "bankrupt 必须如实还原"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

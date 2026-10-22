@@ -32,10 +32,19 @@ pub fn ma_atr_ma(close: &[f64], maname: &str, len: usize) -> Option<Vec<f64>> {
     Some(v)
 }
 
-#[must_use]
-pub fn ma_atr_atr(high: &[f64], low: &[f64], close: &[f64], atrlen: usize) -> Vec<f64> {
+/// 计算 ATR 序列。
+///
+/// # Errors
+/// `atrlen == 0` 或数据不足以计算 ATR 时返回 [`crate::error::AppError`];
+/// 调用方应把它转成 `ParamSkipped`, 而不是静默降级成全 Hold。
+pub fn ma_atr_atr(
+    high: &[f64],
+    low: &[f64],
+    close: &[f64],
+    atrlen: usize,
+) -> crate::error::Result<Vec<f64>> {
     if atrlen == 0 {
-        return vec![f64::NAN; close.len()];
+        return Err(crate::strategies::param_skipped("MA_ATR: atrlen 必须 >= 1"));
     }
     match atr(&AtrInput::from_slices(
         high,
@@ -45,8 +54,8 @@ pub fn ma_atr_atr(high: &[f64], low: &[f64], close: &[f64], atrlen: usize) -> Ve
             length: Some(atrlen),
         },
     )) {
-        Ok(v) => v.values,
-        Err(_) => vec![f64::NAN; close.len()],
+        Ok(v) => Ok(v.values),
+        Err(e) => Err(crate::strategies::param_skipped(e)),
     }
 }
 
@@ -100,7 +109,7 @@ fn compute(
             )));
         }
     };
-    let atr_vals = ma_atr_atr(high, low, close, atrlen);
+    let atr_vals = ma_atr_atr(high, low, close, atrlen)?;
     Ok(ma_atr_signals(close, &ma_vals, &atr_vals, k))
 }
 
@@ -145,9 +154,9 @@ impl Strategy for MaAtrStrategy {
         for &i in &idxs {
             alens.insert(self.quints[i].3);
         }
-        let mut atr_cache: HashMap<usize, Vec<f64>> = HashMap::new();
+        let mut atr_cache: HashMap<usize, Option<Vec<f64>>> = HashMap::new();
         for a in &alens {
-            atr_cache.insert(*a, ma_atr_atr(high, low, close, *a));
+            atr_cache.insert(*a, ma_atr_atr(high, low, close, *a).ok());
         }
         // 分组键用 `(ma 名, len)`: 键里的 `String` 只在**建组时**克隆一次,
         // 之后一律借用(`groups.iter()`), 不再为每个参数克隆一遍。
@@ -177,7 +186,7 @@ impl Strategy for MaAtrStrategy {
                     continue;
                 }
             };
-            let done: Vec<(usize, Vec<Signal>)> = members
+            let done: Vec<(usize, ParamOutcome)> = members
                 .par_iter()
                 .map(|&i| {
                     let (_, _, k, a) = &self.quints[i];
@@ -186,16 +195,30 @@ impl Strategy for MaAtrStrategy {
                     // 且 miss 时静默用 NaN 掩盖"缓存未命中"这一逻辑错误。
                     // 现在 miss 是**硬错误**: 缓存的键集就是本批次的 atrlen 集合,
                     // 命中不了就说明实现有 bug, 不能悄悄降级成全 NaN。
-                    let av = atr_cache.get(a).ok_or_else(|| {
-                        crate::error::AppError::Msg(format!(
-                            "MA_ATR: ATR 缓存缺失(atrlen={a}); 缓存键集与本批参数不一致"
-                        ))
-                    })?;
-                    Ok((i, ma_atr_signals(close, &mv, av.as_slice(), *k)))
+                    let av = match atr_cache.get(a) {
+                        Some(Some(v)) => v,
+                        // ATR 本身算不出来是**该档位不可计算**, 逐档记 Skipped,
+                        // 不能把整个策略的 batch 变成 Err(其余档位仍然有效)。
+                        Some(None) => {
+                            return Ok((
+                                i,
+                                ParamOutcome::Skipped(format!("MA_ATR: ATR(atrlen={a}) 不可计算")),
+                            ));
+                        }
+                        None => {
+                            return Err(crate::error::AppError::Msg(format!(
+                                "MA_ATR: ATR 缓存缺失(atrlen={a}); 缓存键集与本批参数不一致"
+                            )));
+                        }
+                    };
+                    Ok((
+                        i,
+                        ParamOutcome::Signals(ma_atr_signals(close, &mv, av.as_slice(), *k)),
+                    ))
                 })
                 .collect::<crate::error::Result<Vec<_>>>()?;
-            for (i, sig) in done {
-                out[at[&i]] = ParamOutcome::Signals(sig);
+            for (i, outcome) in done {
+                out[at[&i]] = outcome;
             }
         }
         Ok(out)
@@ -289,5 +312,29 @@ mod tests {
             };
             assert_eq!(*b, single, "param {i}");
         }
+    }
+
+    /// **契约**: ATR 算不出来时必须返回 `ParamSkipped`, 不得静默全 Hold。
+    #[test]
+    fn short_series_is_param_skipped() {
+        let close = vec![100.0; 5];
+        let s = MaAtrStrategy {
+            quints: vec![("sma".to_string(), 5, 2.0, 14)],
+        };
+        let err = s
+            .generate_signals_full(&close, &close, &close, &close, &[], &[], 0)
+            .expect_err("ATR(14) 在 5 根 bar 上不可计算");
+        assert!(
+            matches!(err, crate::error::AppError::ParamSkipped { .. }),
+            "必须是 ParamSkipped, 实际: {err}"
+        );
+        // 批量路径同样逐档跳过, 不得让整个 batch 变成 Err。
+        let batch = s
+            .generate_signals_batch(&close, &close, &close, &close, &[], &[], 0..1)
+            .expect("单档失败不应中断 batch");
+        assert!(matches!(
+            &batch[0],
+            crate::strategies::ParamOutcome::Skipped(_)
+        ));
     }
 }

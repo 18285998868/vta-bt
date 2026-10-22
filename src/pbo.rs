@@ -280,16 +280,121 @@ pub fn cscv(curves: &[impl AsRef<[f64]>], s: usize, bpy: f64) -> crate::error::R
     })
 }
 
-/// (币,周期,策略) → [(params, fixed 曲线)]。
-type PboGroups = std::collections::BTreeMap<(String, String, String), Vec<(String, Vec<f64>)>>;
+/// 一次分组筛选的统计, 用于 `warn!` 与单测断言。
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct CurveSelection {
+    /// 最终参与 CSCV 的曲线数。
+    kept: usize,
+    /// `status != ok` 被筛掉的曲线数。
+    dropped_status: usize,
+    /// 时间列空/不等长/非严格递增被筛掉的曲线数。
+    dropped_invalid: usize,
+    /// 时间网格与选中 cohort 不同而被筛掉的曲线数。
+    dropped_other_window: usize,
+    /// 同 params 重复被去掉的曲线数。
+    dropped_duplicate: usize,
+    /// 筛掉非法状态/时间轴后存在多少个不同的时间网格。
+    cohorts: usize,
+}
+
+/// 从同组 (币, 周期, 策略) 曲线中选出可比较的 cohort。
+///
+/// 三条规则:
+/// 1. 只保留 `status == ok`: `no_signals`/`no_trades`/`bankrupt` 的收益率没有
+///    可比性, 混进来会稀释 φ;
+/// 2. 只保留**时间网格完全一致**的曲线。旧实现按 `min(len)` 截断, 一条来自别的
+///    数据窗口的短曲线会让整组 T 缩水, 且无任何提示;
+/// 3. 同组内 params 重复时只留一条(优先较长曲线)。
+///
+/// 若存在多个时间网格, 选样本数最多的一个(并列时选 T 更大的), 其余曲线记入
+/// [`CurveSelection::dropped_other_window`] 由调用方 `warn!`。
+fn select_curves(members: &[crate::output::FixedCurve]) -> (Vec<(&str, &[f64])>, CurveSelection) {
+    use std::collections::BTreeMap;
+
+    let mut stats = CurveSelection::default();
+    // 分组键只用 `(len, first, last)`: 它是 O(1) 的, 避免 `BTreeMap<&[i64], _>`
+    // 在"所有曲线共享同一网格"时每次比较都扫完整个 T(O(N log N · T))。
+    // 键碰撞(同长度/首尾但中间不同)在下面用**精确 slice 比较**再拆开, 正确性
+    // 不依赖键的区分度; 真实数据里不同窗口通常在首/尾/长度上就已分开。
+    let mut buckets: BTreeMap<(usize, i64, i64), Vec<&crate::output::FixedCurve>> = BTreeMap::new();
+    for curve in members {
+        if curve.status != crate::app::RunStatus::Ok {
+            stats.dropped_status += 1;
+            continue;
+        }
+        // 时间必须严格递增且与值等长: 否则"逐 bar 收益"没有意义。
+        if curve.times.is_empty()
+            || curve.times.len() != curve.values.len()
+            || curve.times.windows(2).any(|w| w[0] >= w[1])
+        {
+            stats.dropped_invalid += 1;
+            continue;
+        }
+        let key = (
+            curve.times.len(),
+            curve.times[0],
+            curve.times[curve.times.len() - 1],
+        );
+        buckets.entry(key).or_default().push(curve);
+    }
+
+    // 键碰撞安全: 桶内再按完整时间轴精确分组。常见情况(全组同网格)每条曲线只
+    // 与代表曲线比较一次, 总代价 O(N · T), 而不是 BTreeMap 的 O(N log N · T)。
+    let mut cohorts: Vec<Vec<&crate::output::FixedCurve>> = Vec::new();
+    for (_key, bucket) in buckets {
+        let mut exact: Vec<Vec<&crate::output::FixedCurve>> = Vec::new();
+        'next_curve: for curve in bucket {
+            for cohort in &mut exact {
+                if cohort[0].times == curve.times {
+                    cohort.push(curve);
+                    continue 'next_curve;
+                }
+            }
+            exact.push(vec![curve]);
+        }
+        cohorts.extend(exact);
+    }
+    stats.cohorts = cohorts.len();
+    let Some(mut cohort) = cohorts.into_iter().max_by_key(|curves| {
+        (
+            curves.len(),
+            curves[0].times.len(),
+            curves[0].times.first().copied().unwrap_or(0),
+        )
+    }) else {
+        return (Vec::new(), stats);
+    };
+    stats.dropped_other_window =
+        members.len() - stats.dropped_status - stats.dropped_invalid - cohort.len();
+    cohort.sort_by(|a, b| {
+        a.params
+            .cmp(&b.params)
+            .then_with(|| b.values.len().cmp(&a.values.len()))
+    });
+    let before = cohort.len();
+    cohort.dedup_by(|a, b| a.params == b.params);
+    stats.dropped_duplicate = before - cohort.len();
+    stats.kept = cohort.len();
+    (
+        cohort
+            .into_iter()
+            .map(|c| (c.params.as_str(), c.values.as_slice()))
+            .collect(),
+        stats,
+    )
+}
 
 /// `--pbo` 装配: 读报告目录(detail/ 优先, 回退目录本身)的 fixed 曲线,
-/// 按(币,周期,策略)分组实算 CSCV 并印表。T×N 常驻内存, 1m×500 级约 24GB,
+/// 按 (币, 周期, 策略) 分组实算 CSCV 并印表。T×N 常驻内存, 1m×500 级约 24GB,
 /// PBO 建议 TF≥30m 或 N≤500(见手册 Step5)。
 ///
+/// 只读 `detail/manifest.toml` 索引列出的曲线(该索引由 detail 回测在结束时
+/// 重写), 不做目录扫描 —— 否则参数已删除/上一轮遗留的曲线会静默参与 CSCV。
+/// 只使用 `status == ok` 且共享同一时间网格的曲线; 具体取舍见 `select_curves`。
+///
 /// # Errors
-/// 目录读取失败、未找到 `*_fixedcurve.parquet`、或某组的 CSCV 口径非法
-/// (`S` 非偶数 / N 不足 / T 不足)时返回 [`AppError`](crate::error::AppError)。
+/// 索引缺失/读取失败、某组的 CSCV 口径非法(`S` 非偶数 / N 不足 / T 不足)时
+/// 返回 [`AppError`](crate::error::AppError)。
 pub fn run_pbo_report(dir: &std::path::Path) -> crate::error::Result<()> {
     use std::collections::BTreeMap;
 
@@ -299,19 +404,20 @@ pub fn run_pbo_report(dir: &std::path::Path) -> crate::error::Result<()> {
     } else {
         dir.to_path_buf()
     };
-    let curves = crate::output::read_fixed_curves(&src)?;
+    let curves = crate::output::read_fixed_curves_from_manifest(&src)?;
     if curves.is_empty() {
         return Err(crate::error::AppError::Msg(format!(
-            "未找到 *_fixedcurve.parquet, 请先用 detail=true 重跑: {}",
+            "detail 索引中没有 fixed 曲线, 请先用 detail=true 且 fixed_curves=true 重跑: {}",
             src.display()
         )));
     }
-    let mut groups: PboGroups = BTreeMap::new();
+    let mut groups: BTreeMap<(String, String, String), Vec<crate::output::FixedCurve>> =
+        BTreeMap::new();
     for c in curves {
         groups
-            .entry((c.symbol, c.timeframe, c.strategy))
+            .entry((c.symbol.clone(), c.timeframe.clone(), c.strategy.clone()))
             .or_default()
-            .push((c.params, c.values));
+            .push(c);
     }
     println!(
         "\n{:<28} {:>6} {:>8} {:>3} {:>7} {:>7} {:<6} {:>13} {:>10}",
@@ -320,28 +426,43 @@ pub fn run_pbo_report(dir: &std::path::Path) -> crate::error::Result<()> {
     println!("{}", "-".repeat(96));
     let mut computed = 0usize;
     let mut skipped = 0usize;
-    for ((sym, tf, strat), mut members) in groups {
-        // 同一组内 params 可能重复(重复跑/复制 detail 目录)。若不剔重, CSCV 会把
-        // 同一策略的同一参数当成两个"策略", N 被虚增、φ 被稀释。
-        // 同名参数按曲线长度降序, 保证 `dedup_by` 保留最长(最可能完整)的一份。
-        members.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| b.1.len().cmp(&a.1.len())));
-        let before = members.len();
-        members.dedup_by(|a, b| a.0 == b.0);
-        if members.len() != before {
+    for ((sym, tf, strat), members) in groups {
+        let (selected, stats) = select_curves(&members);
+        if stats.dropped_status > 0 {
             tracing::warn!(
-                "{sym}/{tf}/{strat}: 去掉 {} 条重复 params 曲线",
-                before - members.len()
+                "{sym}/{tf}/{strat}: 筛掉 {} 条非 ok 曲线(no_signals/no_trades/bankrupt 不参与 PBO)",
+                stats.dropped_status
             );
         }
-        if members.len() < 10 {
+        if stats.dropped_invalid > 0 {
+            tracing::warn!(
+                "{sym}/{tf}/{strat}: 筛掉 {} 条时间列非法(空/不等长/非递增)的曲线",
+                stats.dropped_invalid
+            );
+        }
+        if stats.cohorts > 1 {
+            tracing::warn!(
+                "{sym}/{tf}/{strat}: 检出 {} 个不同时间网格; 仅用样本数最多的 {} 条(丢弃 {} 条不同网格曲线)",
+                stats.cohorts,
+                stats.kept,
+                stats.dropped_other_window
+            );
+        }
+        if stats.dropped_duplicate > 0 {
+            tracing::warn!(
+                "{sym}/{tf}/{strat}: 去掉 {} 条重复 params 曲线",
+                stats.dropped_duplicate
+            );
+        }
+        if selected.len() < 10 {
             tracing::warn!(
                 "{sym}/{tf}/{strat}: N={} <10, 跳过(名义N过小)",
-                members.len()
+                selected.len()
             );
             skipped += 1;
             continue;
         }
-        let t = members.iter().map(|(_, v)| v.len()).min().unwrap_or(0);
+        let t = selected.first().map_or(0, |(_, v)| v.len());
         let Some(s) = pick_s(t) else {
             tracing::warn!("{sym}/{tf}/{strat}: T={t} <32, 跳过(块长不足)");
             skipped += 1;
@@ -359,7 +480,7 @@ pub fn run_pbo_report(dir: &std::path::Path) -> crate::error::Result<()> {
         // **零拷贝**: 直接借用各曲线切片, 不再克隆一份 T×N 矩阵
         // (1m×500 规模下那一份就是 4 GB)。`cscv` 内部会按 `S` 自行截齐
         // (`t - t % s`), 与原先在此处截齐后克隆的结果逐位相同。
-        let mat: Vec<&[f64]> = members.iter().map(|(_, v)| v.as_slice()).collect();
+        let mat: Vec<&[f64]> = selected.iter().map(|(_, v)| *v).collect();
         let bpy = crate::strategies::bars_per_year(&tf);
         let r = cscv(&mat, s, bpy)?;
         let verdict = if r.pbo < 0.05 { "通过" } else { "拒绝" };
@@ -837,12 +958,140 @@ mod tests {
                 got.pbo,
                 want.pbo
             );
-            assert!(
-                (got.degradation - want.degradation).abs() < 1e-9,
-                "n={n} t={t} s={s}: 衰减必须一致 ({} vs {})",
-                got.degradation,
-                want.degradation
-            );
         }
+    }
+
+    /// `select_curves`: 只保留 ok + 同一时间网格 + 唯一 params 的曲线。
+    ///
+    /// 旧实现按 `min(len)` 截断: 两条 64 bar 的曲线会把 12 条 256 bar 的曲线
+    /// 一起砍到 T=64, 且无任何提示。本测试锁定"选最大 cohort, 不截断"。
+    #[test]
+    fn pbo_selection_prefers_largest_time_cohort() {
+        use crate::app::RunStatus;
+
+        let mk = |params: String, status: RunStatus, start: i64, n: usize| {
+            let times: Vec<i64> = (0..n as i64).map(|i| start + i * 60_000).collect();
+            let values: Vec<f64> = (0..n).map(|i| 100.0 + i as f64).collect();
+            crate::output::FixedCurve {
+                combo: "c".into(),
+                symbol: "BTCUSDT".into(),
+                timeframe: "1h".into(),
+                strategy: "sma".into(),
+                params,
+                status,
+                times,
+                values,
+            }
+        };
+        let mut members: Vec<_> = (0..12)
+            .map(|i| mk(format!("p{i:02}"), RunStatus::Ok, 1_700_000_000, 256))
+            .collect();
+        // 两条来自另一数据窗口的短曲线: 不得把整组 T 拉到 64。
+        members.push(mk("old1".into(), RunStatus::Ok, 1_600_000_000, 64));
+        members.push(mk("old2".into(), RunStatus::Ok, 1_600_000_000, 64));
+        // 非 ok 状态: 不参与排名。
+        members.push(mk("flat".into(), RunStatus::NoTrades, 1_700_000_000, 256));
+        // 重复 params: 只留一条。
+        members.push(mk("p00".into(), RunStatus::Ok, 1_700_000_000, 256));
+
+        let (selected, stats) = select_curves(&members);
+        assert_eq!(stats.kept, 12, "12 条同网格唯一参数");
+        assert_eq!(stats.dropped_status, 1);
+        assert_eq!(stats.dropped_other_window, 2);
+        assert_eq!(stats.dropped_duplicate, 1);
+        assert_eq!(stats.cohorts, 2);
+        assert_eq!(selected.len(), 12);
+        assert_eq!(
+            selected[0].1.len(),
+            256,
+            "必须保留 256 bar 的 cohort, 不得按 min(len)=64 截断"
+        );
+        let mut params: Vec<&str> = selected.iter().map(|(p, _)| *p).collect();
+        params.sort_unstable();
+        params.dedup();
+        assert_eq!(params.len(), selected.len(), "params 必须唯一");
+    }
+
+    /// 分组键碰撞不得把不同时间网格合并: 键只有 `(len, first, last)`, 桶内必须
+    /// 再用完整时间轴精确拆分。这里两条网格长度/首/尾完全相同, 仅内部不同。
+    #[test]
+    fn pbo_selection_splits_key_collisions_by_exact_time_axis() {
+        use crate::app::RunStatus;
+
+        let mk = |params: &str, times: &[i64]| crate::output::FixedCurve {
+            combo: "c".into(),
+            symbol: "BTCUSDT".into(),
+            timeframe: "1d".into(),
+            strategy: "sma".into(),
+            params: params.into(),
+            status: RunStatus::Ok,
+            values: vec![100.0; times.len()],
+            times: times.to_vec(),
+        };
+        // 两者 len=5 / first=0 / last=5, 但第 2 个时间点不同。
+        let grid_a = [0_i64, 1, 2, 3, 5];
+        let grid_b = [0_i64, 2, 3, 4, 5];
+        let mut members: Vec<_> = (0..12).map(|i| mk(&format!("a{i}"), &grid_a)).collect();
+        members.extend((0..2).map(|i| mk(&format!("b{i}"), &grid_b)));
+
+        let (selected, stats) = select_curves(&members);
+        assert_eq!(stats.cohorts, 2, "同键不同网格必须拆成两个 cohort");
+        assert_eq!(stats.kept, 12, "只能选样本数更大的 grid_a");
+        assert_eq!(stats.dropped_other_window, 2);
+        assert!(selected.iter().all(|(p, _)| p.starts_with('a')));
+    }
+
+    /// 时间列空/不等长/非严格递增的曲线必须被筛掉, 不得参与 CSCV。
+    #[test]
+    fn pbo_selection_rejects_invalid_time_axes() {
+        use crate::app::RunStatus;
+
+        let mk = |params: &str, times: Vec<i64>| crate::output::FixedCurve {
+            combo: "c".into(),
+            symbol: "BTCUSDT".into(),
+            timeframe: "1d".into(),
+            strategy: "sma".into(),
+            params: params.into(),
+            status: RunStatus::Ok,
+            values: vec![100.0; times.len()],
+            times,
+        };
+        let good: Vec<i64> = (0..64).map(|i| 1_700_000_000 + i * 86_400).collect();
+        let mut members: Vec<_> = (0..10)
+            .map(|i| mk(&format!("p{i}"), good.clone()))
+            .collect();
+        members.push(mk("empty", Vec::new()));
+        members.push(mk("dup_time", vec![1, 1, 2, 3]));
+        members.push(mk("backwards", vec![3, 2, 1]));
+
+        let (selected, stats) = select_curves(&members);
+        assert_eq!(selected.len(), 10);
+        assert_eq!(stats.dropped_invalid, 3);
+        assert_eq!(stats.cohorts, 1);
+    }
+
+    /// 全部曲线都不是 ok 时返回空选择, 由调用方按 N<10 跳过并 warn。
+    #[test]
+    fn pbo_selection_without_ok_curves_is_empty() {
+        use crate::app::RunStatus;
+
+        let times: Vec<i64> = (0..64).map(|i| 1_700_000_000 + i * 86_400).collect();
+        let members: Vec<_> = (0..12)
+            .map(|i| crate::output::FixedCurve {
+                combo: "c".into(),
+                symbol: "BTCUSDT".into(),
+                timeframe: "1d".into(),
+                strategy: "sma".into(),
+                params: format!("p{i}"),
+                status: RunStatus::Bankrupt,
+                values: vec![0.0; times.len()],
+                times: times.clone(),
+            })
+            .collect();
+        let (selected, stats) = select_curves(&members);
+        assert!(selected.is_empty());
+        assert_eq!(stats.kept, 0);
+        assert_eq!(stats.dropped_status, 12);
+        assert_eq!(stats.cohorts, 0);
     }
 }

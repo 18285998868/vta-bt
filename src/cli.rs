@@ -10,8 +10,9 @@ pub struct Cli {
     #[arg(short, long)]
     pub config: Option<PathBuf>,
 
-    /// PBO 模式: 读取该报告目录 detail/ 下 `*_fixedcurve.parquet`,
-    /// 按(币,周期,策略)分组实算 CSCV。与 `-c` 二选一。
+    /// PBO 模式: 读取该报告目录 `detail/manifest.toml` 索引列出的
+    /// `*_fixedcurve.parquet`, 按(币,周期,策略)分组实算 CSCV。只使用
+    /// `status == ok` 且共享同一时间网格的曲线。与 `-c` 二选一。
     #[arg(long)]
     pub pbo: Option<PathBuf>,
 

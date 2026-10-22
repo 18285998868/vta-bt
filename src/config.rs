@@ -211,6 +211,20 @@ impl Config {
                 )));
             }
         }
+        // `fixed_curves` 只在 detail 分支写出。若允许它单独为 true, 用户会得到
+        // "配置说要做 PBO, 但 detail/ 一个 fixedcurve 都没有" 的静默空结果 ——
+        // 随后 `--pbo` 报"未找到曲线", 排查方向完全错。这里直接拒绝。
+        if self
+            .output
+            .as_ref()
+            .is_some_and(|output| output.fixed_curves && !output.detail)
+        {
+            return Err(AppError::Msg(
+                "output.fixed_curves = true 需要同时设置 output.detail = true: \
+                 fixedcurve 只在 detail 分支写出"
+                    .into(),
+            ));
+        }
         if self.strategy.is_empty() {
             return Err(AppError::Msg("strategy 不能为空".into()));
         }
@@ -471,7 +485,8 @@ pub struct OutputConfig {
     #[serde(default)]
     pub detail: bool,
     /// 是否写 fixedcurve 文件（`--pbo` 的 T×N 输入）。默认 false：
-    /// detail 只落逐笔 trades，省掉 GB 级曲线 I/O；做 PBO 时显式开 true。
+    /// detail 仍会写逐笔 trades 与权益曲线，只是不写 fixed 曲线；
+    /// 做 PBO 时显式开 true（且必须同时 `detail = true`）。
     #[serde(default)]
     pub fixed_curves: bool,
     /// 是否覆盖已存在的回测结果文件，默认 false（跳过已完成的组合）
@@ -919,7 +934,7 @@ impl F64Param {
 /// 文件读取失败, 或 TOML 结构非法(含未知字段 / 类型不匹配)时返回
 /// [`AppError`]。
 ///
-/// 收 [`Path`] 而非 `&str`: 配置路径来自 CLI, 非 UTF-8 路径在 `&str` 边界上
+/// 收 [`Path`](std::path::Path) 而非 `&str`: 配置路径来自 CLI, 非 UTF-8 路径在 `&str` 边界上
 /// 会被迫 `to_str().expect(..)` —— 那是把用户输入的问题变成一次 panic。
 pub fn load_config(path: &std::path::Path) -> crate::error::Result<Config> {
     let content = std::fs::read_to_string(path)?;
@@ -948,6 +963,26 @@ mod tests {
     fn validate_accepts_full_config() {
         let cfg: Config = toml::from_str(&make_toml(10000.0, true, true)).unwrap();
         assert!(cfg.validate().is_ok());
+    }
+
+    /// **契约**: `fixed_curves` 依赖 `detail`。单独开 fixed_curves 必须**配置期**
+    /// 拒绝, 不得静默不写文件、等到 `--pbo` 才报"未找到曲线"。
+    #[test]
+    fn validate_rejects_fixed_curves_without_detail() {
+        let toml = format!(
+            "{}\n[output]\nfixed_curves = true\n",
+            make_toml(10000.0, true, true)
+        );
+        let cfg: Config = toml::from_str(&toml).expect("配置本身应可解析");
+        let e = cfg.validate().expect_err("fixed_curves 单独开启必须被拒");
+        assert!(format!("{e}").contains("output.detail = true"), "{e}");
+
+        let ok_toml = format!(
+            "{}\n[output]\ndetail = true\nfixed_curves = true\n",
+            make_toml(10000.0, true, true)
+        );
+        let ok: Config = toml::from_str(&ok_toml).expect("配置本身应可解析");
+        assert!(ok.validate().is_ok());
     }
 
     /// newtype 改造后: 资金/费率/延迟的非法值在**反序列化时**就被拒(自带行列号),

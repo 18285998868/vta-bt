@@ -70,7 +70,7 @@ fn compute(
     volume: &[f64],
     time: &[i64],
     th: f64,
-) -> Vec<Signal> {
+) -> crate::error::Result<Vec<Signal>> {
     let n = close.len();
     let mut sig = vec![Signal::Hold; n];
     let vwap = session_vwap(high, low, close, volume, time);
@@ -81,7 +81,7 @@ fn compute(
         AtrParams { length: Some(14) },
     )) {
         Ok(v) => v.values,
-        Err(_) => return sig,
+        Err(e) => return Err(crate::strategies::param_skipped(e)),
     };
     for i in 1..n.min(atr_vals.len()) {
         let (v0, v1, a0, a1) = (vwap[i - 1], vwap[i], atr_vals[i - 1], atr_vals[i]);
@@ -98,7 +98,7 @@ fn compute(
             sig[i] = Signal::Sell;
         }
     }
-    sig
+    Ok(sig)
 }
 
 impl Strategy for VwapStrategy {
@@ -124,14 +124,7 @@ impl Strategy for VwapStrategy {
         time: &[i64],
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
-        Ok(compute(
-            high,
-            low,
-            close,
-            volume,
-            time,
-            self.threshs[param_idx],
-        ))
+        compute(high, low, close, volume, time, self.threshs[param_idx])
     }
 }
 
@@ -155,7 +148,7 @@ mod tests {
         let high = close.clone();
         let low = close.clone();
         let volume = vec![10.0; n];
-        let sig = compute(&high, &low, &close, &volume, &t, 1.5);
+        let sig = compute(&high, &low, &close, &volume, &t, 1.5).expect("足够长的数据必须可计算");
         assert!(sig.contains(&Signal::Buy));
     }
 
@@ -168,7 +161,7 @@ mod tests {
         let high = close.clone();
         let low = close.clone();
         let volume = vec![10.0; n];
-        let sig = compute(&high, &low, &close, &volume, &t, 1.5);
+        let sig = compute(&high, &low, &close, &volume, &t, 1.5).expect("足够长的数据必须可计算");
         assert!(sig.contains(&Signal::Sell));
     }
 
@@ -177,7 +170,7 @@ mod tests {
         let n = 30;
         let t = bars(n, 1_700_000_000_000, 60_000);
         let close = vec![100.0; n];
-        let sig = compute(&close, &close, &close, &vec![0.0; n], &t, 1.5);
+        let sig = compute(&close, &close, &close, &vec![0.0; n], &t, 1.5).expect("ATR 可计算");
         assert!(sig.iter().all(|&s| s == Signal::Hold));
     }
 
@@ -186,5 +179,21 @@ mod tests {
         let s = VwapStrategy { threshs: vec![2.0] };
         assert_eq!(s.name(), "VWAP");
         assert_eq!(s.param_str(0), "thresh=2");
+    }
+
+    /// **契约**: ATR 预热不足时必须显式跳过, 不得静默全 Hold。
+    #[test]
+    fn test_short_series_is_param_skipped() {
+        let n = 5;
+        let t = bars(n, 1_700_000_000_000, 60_000);
+        let close = vec![100.0; n];
+        let s = VwapStrategy { threshs: vec![1.5] };
+        let err = s
+            .generate_signals_full(&[], &close, &close, &close, &close, &t, 0)
+            .expect_err("ATR(14) 在 5 根 bar 上不可计算");
+        assert!(
+            matches!(err, crate::error::AppError::ParamSkipped { .. }),
+            "必须是 ParamSkipped, 实际: {err}"
+        );
     }
 }

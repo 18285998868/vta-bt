@@ -8,8 +8,10 @@ use super::config::MabbLongConfig;
 
 /// 单均线BB多头：close>上轨做多，绝不做空；离场＝追踪止损或中线止盈先到为准。
 /// 追踪：extreme为进场后close最高，trail＝extreme−k·ATR(当根)，
-/// low≤trail平仓；keff在进场根确定（stopk=0或ATR无效则追踪禁用）。
+/// low≤trail平仓；keff在进场根确定（stopk=0则追踪禁用）。
 /// 中线：close≤mid平仓（止盈语义：保住剩余）。
+///
+/// ATR 算不出来时**整档跳过**(`ParamSkipped`), 不再静默退化为"无追踪止损"。
 pub struct MabbLongStrategy {
     quints: Vec<(String, usize, f64, f64, usize)>,
 }
@@ -146,10 +148,19 @@ fn mabb_core(close: &[f64], maname: &str, len: usize) -> Option<(Vec<f64>, Vec<f
 }
 
 /// 计算 MABB 通道的 ATR 归一化带宽序列。
-#[must_use]
-pub fn mabb_atr(high: &[f64], low: &[f64], close: &[f64], atrlen: usize) -> Vec<f64> {
+///
+/// # Errors
+/// `atrlen == 0` 或数据不足以计算 ATR 时返回 [`crate::error::AppError`]。
+pub fn mabb_atr(
+    high: &[f64],
+    low: &[f64],
+    close: &[f64],
+    atrlen: usize,
+) -> crate::error::Result<Vec<f64>> {
     if atrlen == 0 {
-        return vec![f64::NAN; close.len()];
+        return Err(crate::strategies::param_skipped(
+            "MABB_LONG: atrlen 必须 >= 1",
+        ));
     }
     match atr(&AtrInput::from_slices(
         high,
@@ -159,8 +170,8 @@ pub fn mabb_atr(high: &[f64], low: &[f64], close: &[f64], atrlen: usize) -> Vec<
             length: Some(atrlen),
         },
     )) {
-        Ok(v) => v.values,
-        Err(_) => vec![f64::NAN; close.len()],
+        Ok(v) => Ok(v.values),
+        Err(e) => Err(crate::strategies::param_skipped(e)),
     }
 }
 
@@ -183,7 +194,7 @@ fn compute(
             )));
         }
     };
-    let av = mabb_atr(high, low, close, atrlen);
+    let av = mabb_atr(high, low, close, atrlen)?;
     Ok(mabb_long_signals(
         close, high, low, &lower, &mid, &upper, &av, stopk,
     ))
@@ -236,9 +247,9 @@ impl Strategy for MabbLongStrategy {
         for &i in &idxs {
             alens.insert(self.quints[i].4);
         }
-        let mut atr_cache: HashMap<usize, Vec<f64>> = HashMap::new();
+        let mut atr_cache: HashMap<usize, Option<Vec<f64>>> = HashMap::new();
         for a in &alens {
-            atr_cache.insert(*a, mabb_atr(high, low, close, *a));
+            atr_cache.insert(*a, mabb_atr(high, low, close, *a).ok());
         }
         // 分组键用 `(ma 名, len)`: 键里的 `String` 只在**建组时**克隆一次,
         // 之后一律借用(`groups.iter()`), 不再为每个参数克隆一遍。
@@ -268,7 +279,7 @@ impl Strategy for MabbLongStrategy {
                     continue;
                 }
             };
-            let done: Vec<(usize, Vec<Signal>)> = members
+            let done: Vec<(usize, ParamOutcome)> = members
                 .par_iter()
                 .map(|&i| {
                     let (_, _, s, k, a) = &self.quints[i];
@@ -287,20 +298,40 @@ impl Strategy for MabbLongStrategy {
                     // 且 miss 时静默用 NaN 掩盖"缓存未命中"这一逻辑错误。
                     // 现在 miss 是**硬错误**: 缓存的键集就是本批次的 atrlen 集合,
                     // 命中不了就说明实现有 bug, 不能悄悄降级成全 NaN。
-                    let av = atr_cache.get(a).ok_or_else(|| {
-                        crate::error::AppError::Msg(format!(
-                            "MABB_LONG: ATR 缓存缺失(atrlen={a}); 缓存键集与本批参数不一致"
-                        ))
-                    })?;
+                    let av = match atr_cache.get(a) {
+                        Some(Some(v)) => v,
+                        Some(None) => {
+                            return Ok((
+                                i,
+                                ParamOutcome::Skipped(format!(
+                                    "MABB_LONG: ATR(atrlen={a}) 不可计算"
+                                )),
+                            ));
+                        }
+                        None => {
+                            return Err(crate::error::AppError::Msg(format!(
+                                "MABB_LONG: ATR 缓存缺失(atrlen={a}); 缓存键集与本批参数不一致"
+                            )));
+                        }
+                    };
                     let _ = (open, volume, time);
                     Ok((
                         i,
-                        mabb_long_signals(close, high, low, &lower, &mi, &upper, av.as_slice(), *k),
+                        ParamOutcome::Signals(mabb_long_signals(
+                            close,
+                            high,
+                            low,
+                            &lower,
+                            &mi,
+                            &upper,
+                            av.as_slice(),
+                            *k,
+                        )),
                     ))
                 })
                 .collect::<crate::error::Result<Vec<_>>>()?;
-            for (i, sig) in done {
-                out[at[&i]] = ParamOutcome::Signals(sig);
+            for (i, outcome) in done {
+                out[at[&i]] = outcome;
             }
         }
         Ok(out)
@@ -420,7 +451,7 @@ mod tests {
         let time: Vec<i64> = (0..n as i64).collect();
         let s = MabbLongStrategy {
             quints: vec![
-                ("sma".to_string(), 10, 2.0, 0.0, 0),
+                ("sma".to_string(), 10, 2.0, 0.0, 14),
                 ("sma".to_string(), 10, 2.0, 2.0, 14),
                 ("ema".to_string(), 12, 1.5, 3.0, 10),
             ],
@@ -441,5 +472,32 @@ mod tests {
             };
             assert_eq!(*b, single, "param {i}");
         }
+    }
+
+    /// **契约**: ATR 算不出来时整档跳过, 不得静默退化为"无追踪止损"。
+    #[test]
+    fn short_series_is_param_skipped() {
+        let n = 6;
+        let close: Vec<f64> = (0..n).map(|i| 100.0 + i as f64).collect();
+        let high: Vec<f64> = close.iter().map(|c| c + 1.0).collect();
+        let low: Vec<f64> = close.iter().map(|c| c - 1.0).collect();
+        let time: Vec<i64> = (0..n as i64).collect();
+        let s = MabbLongStrategy {
+            quints: vec![("sma".to_string(), 5, 2.0, 2.0, 14)],
+        };
+        let err = s
+            .generate_signals_full(&close, &high, &low, &close, &close, &time, 0)
+            .expect_err("ATR(14) 在 6 根 bar 上不可计算");
+        assert!(
+            matches!(err, crate::error::AppError::ParamSkipped { .. }),
+            "必须是 ParamSkipped, 实际: {err}"
+        );
+        let batch = s
+            .generate_signals_batch(&close, &high, &low, &close, &close, &time, 0..1)
+            .expect("单档失败不应中断 batch");
+        assert!(matches!(
+            &batch[0],
+            crate::strategies::ParamOutcome::Skipped(_)
+        ));
     }
 }

@@ -5,7 +5,8 @@ use crate::strategies::{Signal, Strategy};
 use super::config::MacdConfig;
 
 /// MACD信号线穿越：`macd=EMAfast−EMAslow`，`sig=EMA(macd, sp)`，严格穿越。
-/// 任一EMA失败(短序列/非法周期)即全Hold。prev相等/NaN→Hold。
+/// 任一EMA失败(短序列/非法周期)时返回 `ParamSkipped`，**不再**静默全 Hold。
+/// prev相等/NaN→Hold。
 pub struct MacdStrategy {
     triples: Vec<(usize, usize, usize)>,
 }
@@ -20,8 +21,12 @@ impl MacdStrategy {
     }
 }
 
-#[must_use]
-fn compute(close: &[f64], fast: usize, slow: usize, sigp: usize) -> Vec<Signal> {
+fn compute(
+    close: &[f64],
+    fast: usize,
+    slow: usize,
+    sigp: usize,
+) -> crate::error::Result<Vec<Signal>> {
     let n = close.len();
     let mut sig = vec![Signal::Hold; n];
     let ef = match ema(&EmaInput::from_slice(
@@ -29,14 +34,14 @@ fn compute(close: &[f64], fast: usize, slow: usize, sigp: usize) -> Vec<Signal> 
         EmaParams { period: Some(fast) },
     )) {
         Ok(v) => v.values,
-        Err(_) => return sig,
+        Err(e) => return Err(crate::strategies::param_skipped(e)),
     };
     let es = match ema(&EmaInput::from_slice(
         close,
         EmaParams { period: Some(slow) },
     )) {
         Ok(v) => v.values,
-        Err(_) => return sig,
+        Err(e) => return Err(crate::strategies::param_skipped(e)),
     };
     let macd: Vec<f64> = ef.iter().zip(es.iter()).map(|(a, b)| a - b).collect();
     let sg = match ema(&EmaInput::from_slice(
@@ -44,7 +49,7 @@ fn compute(close: &[f64], fast: usize, slow: usize, sigp: usize) -> Vec<Signal> 
         EmaParams { period: Some(sigp) },
     )) {
         Ok(v) => v.values,
-        Err(_) => return sig,
+        Err(e) => return Err(crate::strategies::param_skipped(e)),
     };
     for i in 1..n.min(sg.len()) {
         let (m0, m1, s0, s1) = (macd[i - 1], macd[i], sg[i - 1], sg[i]);
@@ -57,7 +62,7 @@ fn compute(close: &[f64], fast: usize, slow: usize, sigp: usize) -> Vec<Signal> 
             sig[i] = Signal::Sell;
         }
     }
-    sig
+    Ok(sig)
 }
 
 impl Strategy for MacdStrategy {
@@ -85,7 +90,7 @@ impl Strategy for MacdStrategy {
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
         let (f, s, g) = self.triples[param_idx];
-        Ok(compute(close, f, s, g))
+        compute(close, f, s, g)
     }
 }
 
@@ -100,7 +105,7 @@ mod tests {
         // 先跌后涨：慢线拐头处快线严格上穿信号线。
         let mut close: Vec<f64> = (0..150).map(|i| 200.0 - i as f64 * 0.5).collect();
         close.extend((0..150).map(|i| 125.0 + i as f64 * 0.5));
-        let sig = compute(&close, 12, 26, 9);
+        let sig = compute(&close, 12, 26, 9).expect("足够长的数据必须可计算");
         assert!(sig.contains(&Signal::Buy));
     }
 
@@ -108,15 +113,26 @@ mod tests {
     fn test_inverse_v_gives_sell() {
         let mut close: Vec<f64> = (0..150).map(|i| 100.0 + i as f64 * 0.5).collect();
         close.extend((0..150).map(|i| 175.0 - i as f64 * 0.5));
-        let sig = compute(&close, 12, 26, 9);
+        let sig = compute(&close, 12, 26, 9).expect("足够长的数据必须可计算");
         assert!(sig.contains(&Signal::Sell));
     }
 
+    /// **契约**: 数据不足以算 EMA 时必须显式跳过, 不得静默降级为全 Hold。
     #[test]
-    fn test_short_series_holds() {
+    fn test_short_series_is_param_skipped() {
         let close = vec![100.0; 10];
-        let sig = compute(&close, 12, 26, 9);
-        assert!(sig.iter().all(|&s| s == Signal::Hold));
+        let err = compute(&close, 12, 26, 9).expect_err("短序列必须报错");
+        assert!(
+            matches!(err, crate::error::AppError::ParamSkipped { .. }),
+            "必须是 ParamSkipped, 实际: {err}"
+        );
+        let s = MacdStrategy {
+            triples: vec![(12, 26, 9)],
+        };
+        let err = s
+            .generate_signals_full(&[], &[], &[], &close, &[], &[], 0)
+            .expect_err("策略入口同样不得静默");
+        assert!(matches!(err, crate::error::AppError::ParamSkipped { .. }));
     }
 
     #[test]

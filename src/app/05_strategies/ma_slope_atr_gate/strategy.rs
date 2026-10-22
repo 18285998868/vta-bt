@@ -82,12 +82,28 @@ pub fn true_range(high: &[f64], low: &[f64], close: &[f64]) -> Vec<f64> {
 ///
 /// 与 `vector_ta::atr` 的 Wilder RMA 不同: 此处是等权滑动平均, 因子研究侧
 /// (`kline-reader` 配套脚本)用的就是这一口径, 两者必须对齐才能复现研究结论。
-/// 两种平滑在长窗口下差异不大但会累积到 z-score 门控上, 故显式可选。
-#[must_use]
-pub fn sma_atr(high: &[f64], low: &[f64], close: &[f64], n: usize) -> Vec<f64> {
+/// 简单移动平均的真实波幅均值(SMA 口径)。
+///
+/// # Errors
+/// `n == 0` 或数据短于窗口时返回 [`crate::error::AppError`](crate::error::AppError);
+/// 调用方必须把它转成 `ParamSkipped`, 而不是静默全 Hold。
+pub fn sma_atr(
+    high: &[f64],
+    low: &[f64],
+    close: &[f64],
+    n: usize,
+) -> crate::error::Result<Vec<f64>> {
     let tr = true_range(high, low, close);
-    if n == 0 || tr.len() < n {
-        return vec![f64::NAN; close.len()];
+    if n == 0 {
+        return Err(crate::strategies::param_skipped(
+            "MA_SLOPE_ATR_GATE: atr_n 必须 >= 1",
+        ));
+    }
+    if tr.len() < n {
+        return Err(crate::strategies::param_skipped(format!(
+            "MA_SLOPE_ATR_GATE: ATR 窗口 {n} > 数据长度 {}",
+            tr.len()
+        )));
     }
     let mut out = vec![f64::NAN; tr.len()];
     let mut sum = 0.0;
@@ -100,20 +116,27 @@ pub fn sma_atr(high: &[f64], low: &[f64], close: &[f64], n: usize) -> Vec<f64> {
             out[i] = sum / n as f64;
         }
     }
-    out
+    Ok(out)
 }
 
 /// Wilder 平滑的真实波幅均值(取自 `vector_ta`, 为平台通用定义)。
-#[must_use]
-pub fn wilder_atr(high: &[f64], low: &[f64], close: &[f64], n: usize) -> Vec<f64> {
+///
+/// # Errors
+/// ATR 不可计算(窗口 > 数据长度等)时返回 [`crate::error::AppError`]。
+pub fn wilder_atr(
+    high: &[f64],
+    low: &[f64],
+    close: &[f64],
+    n: usize,
+) -> crate::error::Result<Vec<f64>> {
     match atr(&AtrInput::from_slices(
         high,
         low,
         close,
         AtrParams { length: Some(n) },
     )) {
-        Ok(v) => v.values,
-        Err(_) => vec![f64::NAN; close.len()],
+        Ok(v) => Ok(v.values),
+        Err(e) => Err(crate::strategies::param_skipped(e)),
     }
 }
 
@@ -122,8 +145,16 @@ pub fn wilder_atr(high: &[f64], low: &[f64], close: &[f64], n: usize) -> Vec<f64
 /// **无静默兜底**: `kind` 是枚举, 非法取值在反序列化期就不可表示;
 /// 原实现收 `&str` 且写了 `_ => sma_atr` —— 拼错的取值会**静默**变成 SMA,
 /// 报告里的口径与配置声明不一致, 且无任何提示。
-#[must_use]
-pub fn atr_by_kind(high: &[f64], low: &[f64], close: &[f64], n: usize, kind: AtrKind) -> Vec<f64> {
+///
+/// # Errors
+/// 透传 [`sma_atr`] / [`wilder_atr`] 的错误。
+pub fn atr_by_kind(
+    high: &[f64],
+    low: &[f64],
+    close: &[f64],
+    n: usize,
+    kind: AtrKind,
+) -> crate::error::Result<Vec<f64>> {
     match kind {
         AtrKind::Sma => sma_atr(high, low, close, n),
         AtrKind::Wilder => wilder_atr(high, low, close, n),
@@ -218,10 +249,10 @@ impl Strategy for MaSlopeAtrGateStrategy {
     ) -> crate::error::Result<Vec<Signal>> {
         // `Params` 是 `Copy` 的(不含 `String`), 故此处**不克隆**任何堆数据。
         let (ma_len, slope_k, atr_n, z_win, th, atr_kind) = self.quints[param_idx];
-        let n = close.len();
-        let flat = || Ok(vec![Signal::Close; n]);
         if ma_len == 0 || slope_k == 0 || atr_n == 0 || z_win == 0 {
-            return flat();
+            return Err(crate::strategies::param_skipped(format!(
+                "MA_SLOPE_ATR_GATE: 参数含 0 (ma={ma_len}, k={slope_k}, atr={atr_n}, z={z_win})"
+            )));
         }
 
         let ma = match sma(&SmaInput::from_slice(
@@ -231,9 +262,9 @@ impl Strategy for MaSlopeAtrGateStrategy {
             },
         )) {
             Ok(v) => v.values,
-            Err(_) => return flat(),
+            Err(e) => return Err(crate::strategies::param_skipped(e)),
         };
-        let atr_values = atr_by_kind(high, low, close, atr_n, atr_kind);
+        let atr_values = atr_by_kind(high, low, close, atr_n, atr_kind)?;
 
         Ok(gate_signals(close, &ma, &atr_values, slope_k, z_win, th))
     }
@@ -406,7 +437,7 @@ mod tests {
         let high = vec![10.0, 11.0, 12.0, 13.0];
         let low = vec![9.0, 10.0, 11.0, 12.0];
         let close = vec![9.5, 10.5, 11.5, 12.5];
-        let out = sma_atr(&high, &low, &close, 2);
+        let out = sma_atr(&high, &low, &close, 2).expect("数据足够");
         let tr = true_range(&high, &low, &close);
         assert!((out[1] - (tr[0] + tr[1]) / 2.0).abs() < 1e-12);
         assert!((out[3] - (tr[2] + tr[3]) / 2.0).abs() < 1e-12);
@@ -419,8 +450,8 @@ mod tests {
         let close = random_walk(n, 0.001, 0.02, 11);
         let high: Vec<f64> = close.iter().map(|c| c * 1.01).collect();
         let low: Vec<f64> = close.iter().map(|c| c * 0.99).collect();
-        let a = sma_atr(&high, &low, &close, 20);
-        let b = wilder_atr(&high, &low, &close, 20);
+        let a = sma_atr(&high, &low, &close, 20).expect("数据足够");
+        let b = wilder_atr(&high, &low, &close, 20).expect("数据足够");
         assert!(a[250].is_finite() && b[250].is_finite());
         // 平滑方式不同 -> 数值必然不同, 这是两套口径的分歧点
         assert!(
@@ -428,11 +459,11 @@ mod tests {
             "SMA 与 Wilder 应给出不同结果"
         );
         assert_eq!(
-            atr_by_kind(&high, &low, &close, 20, AtrKind::Sma)[250],
+            atr_by_kind(&high, &low, &close, 20, AtrKind::Sma).expect("数据足够")[250],
             a[250]
         );
         assert_eq!(
-            atr_by_kind(&high, &low, &close, 20, AtrKind::Wilder)[250],
+            atr_by_kind(&high, &low, &close, 20, AtrKind::Wilder).expect("数据足够")[250],
             b[250]
         );
     }
@@ -457,5 +488,24 @@ mod tests {
             .unwrap();
         assert_eq!(sig.len(), close.len());
         assert!(sig.contains(&Signal::Buy));
+    }
+
+    /// **契约**: MA / ATR 算不出来时必须 `ParamSkipped`, 不得返回全 Close
+    /// (全 Close 在报告里与"策略主动空仓"不可区分)。
+    #[test]
+    fn short_series_is_param_skipped() {
+        let close = vec![100.0; 5];
+        let s = MaSlopeAtrGateStrategy {
+            quints: vec![(20, 5, 14, 20, 0.5, AtrKind::Sma)],
+        };
+        let err = s
+            .generate_signals_full(&[], &close, &close, &close, &[], &[], 0)
+            .expect_err("MA(20)/ATR(14) 在 5 根 bar 上不可计算");
+        assert!(
+            matches!(err, crate::error::AppError::ParamSkipped { .. }),
+            "必须是 ParamSkipped, 实际: {err}"
+        );
+        assert!(sma_atr(&close, &close, &close, 14).is_err());
+        assert!(wilder_atr(&close, &close, &close, 14).is_err());
     }
 }
