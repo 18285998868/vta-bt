@@ -25,11 +25,13 @@ import {
   type Viewport,
 } from './chart';
 import { findIndicator, getAllIndicators, type ActiveIndicator, type IndicatorDef } from './indicators';
-import type { StrategyResult } from './types';
+import type { Kline, StrategyResult } from './types';
 
 const PAGE_SIZE = 200;
+const REPLAY_LIMIT = 2000;
+const REPLAY_STRATEGY_DEBOUNCE_MS = 300;
 const PAIR_DROPDOWN_LIMIT = 100;
-const APP_VERSION = 'p5';
+const APP_VERSION = 'p6';
 const SESSION_SAVE_DEBOUNCE_MS = 800;
 const DRAWING_SAVE_DEBOUNCE_MS = 600;
 
@@ -46,6 +48,15 @@ interface IndicatorState {
 interface StrategyState {
   toml: string;
   applied: boolean;
+}
+
+/** 回放只维护游标；完整 K 线仍在 allKlines，图表只拿 [0..index] 前缀。 */
+interface ReplayState {
+  startIndex: number;
+  index: number;
+  playing: boolean;
+  speed: number;
+  timer: number | null;
 }
 
 /** 可持久化的会话快照（last_session / 命名布局共用）。 */
@@ -72,8 +83,9 @@ function isSessionState(value: unknown): value is SessionState {
 export class App {
   private chart: ChartManager | null = null;
   private loading = false;
-  private strategyLoading = false;
-  private allKlines: import('./types').Kline[] = [];
+  private allKlines: Kline[] = [];
+  private replay: ReplayState | null = null;
+  private preReplayViewport: Viewport | null = null;
   private activeIndicators: ActiveIndicator[] = [];
   private allPairs: string[] = [];
   private activeStrategyToml: string | null = null;
@@ -93,6 +105,14 @@ export class App {
   private indicatorsEl: HTMLElement;
   private layoutSelect: HTMLSelectElement;
   private drawingToolSelect: HTMLSelectElement;
+  private replayEnterBtn: HTMLButtonElement;
+  private replayControls: HTMLElement;
+  private replayPlayBtn: HTMLButtonElement;
+  private replayStepBtn: HTMLButtonElement;
+  private replayResetBtn: HTMLButtonElement;
+  private replayExitBtn: HTMLButtonElement;
+  private replaySpeedSelect: HTMLSelectElement;
+  private replayPositionEl: HTMLElement;
   private _pair = '';
   private _timeframe = '';
   /** 恢复/加载布局期间抑制自动保存。 */
@@ -106,6 +126,11 @@ export class App {
   private drawingLoadToken = 0;
   private unbindViewport: (() => void) | null = null;
   private unbindDrawings: (() => void) | null = null;
+  /** 策略请求序号：只接受最后一次请求，回放高频更新时丢弃过期结果。 */
+  private strategySeq = 0;
+  private strategyTimer: number | null = null;
+  private strategyInFlight = false;
+  private strategyPending = false;
 
   constructor(container: HTMLElement) {
     container.innerHTML = `
@@ -125,6 +150,22 @@ export class App {
         <button id="layout-delete" class="time-jump-btn">删除</button>
         <input type="date" id="time-jump" class="time-jump" />
         <button id="time-jump-btn" class="time-jump-btn">跳转</button>
+        <div class="replay-controls" id="replay-controls">
+          <label>回放</label>
+          <button id="replay-play" class="time-jump-btn">▶ 播放</button>
+          <button id="replay-step" class="time-jump-btn">步进</button>
+          <select id="replay-speed" title="回放速度">
+            <option value="0.5">0.5×</option>
+            <option value="1" selected>1×</option>
+            <option value="2">2×</option>
+            <option value="4">4×</option>
+            <option value="8">8×</option>
+          </select>
+          <button id="replay-reset" class="time-jump-btn">重置</button>
+          <button id="replay-exit" class="time-jump-btn">退出</button>
+          <span id="replay-position" class="replay-position"></span>
+        </div>
+        <button id="replay-enter" class="time-jump-btn">回放</button>
         <label>策略</label>
         <select id="strategy-select"></select>
         <button id="strategy-config" class="time-jump-btn">⚙配置</button>
@@ -189,6 +230,14 @@ export class App {
     this.indicatorsEl = container.querySelector('#active-indicators') as HTMLElement;
     this.layoutSelect = container.querySelector('#layout-select') as HTMLSelectElement;
     this.drawingToolSelect = container.querySelector('#drawing-tool') as HTMLSelectElement;
+    this.replayEnterBtn = container.querySelector('#replay-enter') as HTMLButtonElement;
+    this.replayControls = container.querySelector('#replay-controls') as HTMLElement;
+    this.replayPlayBtn = container.querySelector('#replay-play') as HTMLButtonElement;
+    this.replayStepBtn = container.querySelector('#replay-step') as HTMLButtonElement;
+    this.replayResetBtn = container.querySelector('#replay-reset') as HTMLButtonElement;
+    this.replayExitBtn = container.querySelector('#replay-exit') as HTMLButtonElement;
+    this.replaySpeedSelect = container.querySelector('#replay-speed') as HTMLSelectElement;
+    this.replayPositionEl = container.querySelector('#replay-position') as HTMLElement;
 
     const searchInput = container.querySelector('#indicator-search') as HTMLInputElement;
     const dropdown = container.querySelector('#indicator-dropdown') as HTMLElement;
@@ -248,6 +297,15 @@ export class App {
     const onJump = () => this.onTimeJump(timeJump);
     timeJump.addEventListener('change', onJump);
     timeJumpBtn.addEventListener('click', onJump);
+
+    this.replayEnterBtn.addEventListener('click', () => void this.enterReplay());
+    this.replayPlayBtn.addEventListener('click', () => this.toggleReplay());
+    this.replayStepBtn.addEventListener('click', () => this.stepReplay());
+    this.replayResetBtn.addEventListener('click', () => this.resetReplay());
+    this.replayExitBtn.addEventListener('click', () => this.exitReplay());
+    this.replaySpeedSelect.addEventListener('change', () => {
+      this.setReplaySpeed(parseFloat(this.replaySpeedSelect.value));
+    });
 
     this.pairSearch.addEventListener('input', () => this.onPairSearchInput());
     this.pairSearch.addEventListener('focus', () => this.onPairSearchInput());
@@ -349,6 +407,260 @@ export class App {
       await this.saveSessionNow();
     }
     await this.flushDrawings();
+  }
+
+  // ---- 回放 ----
+
+  private activeKlines(): Kline[] {
+    if (!this.replay) return this.allKlines;
+    return this.allKlines.slice(0, this.replay.index + 1);
+  }
+
+  private dataInfoText(): string {
+    if (!this.replay) return `${this.allKlines.length} 条K线`;
+    const r = this.replay;
+    const bar = this.allKlines[r.index];
+    const dt = bar
+      ? new Date(bar.time).toLocaleString('zh-CN', { hour12: false })
+      : '';
+    const suffix = r.index >= this.allKlines.length - 1 ? ' · 已到末尾' : '';
+    return `回放 ${r.index + 1}/${this.allKlines.length}${dt ? ` · ${dt}` : ''}${suffix}`;
+  }
+
+  private updateReplayUi(): void {
+    const active = this.replay !== null;
+    this.replayControls.classList.toggle('visible', active);
+    this.replayEnterBtn.disabled = active;
+    if (!this.replay) {
+      this.replayPositionEl.textContent = '';
+      this.replayPlayBtn.textContent = '▶ 播放';
+      return;
+    }
+    const r = this.replay;
+    const atEnd = r.index >= this.allKlines.length - 1;
+    this.replayPlayBtn.textContent = r.playing ? '⏸ 暂停' : '▶ 播放';
+    this.replayPlayBtn.disabled = atEnd;
+    this.replayStepBtn.disabled = atEnd;
+    this.replaySpeedSelect.value = String(r.speed);
+    this.replayPositionEl.textContent = `${r.index + 1} / ${this.allKlines.length}`;
+  }
+
+  private async enterReplay(): Promise<void> {
+    if (this.replay || this.loading) return;
+    if (!this.chart || !this._pair || !this._timeframe || this.allKlines.length === 0) {
+      this.infoEl.textContent = '请先加载K线数据';
+      return;
+    }
+    const chart = this.chart;
+    const market = this.marketSelect.value;
+    const pair = this._pair;
+    const timeframe = this._timeframe;
+    this.loading = true;
+    this.infoEl.textContent = '加载回放数据...';
+    try {
+      const anchor = chart.getLastTime();
+      const data = await fetchKlines({
+        marketType: market,
+        pair,
+        timeframe,
+        limit: REPLAY_LIMIT,
+        ...(anchor !== null ? { before: anchor + 1 } : {}),
+      });
+      if (this.chart !== chart || this.marketSelect.value !== market || this._pair !== pair || this._timeframe !== timeframe) {
+        return;
+      }
+      const full = data.klines;
+      if (full.length < 2) {
+        this.infoEl.textContent = '回放数据不足';
+        return;
+      }
+      const viewport = chart.getViewport();
+      let startIndex = 0;
+      if (viewport) {
+        const idx = full.findIndex((k) => k.time >= viewport.from);
+        if (idx >= 0) startIndex = idx;
+      }
+      startIndex = Math.min(startIndex, full.length - 1);
+
+      this.preReplayViewport = viewport;
+      this.allKlines = full;
+      this.replay = {
+        startIndex,
+        index: startIndex,
+        playing: false,
+        speed: 1,
+        timer: null,
+      };
+      chart.setData(this.activeKlines());
+      this.refreshIndicators();
+      this.updateReplayUi();
+      this.infoEl.textContent = this.dataInfoText();
+      this.scheduleReplayStrategy(0);
+      this.scheduleSave();
+    } catch (e) {
+      this.infoEl.textContent = `加载回放失败: ${e}`;
+    } finally {
+      this.loading = false;
+    }
+  }
+
+  private toggleReplay(): void {
+    if (!this.replay) return;
+    if (this.replay.playing) this.pauseReplay();
+    else this.playReplay();
+  }
+
+  private playReplay(): void {
+    const r = this.replay;
+    if (!r || r.playing) return;
+    if (r.index >= this.allKlines.length - 1) {
+      this.infoEl.textContent = '回放已到末尾';
+      return;
+    }
+    r.playing = true;
+    this.startReplayTimer();
+    this.updateReplayUi();
+    this.infoEl.textContent = this.dataInfoText();
+  }
+
+  private pauseReplay(): void {
+    const r = this.replay;
+    if (!r) return;
+    r.playing = false;
+    this.stopReplayTimer();
+    this.updateReplayUi();
+    this.infoEl.textContent = this.dataInfoText();
+    this.scheduleReplayStrategy(0);
+  }
+
+  private stepReplay(): void {
+    const r = this.replay;
+    if (!r) return;
+    if (r.playing) this.pauseReplay();
+    if (r.index >= this.allKlines.length - 1) {
+      this.infoEl.textContent = this.dataInfoText();
+      return;
+    }
+    r.index++;
+    this.renderReplayPrefix();
+    this.scheduleReplayStrategy(0);
+  }
+
+  private resetReplay(): void {
+    const r = this.replay;
+    if (!r) return;
+    r.playing = false;
+    this.stopReplayTimer();
+    r.index = r.startIndex;
+    this.renderReplayPrefix();
+    this.scheduleReplayStrategy(0);
+  }
+
+  private exitReplay(): void {
+    if (!this.replay) return;
+    const viewport = this.preReplayViewport;
+    this.stopReplayTimer();
+    if (this.strategyTimer !== null) {
+      window.clearTimeout(this.strategyTimer);
+      this.strategyTimer = null;
+    }
+    this.strategySeq++;
+    this.strategyInFlight = false;
+    this.strategyPending = false;
+    this.replay = null;
+    this.preReplayViewport = null;
+    this.chart?.setData(this.allKlines);
+    this.refreshIndicators();
+    if (viewport) this.chart?.setViewport(viewport);
+    this.updateReplayUi();
+    this.infoEl.textContent = this.dataInfoText();
+    if (this.activeStrategyToml) void this.refreshStrategy();
+    this.scheduleSave();
+  }
+
+  private setReplaySpeed(speed: number): void {
+    const r = this.replay;
+    if (!r || !Number.isFinite(speed) || speed <= 0) return;
+    r.speed = speed;
+    if (r.playing) this.startReplayTimer();
+  }
+
+  private startReplayTimer(): void {
+    this.stopReplayTimer();
+    const r = this.replay;
+    if (!r) return;
+    const interval = Math.max(50, Math.round(1000 / r.speed));
+    r.timer = window.setInterval(() => this.tickReplay(), interval);
+  }
+
+  private stopReplayTimer(): void {
+    const r = this.replay;
+    if (r && r.timer !== null) {
+      window.clearInterval(r.timer);
+      r.timer = null;
+    }
+  }
+
+  private tickReplay(): void {
+    const r = this.replay;
+    if (!r || !r.playing) return;
+    if (r.index >= this.allKlines.length - 1) {
+      this.pauseReplay();
+      return;
+    }
+    r.index++;
+    this.renderReplayPrefix();
+    if (r.index >= this.allKlines.length - 1) this.pauseReplay();
+  }
+
+  private renderReplayPrefix(): void {
+    const r = this.replay;
+    const chart = this.chart;
+    if (!r || !chart) return;
+    chart.updateData(this.activeKlines());
+    this.refreshIndicators();
+    this.updateReplayUi();
+    this.infoEl.textContent = this.dataInfoText();
+    this.scheduleReplayStrategy();
+  }
+
+  private replayBefore(): number | undefined {
+    const r = this.replay;
+    if (!r) return undefined;
+    const next = this.allKlines[r.index + 1];
+    if (next) return next.time;
+    return this.allKlines[r.index].time + 1;
+  }
+
+  private scheduleReplayStrategy(delay = REPLAY_STRATEGY_DEBOUNCE_MS): void {
+    if (!this.replay || !this.activeStrategyToml) return;
+    if (this.strategyInFlight) {
+      this.strategyPending = true;
+      return;
+    }
+    if (this.strategyTimer !== null) {
+      if (delay > 0) return;
+      window.clearTimeout(this.strategyTimer);
+      this.strategyTimer = null;
+    }
+    this.strategyTimer = window.setTimeout(() => {
+      this.strategyTimer = null;
+      void this.refreshStrategy();
+    }, delay);
+  }
+
+  private disposeReplay(): void {
+    this.stopReplayTimer();
+    if (this.strategyTimer !== null) {
+      window.clearTimeout(this.strategyTimer);
+      this.strategyTimer = null;
+    }
+    this.strategySeq++;
+    this.strategyInFlight = false;
+    this.strategyPending = false;
+    this.replay = null;
+    this.preReplayViewport = null;
+    this.updateReplayUi();
   }
 
   private async applySession(state: SessionState): Promise<void> {
@@ -528,6 +840,7 @@ export class App {
   }
 
   private teardownChart(placeholder: string): void {
+    this.disposeReplay();
     this.drawingLoadToken += 1;
     this.drawingsLoaded = false;
     if (this.saveTimer !== null) {
@@ -660,7 +973,7 @@ export class App {
   }
 
   private async loadKlines(dir?: LoadDirection): Promise<void> {
-    if (this.loading) return;
+    if (this.loading || this.replay) return;
     this.loading = true;
     this.infoEl.textContent = '加载中...';
     try {
@@ -692,7 +1005,7 @@ export class App {
         this.chart.setData(klines.klines);
         this.refreshIndicators();
       }
-      this.infoEl.textContent = `${this.allKlines.length} 条K线`;
+      this.infoEl.textContent = this.dataInfoText();
       if (!dir) this.scheduleSave();
     } catch (e) {
       if (!dir) this.chartContainer.innerHTML = `<div class="loading">加载失败: ${e}</div>`;
@@ -704,8 +1017,9 @@ export class App {
 
   private refreshIndicators() {
     this.renderActiveIndicators();
-    if (this.chart && this.allKlines.length > 0) {
-      this.chart.applyIndicators(this.activeIndicators, this.allKlines);
+    if (this.chart) {
+      const klines = this.activeKlines();
+      if (klines.length > 0) this.chart.applyIndicators(this.activeIndicators, klines);
     }
     this.scheduleSave();
   }
@@ -726,26 +1040,53 @@ export class App {
   }
 
   private async refreshStrategy(): Promise<void> {
-    if (!this.activeStrategyToml || !this.chart || this.allKlines.length === 0) return;
-    if (this.strategyLoading) return;
-    this.strategyLoading = true;
+    const toml = this.activeStrategyToml;
+    const chart = this.chart;
+    if (!toml || !chart || this.allKlines.length === 0) return;
+    const market = this.marketSelect.value;
+    const pair = this._pair;
+    const timeframe = this._timeframe;
+    const before = this.replayBefore();
+    const seq = ++this.strategySeq;
+    this.strategyInFlight = true;
     this.strategyError.textContent = '';
-    this.infoEl.textContent = '策略计算中...';
+    this.infoEl.textContent = this.replay
+      ? `${this.dataInfoText()} · 策略计算中...`
+      : '策略计算中...';
     try {
       const r = await fetchStrategy({
-        marketType: this.marketSelect.value,
-        pair: this._pair,
-        timeframe: this._timeframe,
-        strategyToml: this.activeStrategyToml,
+        marketType: market,
+        pair,
+        timeframe,
+        strategyToml: toml,
+        ...(before !== undefined ? { before } : {}),
       });
-      this.chart.setStrategy(r.markers, r.overlays);
+      if (
+        seq !== this.strategySeq ||
+        this.chart !== chart ||
+        this.marketSelect.value !== market ||
+        this._pair !== pair ||
+        this._timeframe !== timeframe ||
+        this.activeStrategyToml !== toml
+      ) {
+        return;
+      }
+      chart.setStrategy(r.markers, r.overlays);
       this.renderStrategyPanel(r);
     } catch (e) {
-      const msg = `策略失败: ${e}`;
-      this.strategyError.textContent = msg;
-      this.infoEl.textContent = msg;
+      if (seq === this.strategySeq) {
+        const msg = `策略失败: ${e}`;
+        this.strategyError.textContent = msg;
+        this.infoEl.textContent = msg;
+      }
     } finally {
-      this.strategyLoading = false;
+      if (seq === this.strategySeq) {
+        this.strategyInFlight = false;
+        if (this.strategyPending) {
+          this.strategyPending = false;
+          this.scheduleReplayStrategy();
+        }
+      }
     }
   }
 
@@ -785,10 +1126,17 @@ export class App {
       .map(([k, v]) => `<div class="strategy-row"><span>${k}</span><span>${v}</span></div>`)
       .join('');
     this.strategyPanel.classList.add('visible');
-    this.infoEl.textContent = `${this.allKlines.length} 条K线`;
+    this.infoEl.textContent = this.dataInfoText();
   }
 
   private clearStrategy() {
+    this.strategySeq++;
+    if (this.strategyTimer !== null) {
+      window.clearTimeout(this.strategyTimer);
+      this.strategyTimer = null;
+    }
+    this.strategyInFlight = false;
+    this.strategyPending = false;
     this.clearStrategyState();
     this.chart?.setStrategy([], []);
     this.scheduleSave();

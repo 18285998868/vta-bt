@@ -40,6 +40,8 @@ export interface Viewport {
 
 export interface ChartManager {
   setData(klines: Kline[]): void;
+  /** 回放用：只替换可见前缀，保留指标/策略层并由调用方随后重算。 */
+  updateData(klines: Kline[], visibleBars?: number): void;
   prependData(klines: Kline[]): void;
   appendData(klines: Kline[]): void;
   getAllKlines(): Kline[];
@@ -100,14 +102,23 @@ export function createChartManager(
   const drawings = new DrawingManager(chart, candleSeries, { magnet: 'weak' });
 
   const overlaySeries: ISeriesApi<'Line'>[] = [];
+  const overlayKeys: string[] = [];
   // 策略层全量缓存，只渲染已加载窗口（避免污染时间轴逻辑坐标）。
   // 注意：资金曲线不在主图绘制（与价格同轴会压缩K线），绩效只看面板。
   let strategyMarkers: StrategyMarker[] = [];
   let strategyOverlays: StrategyOverlay[] = [];
   const strategyOverlaySeries: ISeriesApi<'Line'>[] = [];
+  const strategyOverlayKeys: string[] = [];
 
   // 子窗格：v5 原生 pane，共享同一条时间轴与十字光标，不再需要多 chart 同步。
   const subPanes: IPaneApi<Time>[] = [];
+  type SubSeriesApi = ISeriesApi<'Line'> | ISeriesApi<'Histogram'>;
+  interface SubPaneMeta {
+    pane: IPaneApi<Time>;
+    keys: string[];
+    series: SubSeriesApi[];
+  }
+  const subPaneMeta: SubPaneMeta[] = [];
 
   let allKlines: Kline[] = [];
   let suppressEdgeCheck = false;
@@ -174,34 +185,53 @@ export function createChartManager(
       chart.removeSeries(s);
     }
     overlaySeries.length = 0;
+    overlayKeys.length = 0;
   }
 
-  function renderStrategyWindow() {
+  function clearStrategyOverlays() {
     for (const s of strategyOverlaySeries) {
       chart.removeSeries(s);
     }
     strategyOverlaySeries.length = 0;
+    strategyOverlayKeys.length = 0;
+  }
+
+  function renderStrategyWindow() {
     if (allKlines.length === 0) {
       seriesMarkers.setMarkers([]);
+      clearStrategyOverlays();
       return;
     }
     const from = allKlines[0].time;
     const to = allKlines[allKlines.length - 1].time;
     const inWindow = (t: number) => t >= from && t <= to;
     seriesMarkers.setMarkers(toMarkers(strategyMarkers.filter((m) => inWindow(m.time))));
-    strategyOverlays.forEach((ov, i) => {
+
+    const visible = strategyOverlays.map((ov, i) => ({
+      key: `${i}:${ov.label}`,
+      points: ov.points
+        .filter((p) => inWindow(p.time) && p.value !== null)
+        .map((p) => ({ time: (p.time / 1000) as UTCTimestamp, value: p.value! })),
+    }));
+    const sameShape =
+      visible.length === strategyOverlaySeries.length &&
+      visible.every((def, i) => def.key === strategyOverlayKeys[i]);
+    if (sameShape) {
+      visible.forEach((def, i) => strategyOverlaySeries[i].setData(def.points));
+      return;
+    }
+
+    clearStrategyOverlays();
+    visible.forEach((def, i) => {
       const s = chart.addSeries(LineSeries, {
         color: colorPalette[i % colorPalette.length],
         lineWidth: 1,
         lastValueVisible: true,
         priceLineVisible: false,
       });
-      s.setData(
-        ov.points
-          .filter((p) => inWindow(p.time) && p.value !== null)
-          .map((p) => ({ time: (p.time / 1000) as UTCTimestamp, value: p.value! })),
-      );
+      s.setData(def.points);
       strategyOverlaySeries.push(s);
+      strategyOverlayKeys.push(def.key);
     });
   }
 
@@ -225,6 +255,7 @@ export function createChartManager(
       chart.removePane(i);
     }
     subPanes.length = 0;
+    subPaneMeta.length = 0;
     chart.panes()[0]?.setStretchFactor(1);
   }
 
@@ -331,14 +362,29 @@ export function createChartManager(
       allKlines = klines;
       strategyMarkers = [];
       strategyOverlays = [];
-      renderStrategyWindow();
+      clearStrategyOverlays();
       candleSeries.setData(toCandle(klines));
+      renderStrategyWindow();
       const len = klines.length;
       if (len > INITIAL_VISIBLE_BARS) {
         chart.timeScale().setVisibleLogicalRange({ from: len - INITIAL_VISIBLE_BARS, to: len });
       } else {
         chart.timeScale().fitContent();
       }
+    },
+
+    updateData(klines: Kline[], visibleBars = INITIAL_VISIBLE_BARS) {
+      allKlines = klines;
+      candleSeries.setData(toCandle(klines));
+      renderStrategyWindow();
+      const len = klines.length;
+      suppressEdgeCheck = true;
+      if (len > visibleBars) {
+        chart.timeScale().setVisibleLogicalRange({ from: len - visibleBars, to: len });
+      } else {
+        chart.timeScale().fitContent();
+      }
+      suppressEdgeCheck = false;
     },
 
     prependData(klines: Kline[]) {
@@ -395,47 +441,111 @@ export function createChartManager(
       const savedViewport = getViewport();
 
       allKlines = klines;
-      clearOverlays();
-      clearSubPanes();
 
       const results = indicators.map((active) => ({
         result: safeCalc(() => active.def.calculate(klines, active.params), active.def.name),
       }));
-      const hasSub = results.some((r) => r.result.sub && r.result.sub.length > 0);
+
+      interface OverlayDef {
+        key: string;
+        values: (number | null)[];
+        color: string;
+      }
+      interface SubSeriesDef {
+        key: string;
+        def: SubSeries;
+        color: string;
+      }
+      interface SubPaneDef {
+        key: string;
+        series: SubSeriesDef[];
+      }
+      const overlayDefs: OverlayDef[] = [];
+      const subDefs: SubPaneDef[] = [];
 
       let ci = 0;
-      for (const { result } of results) {
-        if (result.overlay) {
-          for (const ov of result.overlay) {
-            const series = chart.addSeries(LineSeries, {
-              color: ov.color || colorPalette[ci % colorPalette.length],
-              lineWidth: 1,
-              lastValueVisible: true,
-              priceFormat: { type: 'price' },
-            });
-            series.setData(buildLineData(ov.values, klines));
-            overlaySeries.push(series);
+      results.forEach(({ result }, ri) => {
+        result.overlay?.forEach((ov, oi) => {
+          const color = ov.color || colorPalette[ci % colorPalette.length];
+          overlayDefs.push({ key: `${ri}:${oi}:${ov.label}:${color}`, values: ov.values, color });
+          ci++;
+        });
+        result.sub?.forEach((paneDef, pi) => {
+          const subSeries: SubSeriesDef[] = paneDef.series.map((sub, si) => {
+            const color = sub.color || colorPalette[ci % colorPalette.length];
             ci++;
-          }
-        }
+            return { key: `${ri}:${pi}:${si}:${sub.label}:${color}`, def: sub, color };
+          });
+          subDefs.push({ key: `${ri}:${pi}`, series: subSeries });
+        });
+      });
+
+      const overlaySame =
+        overlaySeries.length === overlayDefs.length &&
+        overlayDefs.every((def, i) => def.key === overlayKeys[i]);
+      const subSame =
+        subPaneMeta.length === subDefs.length &&
+        subDefs.every((paneDef, i) => {
+          const meta = subPaneMeta[i];
+          return (
+            meta.keys.length === paneDef.series.length &&
+            paneDef.series.every((def, j) => def.key === meta.keys[j])
+          );
+        });
+
+      let rebuilt = false;
+      if (overlaySame) {
+        overlayDefs.forEach((def, i) => {
+          overlaySeries[i].setData(buildLineData(def.values, klines));
+        });
+      } else {
+        clearOverlays();
+        overlayDefs.forEach((def) => {
+          const series = chart.addSeries(LineSeries, {
+            color: def.color,
+            lineWidth: 1,
+            lastValueVisible: true,
+            priceFormat: { type: 'price' },
+          });
+          series.setData(buildLineData(def.values, klines));
+          overlaySeries.push(series);
+          overlayKeys.push(def.key);
+        });
+        rebuilt = true;
       }
 
-      if (hasSub) {
-        for (const { result } of results) {
-          if (!result.sub) continue;
-          for (const paneDef of result.sub) {
-            const pane = chart.addPane();
-            subPanes.push(pane);
-            for (const sub of paneDef.series) {
-              addSubSeries(pane, sub, klines, colorPalette[ci % colorPalette.length]);
-              ci++;
+      if (subSame) {
+        subDefs.forEach((paneDef, i) => {
+          const meta = subPaneMeta[i];
+          paneDef.series.forEach((def, j) => {
+            const series = meta.series[j];
+            if (def.def.type === 'histogram') {
+              (series as ISeriesApi<'Histogram'>).setData(
+                buildHistogramData(def.def.values, klines, def.color),
+              );
+            } else {
+              (series as ISeriesApi<'Line'>).setData(buildLineData(def.def.values, klines));
             }
+          });
+        });
+      } else {
+        clearSubPanes();
+        subDefs.forEach((paneDef) => {
+          const pane = chart.addPane();
+          subPanes.push(pane);
+          const meta: SubPaneMeta = { pane, keys: [], series: [] };
+          for (const def of paneDef.series) {
+            const series = addSubSeries(pane, def.def, klines, def.color);
+            meta.keys.push(def.key);
+            meta.series.push(series);
           }
-        }
-        applyPaneStretch();
+          subPaneMeta.push(meta);
+        });
+        if (subDefs.length > 0) applyPaneStretch();
+        rebuilt = true;
       }
 
-      resize();
+      if (rebuilt) resize();
       setViewport(savedViewport);
     },
 

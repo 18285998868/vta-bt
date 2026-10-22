@@ -89,6 +89,28 @@ html, body, #app {
 
 .time-jump-btn:hover { border-color: #89b4fa; background: #313244; }
 
+/* ---- replay ---- */
+
+.replay-controls {
+  display: none;
+  gap: 6px;
+  align-items: center;
+}
+
+.replay-controls.visible { display: flex; }
+
+.replay-controls .time-jump-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.replay-position {
+  font-size: 11px;
+  color: #a6adc8;
+  white-space: nowrap;
+  min-width: 92px;
+}
+
 /* ---- indicator search ---- */
 
 .indicator-search-wrap,
