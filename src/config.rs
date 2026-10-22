@@ -25,6 +25,10 @@ pub struct Config {
     pub port: u16,
     /// 行情数据根目录（kline-reader 按数据源自动追加子路径）。
     pub data_dir: PathBuf,
+    /// 本地状态库路径；缺省为 `<data_dir>/tradingview.db`。
+    ///
+    /// SQLite 只存布局、绘图和偏好，不存行情。
+    pub db_path: Option<PathBuf>,
     /// 前端静态资源目录；缺失时服务降级为纯 API 模式。
     pub frontend_dir: PathBuf,
     /// 允许的跨域来源（空 = 全放行，仅本地开发）。
@@ -40,6 +44,7 @@ impl Default for Config {
             host: "127.0.0.1".into(),
             port: 3001,
             data_dir: PathBuf::new(),
+            db_path: None,
             frontend_dir: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("frontend/dist"),
             cors_origins: Vec::new(),
         }
@@ -75,13 +80,20 @@ impl Config {
         cfg.validate()
     }
 
-    /// 语义校验：目前只有 `data_dir` 是必填。
+    /// 语义校验：`data_dir` 必填；`db_path` 若显式给出则不能为空。
     ///
     /// # Errors
-    /// `data_dir` 为空时返回 [`AppError::Config`]。
+    /// `data_dir` 或 `db_path` 为空时返回 [`AppError::Config`]。
     pub fn validate(self) -> Result<Self, AppError> {
         if self.data_dir.as_os_str().is_empty() {
             return Err(AppError::Config("data_dir must not be empty".into()));
+        }
+        if self
+            .db_path
+            .as_ref()
+            .is_some_and(|p| p.as_os_str().is_empty())
+        {
+            return Err(AppError::Config("db_path must not be empty".into()));
         }
         Ok(self)
     }
@@ -123,6 +135,27 @@ mod tests {
         assert_eq!(cfg.port, 3001);
         assert_eq!(cfg.data_dir, PathBuf::from("/tmp/data"));
         assert!(cfg.frontend_dir.ends_with("frontend/dist"));
+        assert!(cfg.db_path.is_none());
+    }
+
+    #[test]
+    fn accepts_db_path_override() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = write_cfg(
+            dir.path(),
+            "data_dir = \"/tmp/data\"\ndb_path = \"/tmp/state.db\"\n",
+        );
+        let cfg = Config::load_from(&path).unwrap();
+        assert_eq!(cfg.db_path, Some(PathBuf::from("/tmp/state.db")));
+    }
+
+    #[test]
+    fn rejects_empty_db_path() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = write_cfg(dir.path(), "data_dir = \"/tmp/data\"\ndb_path = \"\"\n");
+        let err = Config::load_from(&path).unwrap_err();
+        assert!(matches!(err, AppError::Config(_)));
+        assert_eq!(err.to_string(), "config error: db_path must not be empty");
     }
 
     #[test]

@@ -2,15 +2,16 @@
 
 use axum::{
     Json, Router,
-    extract::{Query, State},
+    extract::{DefaultBodyLimit, Path, Query, State},
     http::StatusCode,
-    response::IntoResponse,
+    response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use super::data_loader::{DataError, DataLoader, MarketType, ParseMarketTypeError};
+use super::state::{LayoutInput, StateError, StateStore};
 use super::strategy::{BacktestParams, StrategyError};
 use crate::utils::{valid_pair, valid_timeframe};
 
@@ -23,6 +24,7 @@ const MAX_STRATEGY_TOML_BYTES: usize = 4_096;
 #[derive(Clone)]
 pub struct AppState {
     pub(crate) data_loader: Arc<DataLoader>,
+    pub(crate) state_store: Arc<StateStore>,
     pub(crate) strategy_cache: moka::sync::Cache<u64, Arc<super::strategy::StrategyResult>>,
     /// 回测并发闸门：同时在跑的回测数上限。
     ///
@@ -33,9 +35,10 @@ pub struct AppState {
 
 impl AppState {
     /// 构造服务状态。
-    pub fn new(data_dir: impl Into<PathBuf>) -> Self {
+    pub fn new(data_dir: impl Into<PathBuf>, state_store: Arc<StateStore>) -> Self {
         Self {
             data_loader: Arc::new(DataLoader::new(data_dir)),
+            state_store,
             strategy_cache: moka::sync::Cache::builder()
                 .max_capacity(100)
                 .time_to_live(std::time::Duration::from_secs(300))
@@ -140,6 +143,22 @@ pub struct StrategyQuery {
     pub after: Option<i64>,
 }
 
+/// `/api/drawings` 查询参数。
+#[derive(Debug, Deserialize)]
+pub struct DrawingsQuery {
+    /// 市场类型（缺省为 `futures`）。
+    pub market_type: Option<String>,
+    /// 交易对。
+    pub pair: String,
+}
+
+/// `PUT /api/drawings` 请求体。
+#[derive(Debug, Deserialize)]
+pub struct DrawingsInput {
+    /// 该交易对的完整绘图数组（整组替换）。
+    pub drawings: serde_json::Value,
+}
+
 /// 解析市场类型（缺省 `futures`）。
 fn parse_market_type(market_type: Option<&str>) -> Result<MarketType, ParseMarketTypeError> {
     market_type.map_or(Ok(MarketType::default()), str::parse)
@@ -153,6 +172,11 @@ fn require_market_type(market_type: Option<&str>) -> Result<MarketType, ErrorRes
 /// 构造 400 响应。
 fn bad_request(msg: impl Into<String>) -> ErrorResponse {
     (StatusCode::BAD_REQUEST, Json(ApiResponse::err(msg)))
+}
+
+/// 构造 404 响应。
+fn not_found(msg: impl Into<String>) -> ErrorResponse {
+    (StatusCode::NOT_FOUND, Json(ApiResponse::err(msg)))
 }
 
 /// 健康检查。
@@ -437,6 +461,233 @@ async fn strategy_handler(
     }
 }
 
+/// 构造 500 响应（内部细节一律脱敏）。
+fn internal_error() -> ErrorResponse {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(ApiResponse::err("internal error")),
+    )
+}
+
+/// 状态库错误 → HTTP 响应：输入问题 400，其余 500 且脱敏。
+fn handle_state_error(e: StateError) -> ErrorResponse {
+    match &e {
+        StateError::Invalid(msg) => {
+            tracing::warn!(error = %e, "invalid state input");
+            bad_request(msg.clone())
+        }
+        _ => {
+            tracing::error!(error = %e, "state store failed");
+            internal_error()
+        }
+    }
+}
+
+/// 在 blocking 线程池执行 SQLite 操作。
+async fn state_task<T, F>(f: F) -> Result<T, ErrorResponse>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, StateError> + Send + 'static,
+{
+    match tokio::task::spawn_blocking(f).await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(e)) => Err(handle_state_error(e)),
+        Err(e) => {
+            tracing::error!(error = %e, "state task join failed");
+            Err(internal_error())
+        }
+    }
+}
+
+/// 布局 ID 只允许 UUID / 简单标识符字符，防御异常路径与超长输入。
+fn valid_layout_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// `GET /api/layouts`：布局列表（不含 payload）。
+#[tracing::instrument(skip_all)]
+async fn list_layouts_handler(State(state): State<AppState>) -> Response {
+    let store = state.state_store.clone();
+    match state_task(move || store.list_layouts()).await {
+        Ok(layouts) => (
+            StatusCode::OK,
+            Json(ApiResponse::ok(serde_json::json!({ "layouts": layouts }))),
+        )
+            .into_response(),
+        Err(resp) => resp.into_response(),
+    }
+}
+
+/// `POST /api/layouts`：创建命名布局。
+#[tracing::instrument(skip_all)]
+async fn create_layout_handler(
+    State(state): State<AppState>,
+    Json(input): Json<LayoutInput>,
+) -> Response {
+    let store = state.state_store.clone();
+    match state_task(move || store.create_layout(input)).await {
+        Ok(layout) => (StatusCode::CREATED, Json(ApiResponse::ok(layout))).into_response(),
+        Err(resp) => resp.into_response(),
+    }
+}
+
+/// `GET /api/layouts/{id}`：读取完整布局。
+#[tracing::instrument(skip_all, fields(id = %id))]
+async fn get_layout_handler(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    if !valid_layout_id(&id) {
+        return bad_request("invalid layout id").into_response();
+    }
+    let store = state.state_store.clone();
+    match state_task(move || store.get_layout(&id)).await {
+        Ok(Some(layout)) => (StatusCode::OK, Json(ApiResponse::ok(layout))).into_response(),
+        Ok(None) => not_found("layout not found").into_response(),
+        Err(resp) => resp.into_response(),
+    }
+}
+
+/// `PUT /api/layouts/{id}`：更新布局。
+#[tracing::instrument(skip_all, fields(id = %id))]
+async fn update_layout_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(input): Json<LayoutInput>,
+) -> Response {
+    if !valid_layout_id(&id) {
+        return bad_request("invalid layout id").into_response();
+    }
+    let store = state.state_store.clone();
+    match state_task(move || store.update_layout(&id, input)).await {
+        Ok(Some(layout)) => (StatusCode::OK, Json(ApiResponse::ok(layout))).into_response(),
+        Ok(None) => not_found("layout not found").into_response(),
+        Err(resp) => resp.into_response(),
+    }
+}
+
+/// `DELETE /api/layouts/{id}`：删除布局。
+#[tracing::instrument(skip_all, fields(id = %id))]
+async fn delete_layout_handler(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    if !valid_layout_id(&id) {
+        return bad_request("invalid layout id").into_response();
+    }
+    let store = state.state_store.clone();
+    match state_task(move || store.delete_layout(&id)).await {
+        Ok(true) => (
+            StatusCode::OK,
+            Json(ApiResponse::ok(serde_json::json!({ "deleted": true }))),
+        )
+            .into_response(),
+        Ok(false) => not_found("layout not found").into_response(),
+        Err(resp) => resp.into_response(),
+    }
+}
+
+/// `GET /api/drawings`：读取某交易对的绘图组。
+#[tracing::instrument(skip_all, fields(pair = %query.pair))]
+async fn get_drawings_handler(
+    State(state): State<AppState>,
+    Query(query): Query<DrawingsQuery>,
+) -> Response {
+    let market_type = match require_market_type(query.market_type.as_deref()) {
+        Ok(mt) => mt,
+        Err(resp) => return resp.into_response(),
+    };
+    if !valid_pair(&query.pair) {
+        return bad_request("invalid pair").into_response();
+    }
+
+    let market = market_type.to_string();
+    let pair = query.pair;
+    let store = state.state_store.clone();
+    let market_task = market.clone();
+    let pair_task = pair.clone();
+    match state_task(move || store.get_drawings(&market_task, &pair_task)).await {
+        Ok(drawings) => (
+            StatusCode::OK,
+            Json(ApiResponse::ok(serde_json::json!({
+                "market_type": market,
+                "pair": pair,
+                "drawings": drawings
+            }))),
+        )
+            .into_response(),
+        Err(resp) => resp.into_response(),
+    }
+}
+
+/// `PUT /api/drawings`：整组替换某交易对的绘图。
+#[tracing::instrument(skip_all, fields(pair = %query.pair))]
+async fn put_drawings_handler(
+    State(state): State<AppState>,
+    Query(query): Query<DrawingsQuery>,
+    Json(input): Json<DrawingsInput>,
+) -> Response {
+    let market_type = match require_market_type(query.market_type.as_deref()) {
+        Ok(mt) => mt,
+        Err(resp) => return resp.into_response(),
+    };
+    if !valid_pair(&query.pair) {
+        return bad_request("invalid pair").into_response();
+    }
+
+    let market = market_type.to_string();
+    let pair = query.pair;
+    let doc = input.drawings;
+    let store = state.state_store.clone();
+    let market_task = market.clone();
+    let pair_task = pair.clone();
+    match state_task(move || store.replace_drawings(&market_task, &pair_task, &doc)).await {
+        Ok(drawings) => (
+            StatusCode::OK,
+            Json(ApiResponse::ok(serde_json::json!({
+                "market_type": market,
+                "pair": pair,
+                "drawings": drawings
+            }))),
+        )
+            .into_response(),
+        Err(resp) => resp.into_response(),
+    }
+}
+
+/// `GET /api/preferences`：读取全部偏好。
+#[tracing::instrument(skip_all)]
+async fn get_preferences_handler(State(state): State<AppState>) -> Response {
+    let store = state.state_store.clone();
+    match state_task(move || store.get_preferences()).await {
+        Ok(preferences) => (
+            StatusCode::OK,
+            Json(ApiResponse::ok(serde_json::json!({
+                "preferences": preferences
+            }))),
+        )
+            .into_response(),
+        Err(resp) => resp.into_response(),
+    }
+}
+
+/// `PUT /api/preferences`：合并写入偏好。
+#[tracing::instrument(skip_all)]
+async fn put_preferences_handler(
+    State(state): State<AppState>,
+    Json(patch): Json<serde_json::Map<String, serde_json::Value>>,
+) -> Response {
+    let store = state.state_store.clone();
+    match state_task(move || store.put_preferences(patch)).await {
+        Ok(preferences) => (
+            StatusCode::OK,
+            Json(ApiResponse::ok(serde_json::json!({
+                "preferences": preferences
+            }))),
+        )
+            .into_response(),
+        Err(resp) => resp.into_response(),
+    }
+}
+
 /// 组装路由。
 pub fn create_router(app_state: AppState) -> Router {
     Router::new()
@@ -450,6 +701,25 @@ pub fn create_router(app_state: AppState) -> Router {
         .route("/api/klines", axum::routing::get(klines_handler))
         .route("/api/strategies", axum::routing::get(strategies_handler))
         .route("/api/strategy", axum::routing::get(strategy_handler))
+        .route(
+            "/api/layouts",
+            axum::routing::get(list_layouts_handler).post(create_layout_handler),
+        )
+        .route(
+            "/api/layouts/{id}",
+            axum::routing::get(get_layout_handler)
+                .put(update_layout_handler)
+                .delete(delete_layout_handler),
+        )
+        .route(
+            "/api/drawings",
+            axum::routing::get(get_drawings_handler).put(put_drawings_handler),
+        )
+        .route(
+            "/api/preferences",
+            axum::routing::get(get_preferences_handler).put(put_preferences_handler),
+        )
+        .layer(DefaultBodyLimit::max(2 * 1024 * 1024))
         .with_state(app_state)
 }
 
@@ -472,7 +742,8 @@ mod tests {
     }
 
     fn test_app() -> Router {
-        create_router(AppState::new(PathBuf::new()))
+        let store = Arc::new(StateStore::open_in_memory().unwrap());
+        create_router(AppState::new(PathBuf::new(), store))
     }
 
     #[tokio::test]
@@ -645,5 +916,243 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    async fn json_body(res: axum::response::Response) -> serde_json::Value {
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    fn json_request(method: &str, uri: &str, body: serde_json::Value) -> Request<Body> {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_layout_crud() {
+        let app = test_app();
+        let create = serde_json::json!({
+            "name": "alpha",
+            "market_type": "futures",
+            "pair": "BTCUSDT",
+            "timeframe": "1h",
+            "payload": {"indicators": [], "viewport": null}
+        });
+        let res = app
+            .clone()
+            .oneshot(json_request("POST", "/api/layouts", create))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::CREATED);
+        let body = json_body(res).await;
+        assert_eq!(body["data"]["name"], "alpha");
+        let id = body["data"]["id"].as_str().unwrap().to_string();
+
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/layouts")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = json_body(res).await;
+        assert_eq!(body["data"]["layouts"].as_array().unwrap().len(), 1);
+
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/layouts/{id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = json_body(res).await;
+        assert_eq!(body["data"]["payload"]["indicators"], serde_json::json!([]));
+
+        let update = serde_json::json!({
+            "name": "beta",
+            "market_type": "futures",
+            "pair": "ETHUSDT",
+            "timeframe": "4h",
+            "payload": {"indicators": [{"id": "ema"}]}
+        });
+        let res = app
+            .clone()
+            .oneshot(json_request("PUT", &format!("/api/layouts/{id}"), update))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = json_body(res).await;
+        assert_eq!(body["data"]["name"], "beta");
+        assert_eq!(body["data"]["pair"], "ETHUSDT");
+
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/api/layouts/{id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/layouts/{id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_layout_rejects_invalid_fields() {
+        let app = test_app();
+        let create = serde_json::json!({
+            "name": "bad",
+            "market_type": "futures",
+            "pair": "../etc",
+            "timeframe": "1h",
+            "payload": {}
+        });
+        let res = app
+            .oneshot(json_request("POST", "/api/layouts", create))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_drawings_roundtrip() {
+        let app = test_app();
+        let doc = serde_json::json!({
+            "drawings": [{"id": "a", "points": [{"time": 1, "price": 2}]}]
+        });
+        let res = app
+            .clone()
+            .oneshot(json_request(
+                "PUT",
+                "/api/drawings?market_type=futures&pair=BTCUSDT",
+                doc,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = json_body(res).await;
+        assert_eq!(body["data"]["drawings"].as_array().unwrap().len(), 1);
+
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/drawings?market_type=futures&pair=BTCUSDT")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = json_body(res).await;
+        assert_eq!(body["data"]["drawings"][0]["id"], "a");
+
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/drawings?market_type=futures&pair=ETHUSDT")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = json_body(res).await;
+        assert_eq!(body["data"]["drawings"], serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn test_drawings_reject_invalid_payload_and_pair() {
+        let app = test_app();
+        let res = app
+            .clone()
+            .oneshot(json_request(
+                "PUT",
+                "/api/drawings?market_type=futures&pair=BTCUSDT",
+                serde_json::json!({"drawings": {}}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+        let res = app
+            .oneshot(json_request(
+                "PUT",
+                "/api/drawings?market_type=futures&pair=..%2Fetc",
+                serde_json::json!({"drawings": []}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_preferences_merge() {
+        let app = test_app();
+        let res = app
+            .clone()
+            .oneshot(json_request(
+                "PUT",
+                "/api/preferences",
+                serde_json::json!({"last_session": {"pair": "BTCUSDT"}}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+
+        let res = app
+            .clone()
+            .oneshot(json_request(
+                "PUT",
+                "/api/preferences",
+                serde_json::json!({"theme": "dark"}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/preferences")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = json_body(res).await;
+        assert_eq!(
+            body["data"]["preferences"]["last_session"]["pair"],
+            "BTCUSDT"
+        );
+        assert_eq!(body["data"]["preferences"]["theme"], "dark");
     }
 }

@@ -2,6 +2,7 @@
 
 pub mod data_loader;
 pub mod routes;
+pub mod state;
 pub mod strategy;
 
 pub use routes::AppState;
@@ -85,7 +86,12 @@ pub async fn run(config: &Config) -> Result<(), AppError> {
         )));
     }
 
-    let app_state = AppState::new(data_dir.clone());
+    let db_path = config
+        .db_path
+        .clone()
+        .unwrap_or_else(|| data_dir.join("tradingview.db"));
+    let state_store = std::sync::Arc::new(state::StateStore::open(&db_path)?);
+    let app_state = AppState::new(data_dir.clone(), state_store);
 
     let frontend_dir = config.frontend_dir.clone();
     if !frontend_dir.is_dir() {
@@ -107,6 +113,7 @@ pub async fn run(config: &Config) -> Result<(), AppError> {
 
     tracing::info!("TradingView Backend starting on http://{}", addr);
     tracing::info!(path = %data_dir.display(), "Data dir");
+    tracing::info!(path = %db_path.display(), "State db");
     tracing::info!(path = %frontend_dir.display(), "Frontend dir");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;

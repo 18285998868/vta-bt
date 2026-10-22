@@ -51,6 +51,10 @@ pub enum AppError {
     #[error("data error: {0}")]
     Data(#[from] crate::app::data_loader::DataError),
 
+    /// 本地状态库（SQLite）失败。
+    #[error("state error: {0}")]
+    State(#[from] crate::app::state::StateError),
+
     /// 监听地址非法。
     #[error("invalid listen address {addr}")]
     InvalidAddr {

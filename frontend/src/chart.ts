@@ -1,8 +1,13 @@
 import {
   createChart,
+  createSeriesMarkers,
   ColorType,
   CrosshairMode,
-  type IChartApi,
+  CandlestickSeries,
+  LineSeries,
+  HistogramSeries,
+  type IPaneApi,
+  type Time,
   type ISeriesApi,
   type CandlestickSeriesPartialOptions,
   type CandlestickData,
@@ -11,16 +16,27 @@ import {
   type UTCTimestamp,
   type SeriesMarker,
 } from 'lightweight-charts';
+import { DrawingManager, type DrawingKind } from 'lightweight-charts-drawing';
 import type { Kline, StrategyMarker, StrategyOverlay } from './types';
 import type { ActiveIndicator, SubSeries } from './indicators';
 import { safeCalc } from './indicators';
 
 const BUFFER = 30;
 const INITIAL_VISIBLE_BARS = 50;
-const MAIN_HEIGHT_RATIO = 0.6;
-const SUB_HEIGHT_RATIO = 0.4;
+const MAIN_STRETCH = 0.6;
+const SUB_STRETCH = 0.4;
+const DRAWING_HISTORY_LIMIT = 50;
+const DRAWING_RECORD_DEBOUNCE_MS = 250;
 
 export type LoadDirection = 'left' | 'right';
+export type DrawingTool = DrawingKind;
+
+export interface Viewport {
+  /** 毫秒时间戳（含）。 */
+  from: number;
+  /** 毫秒时间戳（含）。 */
+  to: number;
+}
 
 export interface ChartManager {
   setData(klines: Kline[]): void;
@@ -29,9 +45,19 @@ export interface ChartManager {
   getAllKlines(): Kline[];
   getFirstTime(): number | null;
   getLastTime(): number | null;
+  getViewport(): Viewport | null;
+  setViewport(v: Viewport | null): void;
+  onViewportChange(cb: () => void): () => void;
   applyIndicators(indicators: ActiveIndicator[], klines: Kline[]): void;
   setStrategy(markers: StrategyMarker[], overlays: StrategyOverlay[]): void;
   jumpToTime(time: number): void;
+  setDrawingTool(tool: DrawingTool | null): void;
+  getDrawingsJSON(): string;
+  setDrawingsJSON(json: string): void;
+  clearDrawings(): void;
+  onDrawingsChange(cb: () => void): () => void;
+  undoDrawings(): void;
+  redoDrawings(): void;
   destroy(): void;
 }
 
@@ -53,34 +79,7 @@ export function createChartManager(
   wrapper: HTMLElement,
   onNearEdge: (dir: LoadDirection) => void,
 ): ChartManager {
-  wrapper.style.display = 'flex';
-  wrapper.style.flexDirection = 'column';
-
-  const mainContainer = document.createElement('div');
-  mainContainer.style.minHeight = '200px';
-  wrapper.appendChild(mainContainer);
-
-  const subContainer = document.createElement('div');
-  subContainer.id = 'sub-panes';
-  subContainer.style.display = 'none';
-  subContainer.style.flexDirection = 'column';
-  subContainer.style.minHeight = '0';
-  wrapper.appendChild(subContainer);
-
-  function applyHeights() {
-    const total = wrapper.clientHeight;
-    if (subPanes.length > 0) {
-      mainContainer.style.height = `${Math.max(total * MAIN_HEIGHT_RATIO, 200)}px`;
-      subContainer.style.display = 'flex';
-      subContainer.style.height = `${Math.max(total * SUB_HEIGHT_RATIO, 80)}px`;
-    } else {
-      mainContainer.style.height = `${Math.max(total, 200)}px`;
-      subContainer.style.display = 'none';
-      subContainer.style.height = '0';
-    }
-  }
-
-  const chart = createChart(mainContainer, {
+  const chart = createChart(wrapper, {
     layout: {
       background: { type: ColorType.Solid, color: '#1e1e2e' },
       textColor: '#cdd6f4',
@@ -94,86 +93,70 @@ export function createChartManager(
     timeScale: { borderColor: '#45475a', timeVisible: false, borderVisible: true },
   });
 
-  const candleSeries = chart.addCandlestickSeries(candleOpts);
+  const candleSeries = chart.addSeries(CandlestickSeries, candleOpts);
+  const seriesMarkers = createSeriesMarkers(candleSeries, []);
+
+  // 绘图层：挂在主图 K 线 series 上；锚点是 {time, price}，与周期无关。
+  const drawings = new DrawingManager(chart, candleSeries, { magnet: 'weak' });
+
   const overlaySeries: ISeriesApi<'Line'>[] = [];
   // 策略层全量缓存，只渲染已加载窗口（避免污染时间轴逻辑坐标）。
   // 注意：资金曲线不在主图绘制（与价格同轴会压缩K线），绩效只看面板。
   let strategyMarkers: StrategyMarker[] = [];
   let strategyOverlays: StrategyOverlay[] = [];
   const strategyOverlaySeries: ISeriesApi<'Line'>[] = [];
-  const subPanes: { chart: IChartApi; container: HTMLElement; series: ISeriesApi<any>[] }[] = [];
-  const allCharts: IChartApi[] = [chart];
+
+  // 子窗格：v5 原生 pane，共享同一条时间轴与十字光标，不再需要多 chart 同步。
+  const subPanes: IPaneApi<Time>[] = [];
 
   let allKlines: Kline[] = [];
   let suppressEdgeCheck = false;
 
-  // ---- time scale sync ----
-  let syncing = false;
-
-  function syncRangeToAll(source: IChartApi, range: { from: number; to: number } | null) {
-    if (syncing || !range) return;
-    syncing = true;
-    for (const c of allCharts) {
-      if (c !== source) {
-        try { c.timeScale().setVisibleLogicalRange(range); } catch (e) {
-          console.warn('timeScale sync failed:', e);
-        }
-      }
-    }
-    if (allKlines.length > 0 && !suppressEdgeCheck) {
-      if (range.from - 0 < BUFFER) onNearEdge('left');
-      if (allKlines.length - range.to < BUFFER) onNearEdge('right');
-    }
-    syncing = false;
+  // ---- viewport ----
+  function getViewport(): Viewport | null {
+    const range = chart.timeScale().getVisibleRange();
+    if (!range) return null;
+    return { from: (range.from as number) * 1000, to: (range.to as number) * 1000 };
   }
 
-  function subscribeTimeScale(ch: IChartApi) {
-    ch.timeScale().subscribeVisibleLogicalRangeChange((range) => syncRangeToAll(ch, range));
-  }
-  subscribeTimeScale(chart);
-
-  // ---- crosshair sync ----
-  let crosshairSyncing = false;
-
-  function syncCrosshair(time: UTCTimestamp | undefined, chartIdx: number) {
-    if (crosshairSyncing || !time) return;
-    crosshairSyncing = true;
-    for (let i = 0; i < allCharts.length; i++) {
-      if (i === chartIdx) continue;
-      const target = allCharts[i];
-      if (i === 0) {
-        // target is main chart → use candleSeries
-        // price=0 is a dummy: we only need the vertical line position
-        target.setCrosshairPosition(0, time, candleSeries);
+  function setViewport(v: Viewport | null): void {
+    if (!v) {
+      chart.timeScale().fitContent();
+      return;
+    }
+    try {
+      chart.timeScale().setVisibleRange({
+        from: (v.from / 1000) as UTCTimestamp,
+        to: (v.to / 1000) as UTCTimestamp,
+      });
+    } catch {
+      // 视口落在当前数据之外（例如换了交易对）：回到最新一段。
+      const len = allKlines.length;
+      if (len > INITIAL_VISIBLE_BARS) {
+        chart.timeScale().setVisibleLogicalRange({ from: len - INITIAL_VISIBLE_BARS, to: len });
       } else {
-        // target is a sub-pane → use its first series
-        const pane = subPanes[i - 1];
-        if (pane && pane.series.length > 0) {
-          target.setCrosshairPosition(0, time, pane.series[0]);
-        }
+        chart.timeScale().fitContent();
       }
     }
-    crosshairSyncing = false;
   }
 
-  function subscribeCrosshair(ch: IChartApi, chartIdx: number) {
-    ch.subscribeCrosshairMove((param) => {
-      syncCrosshair(param.time as UTCTimestamp | undefined, chartIdx);
-    });
-  }
-  subscribeCrosshair(chart, 0);
+  // ---- 加载更多 ----
+  chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+    if (!range || suppressEdgeCheck || allKlines.length === 0) return;
+    if (range.from < BUFFER) onNearEdge('left');
+    if (allKlines.length - range.to < BUFFER) onNearEdge('right');
+  });
+
+  // ---- 视口变化（用于会话自动保存）----
+  let viewportCb: (() => void) | null = null;
+  chart.timeScale().subscribeVisibleTimeRangeChange(() => viewportCb?.());
 
   // ---- resize ----
-  function resizeAll() {
-    applyHeights();
-    const w = wrapper.clientWidth;
-    chart.resize(w, mainContainer.clientHeight);
-    for (const pane of subPanes) {
-      pane.chart.resize(pane.container.clientWidth, pane.container.clientHeight);
-    }
+  function resize() {
+    chart.resize(wrapper.clientWidth, wrapper.clientHeight);
   }
 
-  const ro = new ResizeObserver(() => resizeAll());
+  const ro = new ResizeObserver(() => resize());
   ro.observe(wrapper);
 
   function toCandle(klines: Kline[]): CandlestickData[] {
@@ -199,15 +182,15 @@ export function createChartManager(
     }
     strategyOverlaySeries.length = 0;
     if (allKlines.length === 0) {
-      candleSeries.setMarkers([]);
+      seriesMarkers.setMarkers([]);
       return;
     }
     const from = allKlines[0].time;
     const to = allKlines[allKlines.length - 1].time;
     const inWindow = (t: number) => t >= from && t <= to;
-    candleSeries.setMarkers(toMarkers(strategyMarkers.filter((m) => inWindow(m.time))));
+    seriesMarkers.setMarkers(toMarkers(strategyMarkers.filter((m) => inWindow(m.time))));
     strategyOverlays.forEach((ov, i) => {
-      const s = chart.addLineSeries({
+      const s = chart.addSeries(LineSeries, {
         color: colorPalette[i % colorPalette.length],
         lineWidth: 1,
         lastValueVisible: true,
@@ -237,12 +220,26 @@ export function createChartManager(
   }
 
   function clearSubPanes() {
-    for (const pane of subPanes) {
-      pane.chart.remove();
-      pane.container.remove();
+    // 从后往前删，避免索引前移。
+    for (let i = chart.panes().length - 1; i >= 1; i--) {
+      chart.removePane(i);
     }
     subPanes.length = 0;
-    allCharts.length = 1; // keep main chart
+    chart.panes()[0]?.setStretchFactor(1);
+  }
+
+  function applyPaneStretch() {
+    const panes = chart.panes();
+    if (panes.length === 0) return;
+    const subs = panes.length - 1;
+    if (subs === 0) {
+      panes[0].setStretchFactor(1);
+      return;
+    }
+    panes[0].setStretchFactor(MAIN_STRETCH);
+    for (let i = 1; i < panes.length; i++) {
+      panes[i].setStretchFactor(SUB_STRETCH / subs);
+    }
   }
 
   // ---- indicator data helpers: include ALL kline timestamps for visual alignment ----
@@ -266,7 +263,66 @@ export function createChartManager(
     return out;
   }
 
-  function forceLayout(el: HTMLElement) { void el.offsetHeight; }
+  function addSubSeries(
+    pane: IPaneApi<Time>,
+    subSeries: SubSeries,
+    klines: Kline[],
+    color: string,
+  ): ISeriesApi<'Line'> | ISeriesApi<'Histogram'> {
+    if (subSeries.type === 'histogram') {
+      const s = pane.addSeries(HistogramSeries, {
+        color: subSeries.color || color,
+        priceFormat: { type: 'volume' },
+      });
+      s.setData(buildHistogramData(subSeries.values, klines, subSeries.color || color));
+      return s;
+    }
+    const s = pane.addSeries(LineSeries, {
+      color: subSeries.color || color,
+      lineWidth: 1,
+    });
+    s.setData(buildLineData(subSeries.values, klines));
+    return s;
+  }
+
+  // ---- 绘图持久化 / 撤销栈 ----
+  let drawingHistory: string[] = [drawings.exportJSON()];
+  let drawingHistoryIndex = 0;
+  let drawingSuppress = false;
+  let drawingTimer: number | null = null;
+  let drawingsChangeCb: (() => void) | null = null;
+
+  function notifyDrawingsChange() {
+    drawingsChangeCb?.();
+  }
+
+  function recordDrawings() {
+    if (drawingSuppress) return;
+    if (drawingTimer !== null) window.clearTimeout(drawingTimer);
+    drawingTimer = window.setTimeout(() => {
+      drawingTimer = null;
+      const json = drawings.exportJSON();
+      if (json === drawingHistory[drawingHistoryIndex]) return;
+      drawingHistory = drawingHistory.slice(0, drawingHistoryIndex + 1);
+      drawingHistory.push(json);
+      if (drawingHistory.length > DRAWING_HISTORY_LIMIT) {
+        drawingHistory.shift();
+      }
+      drawingHistoryIndex = drawingHistory.length - 1;
+      notifyDrawingsChange();
+    }, DRAWING_RECORD_DEBOUNCE_MS);
+  }
+
+  const offDrawingChange = drawings.on('change', recordDrawings);
+
+  function restoreDrawingHistory(json: string) {
+    drawingSuppress = true;
+    try {
+      drawings.importJSON(json);
+    } finally {
+      drawingSuppress = false;
+    }
+  }
 
   return {
     setData(klines: Kline[]) {
@@ -283,7 +339,6 @@ export function createChartManager(
       } else {
         chart.timeScale().fitContent();
       }
-      applyHeights();
     },
 
     prependData(klines: Kline[]) {
@@ -325,8 +380,19 @@ export function createChartManager(
       return allKlines.length > 0 ? allKlines[allKlines.length - 1].time : null;
     },
 
+    getViewport,
+
+    setViewport,
+
+    onViewportChange(cb: () => void) {
+      viewportCb = cb;
+      return () => {
+        if (viewportCb === cb) viewportCb = null;
+      };
+    },
+
     applyIndicators(indicators: ActiveIndicator[], klines: Kline[]) {
-      const savedRange = chart.timeScale().getVisibleLogicalRange();
+      const savedViewport = getViewport();
 
       allKlines = klines;
       clearOverlays();
@@ -341,7 +407,7 @@ export function createChartManager(
       for (const { result } of results) {
         if (result.overlay) {
           for (const ov of result.overlay) {
-            const series = chart.addLineSeries({
+            const series = chart.addSeries(LineSeries, {
               color: ov.color || colorPalette[ci % colorPalette.length],
               lineWidth: 1,
               lastValueVisible: true,
@@ -354,80 +420,23 @@ export function createChartManager(
         }
       }
 
-      // create sub-panes (if needed) — make subContainer visible BEFORE chart creation
       if (hasSub) {
-        subContainer.style.display = 'flex';
-        applyHeights();
-        forceLayout(subContainer);
-
         for (const { result } of results) {
-          if (result.sub) {
-            for (const paneDef of result.sub) {
-              const paneContainer = document.createElement('div');
-              paneContainer.style.flex = '1';
-              paneContainer.style.minHeight = '60px';
-              paneContainer.style.borderTop = '1px solid #313244';
-              subContainer.appendChild(paneContainer);
-
-              forceLayout(paneContainer);
-
-              const paneChart = createChart(paneContainer, {
-                layout: {
-                  background: { type: ColorType.Solid, color: '#1e1e2e' },
-                  textColor: '#cdd6f4',
-                },
-                grid: {
-                  vertLines: { color: '#313244' },
-                  horzLines: { color: '#313244' },
-                },
-                crosshair: { mode: CrosshairMode.Normal },
-                rightPriceScale: { borderColor: '#45475a' },
-                timeScale: {
-                  borderColor: '#45475a',
-                  timeVisible: false,
-                  visible: false,
-                },
-              });
-
-              const paneSeries: ISeriesApi<any>[] = [];
-              for (const sub of paneDef.series) {
-                const s = addSubSeries(paneChart, sub, klines, colorPalette[ci % colorPalette.length]);
-                paneSeries.push(s);
-                ci++;
-              }
-
-              // add invisible sentinel series covering ALL klines so logical-to-time mapping matches main chart
-              const sentinelData: LineData[] = klines.map((k) => ({
-                time: (k.time / 1000) as UTCTimestamp,
-                value: 0,
-              }));
-              paneChart.addLineSeries({
-                color: 'rgba(0,0,0,0)',
-                lineWidth: 1,
-                priceFormat: { type: 'price' },
-                lastValueVisible: false,
-                autoscaleInfoProvider: () => null,
-              }).setData(sentinelData);
-
-              const chartIdx = allCharts.length;
-              subscribeTimeScale(paneChart);
-              subscribeCrosshair(paneChart, chartIdx);
-              allCharts.push(paneChart);
-              subPanes.push({ chart: paneChart, container: paneContainer, series: paneSeries });
+          if (!result.sub) continue;
+          for (const paneDef of result.sub) {
+            const pane = chart.addPane();
+            subPanes.push(pane);
+            for (const sub of paneDef.series) {
+              addSubSeries(pane, sub, klines, colorPalette[ci % colorPalette.length]);
+              ci++;
             }
           }
         }
+        applyPaneStretch();
       }
 
-      applyHeights();
-      resizeAll();
-
-      // sync time scale to savedRange after everything is set up
-      if (savedRange) {
-        for (const c of allCharts) {
-          try { c.timeScale().setVisibleLogicalRange(savedRange); } catch (_) { /* */ }
-        }
-      }
+      resize();
+      setViewport(savedViewport);
     },
 
     setStrategy(markers: StrategyMarker[], overlays: StrategyOverlay[]) {
@@ -442,37 +451,66 @@ export function createChartManager(
       const halfSpan = 30;
       const from = Math.max(0, idx - halfSpan);
       const to = Math.min(allKlines.length, idx + halfSpan);
-      syncRangeToAll(chart, { from, to });
+      chart.timeScale().setVisibleLogicalRange({ from, to });
+    },
+
+    setDrawingTool(tool: DrawingTool | null) {
+      drawings.setTool(tool);
+    },
+
+    getDrawingsJSON() {
+      return drawings.exportJSON();
+    },
+
+    setDrawingsJSON(json: string) {
+      restoreDrawingHistory(json);
+      drawingHistory = [drawings.exportJSON()];
+      drawingHistoryIndex = 0;
+    },
+
+    clearDrawings() {
+      drawings.clear();
+      const json = drawings.exportJSON();
+      if (json !== drawingHistory[drawingHistoryIndex]) {
+        drawingHistory = drawingHistory.slice(0, drawingHistoryIndex + 1);
+        drawingHistory.push(json);
+        if (drawingHistory.length > DRAWING_HISTORY_LIMIT) {
+          drawingHistory.shift();
+        }
+        drawingHistoryIndex = drawingHistory.length - 1;
+      }
+      notifyDrawingsChange();
+    },
+
+    onDrawingsChange(cb: () => void) {
+      drawingsChangeCb = cb;
+      return () => {
+        if (drawingsChangeCb === cb) drawingsChangeCb = null;
+      };
+    },
+
+    undoDrawings() {
+      if (drawingHistoryIndex <= 0) return;
+      drawingHistoryIndex--;
+      restoreDrawingHistory(drawingHistory[drawingHistoryIndex]);
+      notifyDrawingsChange();
+    },
+
+    redoDrawings() {
+      if (drawingHistoryIndex >= drawingHistory.length - 1) return;
+      drawingHistoryIndex++;
+      restoreDrawingHistory(drawingHistory[drawingHistoryIndex]);
+      notifyDrawingsChange();
     },
 
     destroy() {
+      if (drawingTimer !== null) window.clearTimeout(drawingTimer);
+      offDrawingChange();
+      drawings.destroy();
       ro.disconnect();
       clearOverlays();
       clearSubPanes();
       chart.remove();
-      mainContainer.remove();
     },
   };
-
-  function addSubSeries(
-    paneChart: IChartApi,
-    subSeries: SubSeries,
-    klines: Kline[],
-    color: string,
-  ): ISeriesApi<any> {
-    if (subSeries.type === 'histogram') {
-      const s = paneChart.addHistogramSeries({
-        color: subSeries.color || color,
-        priceFormat: { type: 'volume' },
-      });
-      s.setData(buildHistogramData(subSeries.values, klines, subSeries.color || color));
-      return s;
-    }
-    const s = paneChart.addLineSeries({
-      color: subSeries.color || color,
-      lineWidth: 1,
-    });
-    s.setData(buildLineData(subSeries.values, klines));
-    return s;
-  }
 }

@@ -1,15 +1,72 @@
-import { fetchMarketTypes, fetchPairs, fetchTimeframes, fetchKlines, fetchStrategy, fetchStrategies } from './api';
-import { createChartManager, type ChartManager, type LoadDirection } from './chart';
-import { getAllIndicators, type ActiveIndicator, type IndicatorDef } from './indicators';
+import {
+  createLayout,
+  deleteLayout,
+  fetchDrawings,
+  fetchKlines,
+  fetchLayout,
+  fetchLayouts,
+  fetchMarketTypes,
+  fetchPairs,
+  fetchPreferences,
+  fetchStrategies,
+  fetchStrategy,
+  fetchTimeframes,
+  putPreferences,
+  replaceDrawings,
+  updateLayout,
+  type DrawingDocument,
+  type LayoutInput,
+} from './api';
+import {
+  createChartManager,
+  type ChartManager,
+  type DrawingTool,
+  type LoadDirection,
+  type Viewport,
+} from './chart';
+import { findIndicator, getAllIndicators, type ActiveIndicator, type IndicatorDef } from './indicators';
 import type { StrategyResult } from './types';
 
 const PAGE_SIZE = 200;
 const PAIR_DROPDOWN_LIMIT = 100;
-const APP_VERSION = 'p4';
+const APP_VERSION = 'p5';
+const SESSION_SAVE_DEBOUNCE_MS = 800;
+const DRAWING_SAVE_DEBOUNCE_MS = 600;
 
 function defaultTomlFor(strategyType: string): string {
   if (strategyType === 'bbrk') return 'type = "bbrk"\nsigma = 2.0';
   return `type = "${strategyType}"\nperiod = 20`;
+}
+
+interface IndicatorState {
+  id: string;
+  params: Record<string, number>;
+}
+
+interface StrategyState {
+  toml: string;
+  applied: boolean;
+}
+
+/** 可持久化的会话快照（last_session / 命名布局共用）。 */
+interface SessionState {
+  market_type: string;
+  pair: string;
+  timeframe: string;
+  indicators: IndicatorState[];
+  strategy: StrategyState | null;
+  viewport: Viewport | null;
+}
+
+function isSessionState(value: unknown): value is SessionState {
+  if (!value || typeof value !== 'object') return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.market_type === 'string' &&
+    typeof v.pair === 'string' &&
+    typeof v.timeframe === 'string' &&
+    Array.isArray(v.indicators)
+  );
 }
 
 export class App {
@@ -34,8 +91,21 @@ export class App {
   private infoEl: HTMLElement;
   private chartContainer: HTMLElement;
   private indicatorsEl: HTMLElement;
+  private layoutSelect: HTMLSelectElement;
+  private drawingToolSelect: HTMLSelectElement;
   private _pair = '';
   private _timeframe = '';
+  /** 恢复/加载布局期间抑制自动保存。 */
+  private suppressSave = false;
+  /** 初始化完成前不保存（避免把半初始化状态写成 last_session）。 */
+  private ready = false;
+  private saveTimer: number | null = null;
+  private drawingSaveTimer: number | null = null;
+  /** 当前 chart 的绘图已从服务端加载完成；未完成前禁止回写，避免用空画布覆盖。 */
+  private drawingsLoaded = false;
+  private drawingLoadToken = 0;
+  private unbindViewport: (() => void) | null = null;
+  private unbindDrawings: (() => void) | null = null;
 
   constructor(container: HTMLElement) {
     container.innerHTML = `
@@ -49,6 +119,10 @@ export class App {
         </div>
         <label>周期</label>
         <select id="timeframe-select" disabled><option>—</option></select>
+        <label>布局</label>
+        <select id="layout-select"><option value="">— 布局 —</option></select>
+        <button id="layout-save" class="time-jump-btn">保存</button>
+        <button id="layout-delete" class="time-jump-btn">删除</button>
         <input type="date" id="time-jump" class="time-jump" />
         <button id="time-jump-btn" class="time-jump-btn">跳转</button>
         <label>策略</label>
@@ -77,6 +151,20 @@ export class App {
           <div id="indicator-dropdown" class="indicator-dropdown"></div>
         </div>
         <div id="active-indicators" class="active-indicators"></div>
+        <label>绘图</label>
+        <select id="drawing-tool">
+          <option value="">光标</option>
+          <option value="trend-line">趋势线</option>
+          <option value="horizontal-line">水平线</option>
+          <option value="vertical-line">垂直线</option>
+          <option value="rectangle">矩形</option>
+          <option value="fib-retracement">斐波那契</option>
+          <option value="text">文字</option>
+          <option value="arrow">箭头</option>
+        </select>
+        <button id="drawing-undo" class="time-jump-btn">撤销</button>
+        <button id="drawing-redo" class="time-jump-btn">重做</button>
+        <button id="drawing-clear" class="time-jump-btn">清空</button>
         <span class="info" id="info"></span>
         <span class="app-version" id="app-version"></span>
       </div>
@@ -99,6 +187,8 @@ export class App {
     this.infoEl = container.querySelector('#info')!;
     this.chartContainer = container.querySelector('#chart-container')!;
     this.indicatorsEl = container.querySelector('#active-indicators') as HTMLElement;
+    this.layoutSelect = container.querySelector('#layout-select') as HTMLSelectElement;
+    this.drawingToolSelect = container.querySelector('#drawing-tool') as HTMLSelectElement;
 
     const searchInput = container.querySelector('#indicator-search') as HTMLInputElement;
     const dropdown = container.querySelector('#indicator-dropdown') as HTMLElement;
@@ -110,6 +200,11 @@ export class App {
     const editorApplyBtn = container.querySelector('#strategy-editor-apply') as HTMLButtonElement;
     const editorCloseBtn = container.querySelector('#strategy-editor-close') as HTMLButtonElement;
     const panelCloseBtn = container.querySelector('#strategy-panel-close') as HTMLButtonElement;
+    const layoutSaveBtn = container.querySelector('#layout-save') as HTMLButtonElement;
+    const layoutDeleteBtn = container.querySelector('#layout-delete') as HTMLButtonElement;
+    const drawingUndoBtn = container.querySelector('#drawing-undo') as HTMLButtonElement;
+    const drawingRedoBtn = container.querySelector('#drawing-redo') as HTMLButtonElement;
+    const drawingClearBtn = container.querySelector('#drawing-clear') as HTMLButtonElement;
 
     (container.querySelector('#app-version') as HTMLElement).textContent = APP_VERSION;
 
@@ -130,6 +225,25 @@ export class App {
     });
     editorCloseBtn.addEventListener('click', () => this.strategyEditor.classList.remove('visible'));
     panelCloseBtn.addEventListener('click', () => this.clearStrategy());
+
+    this.layoutSelect.addEventListener('change', () => {
+      const id = this.layoutSelect.value;
+      if (id) void this.loadLayout(id);
+    });
+    layoutSaveBtn.addEventListener('click', () => void this.saveLayout());
+    layoutDeleteBtn.addEventListener('click', () => void this.deleteSelectedLayout());
+
+    this.drawingToolSelect.addEventListener('change', () => {
+      const tool = this.drawingToolSelect.value;
+      this.chart?.setDrawingTool(tool ? (tool as DrawingTool) : null);
+    });
+    drawingUndoBtn.addEventListener('click', () => this.chart?.undoDrawings());
+    drawingRedoBtn.addEventListener('click', () => this.chart?.redoDrawings());
+    drawingClearBtn.addEventListener('click', () => {
+      if (!this.chart) return;
+      if (!confirm('清空当前交易对的所有绘图？')) return;
+      this.chart.clearDrawings();
+    });
 
     const onJump = () => this.onTimeJump(timeJump);
     timeJump.addEventListener('change', onJump);
@@ -174,13 +288,266 @@ export class App {
         this.marketSelect.appendChild(opt);
       }
       await this.loadStrategyTypes();
-      if (types.length > 0) {
+      await this.refreshLayoutList();
+
+      const preferences: Record<string, unknown> = await fetchPreferences().catch(() => ({}));
+      const lastSession = preferences['last_session'];
+      if (isSessionState(lastSession) && types.includes(lastSession.market_type)) {
+        await this.applySession(lastSession);
+      } else if (types.length > 0) {
         this.marketSelect.value = types[0];
         await this.loadPairs();
       }
     } catch (e) {
       this.infoEl.textContent = `加载失败: ${e}`;
+    } finally {
+      this.ready = true;
+      this.scheduleSave();
     }
+  }
+
+  // ---- 会话 / 命名布局 ----
+
+  private collectSessionState(): SessionState {
+    return {
+      market_type: this.marketSelect.value,
+      pair: this._pair,
+      timeframe: this._timeframe,
+      indicators: this.activeIndicators.map((a) => ({
+        id: a.def.id,
+        params: { ...a.params },
+      })),
+      strategy: this.strategyToml.value.trim()
+        ? { toml: this.strategyToml.value, applied: this.activeStrategyToml !== null }
+        : null,
+      viewport: this.chart?.getViewport() ?? null,
+    };
+  }
+
+  private scheduleSave(): void {
+    if (this.suppressSave || !this.ready) return;
+    if (this.saveTimer !== null) window.clearTimeout(this.saveTimer);
+    this.saveTimer = window.setTimeout(() => {
+      this.saveTimer = null;
+      void this.saveSessionNow();
+    }, SESSION_SAVE_DEBOUNCE_MS);
+  }
+
+  private async saveSessionNow(): Promise<void> {
+    if (this.suppressSave || !this.ready || !this._pair || !this._timeframe) return;
+    try {
+      await putPreferences({ last_session: this.collectSessionState() });
+    } catch (e) {
+      console.warn('保存会话失败', e);
+    }
+  }
+
+  private async flushPendingSaves(): Promise<void> {
+    if (this.saveTimer !== null) {
+      window.clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+      await this.saveSessionNow();
+    }
+    await this.flushDrawings();
+  }
+
+  private async applySession(state: SessionState): Promise<void> {
+    this.suppressSave = true;
+    try {
+      this.teardownChart('加载中...');
+      this.marketSelect.value = state.market_type;
+      this.clearStrategyState();
+      this.activeIndicators = state.indicators.flatMap((s) => {
+        const def = findIndicator(s.id);
+        return def ? [{ def, params: { ...def.defaultParams, ...s.params } }] : [];
+      });
+      if (state.strategy?.toml) {
+        this.strategyToml.value = state.strategy.toml;
+        const type = state.strategy.toml.match(/^\s*type\s*=\s*"([^"]+)"/m)?.[1];
+        if (type && [...this.strategySelect.options].some((o) => o.value === type)) {
+          this.strategySelect.value = type;
+        }
+      }
+      this.activeStrategyToml = state.strategy?.applied ? state.strategy.toml : null;
+
+      await this.loadPairs(state.pair, state.timeframe);
+      if (this.chart && state.viewport) this.chart.setViewport(state.viewport);
+      if (this.activeStrategyToml) await this.refreshStrategy();
+    } finally {
+      this.suppressSave = false;
+    }
+  }
+
+  private async refreshLayoutList(selectedId?: string): Promise<void> {
+    try {
+      const layouts = await fetchLayouts();
+      const current = selectedId ?? this.layoutSelect.value;
+      this.layoutSelect.innerHTML = '<option value="">— 布局 —</option>';
+      for (const layout of layouts) {
+        const opt = document.createElement('option');
+        opt.value = layout.id;
+        opt.textContent = `${layout.name} · ${layout.pair} ${layout.timeframe}`;
+        this.layoutSelect.appendChild(opt);
+      }
+      if (current && layouts.some((l) => l.id === current)) {
+        this.layoutSelect.value = current;
+      }
+    } catch (e) {
+      console.warn('加载布局列表失败', e);
+    }
+  }
+
+  private async loadLayout(id: string): Promise<void> {
+    try {
+      await this.flushPendingSaves();
+      const layout = await fetchLayout(id);
+      if (!isSessionState(layout.payload)) {
+        throw new Error('布局数据格式不兼容');
+      }
+      await this.applySession(layout.payload);
+      this.layoutSelect.value = id;
+      this.infoEl.textContent = `已加载布局: ${layout.name}`;
+      this.scheduleSave();
+    } catch (e) {
+      this.infoEl.textContent = `加载布局失败: ${e}`;
+    }
+  }
+
+  private async saveLayout(): Promise<void> {
+    if (!this._pair || !this._timeframe) {
+      this.infoEl.textContent = '请先加载K线数据';
+      return;
+    }
+    const selected = this.layoutSelect.selectedOptions[0];
+    const selectedName = selected?.value
+      ? selected.textContent?.split(' · ')[0] ?? ''
+      : '';
+    const name = prompt('布局名称', selectedName || `${this._pair} ${this._timeframe}`);
+    if (name === null) return;
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    await this.flushDrawings();
+
+    const state = this.collectSessionState();
+    const input: LayoutInput = {
+      name: trimmed,
+      market_type: state.market_type,
+      pair: state.pair,
+      timeframe: state.timeframe,
+      payload: state,
+    };
+    try {
+      const id = this.layoutSelect.value;
+      const saved = id ? await updateLayout(id, input) : await createLayout(input);
+      await this.refreshLayoutList(saved.id);
+      this.infoEl.textContent = `布局已保存: ${saved.name}`;
+    } catch (e) {
+      this.infoEl.textContent = `保存布局失败: ${e}`;
+    }
+  }
+
+  private async deleteSelectedLayout(): Promise<void> {
+    const id = this.layoutSelect.value;
+    if (!id) {
+      this.infoEl.textContent = '请先选择一个布局';
+      return;
+    }
+    const name = this.layoutSelect.selectedOptions[0]?.textContent ?? id;
+    if (!confirm(`删除布局「${name}」？`)) return;
+    try {
+      await deleteLayout(id);
+      await this.refreshLayoutList();
+      this.infoEl.textContent = '布局已删除';
+    } catch (e) {
+      this.infoEl.textContent = `删除布局失败: ${e}`;
+    }
+  }
+
+  // ---- 绘图持久化 ----
+
+  private bindChart(): void {
+    const chart = this.chart;
+    if (!chart) return;
+    this.drawingsLoaded = false;
+    this.unbindViewport = chart.onViewportChange(() => this.scheduleSave());
+    this.unbindDrawings = chart.onDrawingsChange(() => this.scheduleDrawingSave());
+    const tool = this.drawingToolSelect.value;
+    chart.setDrawingTool(tool ? (tool as DrawingTool) : null);
+    void this.loadDrawingsForPair();
+  }
+
+  private async loadDrawingsForPair(): Promise<void> {
+    const chart = this.chart;
+    if (!chart || !this._pair) return;
+    const market = this.marketSelect.value;
+    const pair = this._pair;
+    const token = ++this.drawingLoadToken;
+    try {
+      const drawings = await fetchDrawings(market, pair);
+      if (token !== this.drawingLoadToken || this.chart !== chart) return;
+      if (this.marketSelect.value !== market || this._pair !== pair) return;
+      chart.setDrawingsJSON(JSON.stringify(drawings));
+      this.drawingsLoaded = true;
+    } catch (e) {
+      console.warn('加载绘图失败', e);
+    }
+  }
+
+  private scheduleDrawingSave(): void {
+    if (this.suppressSave || !this.ready || !this.chart || !this._pair || !this.drawingsLoaded) return;
+    if (this.drawingSaveTimer !== null) window.clearTimeout(this.drawingSaveTimer);
+    this.drawingSaveTimer = window.setTimeout(() => {
+      this.drawingSaveTimer = null;
+      void this.saveDrawingsNow();
+    }, DRAWING_SAVE_DEBOUNCE_MS);
+  }
+
+  private async saveDrawingsNow(): Promise<void> {
+    if (!this.chart || !this._pair || !this.drawingsLoaded) return;
+    let drawings: DrawingDocument;
+    try {
+      const parsed = JSON.parse(this.chart.getDrawingsJSON()) as unknown;
+      if (!Array.isArray(parsed)) return;
+      drawings = parsed as DrawingDocument;
+    } catch {
+      return;
+    }
+    try {
+      await replaceDrawings(this.marketSelect.value, this._pair, drawings);
+    } catch (e) {
+      console.warn('保存绘图失败', e);
+    }
+  }
+
+  private async flushDrawings(): Promise<void> {
+    if (this.drawingSaveTimer !== null) {
+      window.clearTimeout(this.drawingSaveTimer);
+      this.drawingSaveTimer = null;
+    }
+    if (this.drawingsLoaded) await this.saveDrawingsNow();
+  }
+
+  private teardownChart(placeholder: string): void {
+    this.drawingLoadToken += 1;
+    this.drawingsLoaded = false;
+    if (this.saveTimer !== null) {
+      window.clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
+    if (this.drawingSaveTimer !== null) {
+      window.clearTimeout(this.drawingSaveTimer);
+      this.drawingSaveTimer = null;
+    }
+    this.unbindViewport?.();
+    this.unbindViewport = null;
+    this.unbindDrawings?.();
+    this.unbindDrawings = null;
+    this.chart?.destroy();
+    this.chart = null;
+    this.allKlines = [];
+    this.chartContainer.innerHTML = `<div class="loading">${placeholder}</div>`;
+    this.indicatorsEl.innerHTML = '';
+    document.querySelectorAll('.param-editor').forEach((e) => e.remove());
   }
 
   private async loadStrategyTypes(): Promise<void> {
@@ -201,16 +568,20 @@ export class App {
     this.strategyToml.value = defaultTomlFor(this.strategySelect.value);
   }
 
-  private async loadPairs(): Promise<void> {
+  private async loadPairs(preferredPair?: string, preferredTimeframe?: string): Promise<void> {
     const pairs = await fetchPairs(this.marketSelect.value);
     this.allPairs = pairs;
     this.pairSearch.value = '';
     this.pairSearch.placeholder = pairs.length > 0 ? `从 ${pairs.length} 个交易对搜索...` : '无交易对';
     this.pairSearch.disabled = pairs.length === 0;
     if (pairs.length > 0) {
-      this._pair = pairs[0];
-      this.pairSearch.value = pairs[0];
-      await this.loadTimeframes();
+      const pair = preferredPair && pairs.includes(preferredPair) ? preferredPair : pairs[0];
+      this._pair = pair;
+      this.pairSearch.value = pair;
+      await this.loadTimeframes(preferredTimeframe);
+    } else {
+      this._pair = '';
+      this._timeframe = '';
     }
   }
 
@@ -248,22 +619,19 @@ export class App {
   private async selectPair(pair: string): Promise<void> {
     this.pairDropdown.classList.remove('visible');
     if (pair === this._pair && this._timeframe) return;
+    await this.flushPendingSaves();
     this._pair = pair;
     this.pairSearch.value = pair;
     this._timeframe = '';
     this.timeframeSelect.disabled = true;
-    this.chart?.destroy();
-    this.chart = null;
-    this.allKlines = [];
     this.activeIndicators = [];
     this.clearStrategyState();
-    this.chartContainer.innerHTML = '<div class="loading">选择周期</div>';
-    this.indicatorsEl.innerHTML = '';
-    document.querySelectorAll('.param-editor').forEach((e) => e.remove());
+    this.teardownChart('选择周期');
     await this.loadTimeframes();
+    this.scheduleSave();
   }
 
-  private async loadTimeframes(): Promise<void> {
+  private async loadTimeframes(preferredTimeframe?: string): Promise<void> {
     const timeframes = await fetchTimeframes(this.marketSelect.value, this._pair);
     this.timeframeSelect.innerHTML = '';
     const placeholder = document.createElement('option');
@@ -278,11 +646,16 @@ export class App {
       opt.textContent = tf;
       this.timeframeSelect.appendChild(opt);
     }
-    this.timeframeSelect.disabled = false;
+    this.timeframeSelect.disabled = timeframes.length === 0;
     if (timeframes.length > 0) {
-      this.timeframeSelect.value = timeframes[0];
-      this._timeframe = timeframes[0];
+      const tf = preferredTimeframe && timeframes.includes(preferredTimeframe)
+        ? preferredTimeframe
+        : timeframes[0];
+      this.timeframeSelect.value = tf;
+      this._timeframe = tf;
       await this.loadKlines();
+    } else {
+      this._timeframe = '';
     }
   }
 
@@ -315,11 +688,12 @@ export class App {
         this.chartContainer.innerHTML = '<div id="chart" style="height:100%;width:100%"></div>';
         const chartDiv = this.chartContainer.querySelector('#chart')!;
         this.chart = createChartManager(chartDiv as HTMLElement, (d) => this.loadKlines(d));
+        this.bindChart();
         this.chart.setData(klines.klines);
-        this.clearStrategyState();
         this.refreshIndicators();
       }
       this.infoEl.textContent = `${this.allKlines.length} 条K线`;
+      if (!dir) this.scheduleSave();
     } catch (e) {
       if (!dir) this.chartContainer.innerHTML = `<div class="loading">加载失败: ${e}</div>`;
       this.infoEl.textContent = '加载失败';
@@ -333,6 +707,7 @@ export class App {
     if (this.chart && this.allKlines.length > 0) {
       this.chart.applyIndicators(this.activeIndicators, this.allKlines);
     }
+    this.scheduleSave();
   }
 
   private async applyStrategy(): Promise<void> {
@@ -347,6 +722,7 @@ export class App {
     }
     this.activeStrategyToml = toml;
     await this.refreshStrategy();
+    this.scheduleSave();
   }
 
   private async refreshStrategy(): Promise<void> {
@@ -415,6 +791,7 @@ export class App {
   private clearStrategy() {
     this.clearStrategyState();
     this.chart?.setStrategy([], []);
+    this.scheduleSave();
   }
 
   private clearStrategyState() {
@@ -521,6 +898,7 @@ export class App {
   }
 
   private async onMarketChange(): Promise<void> {
+    await this.flushPendingSaves();
     this._pair = '';
     this._timeframe = '';
     this.allPairs = [];
@@ -529,27 +907,21 @@ export class App {
     this.pairSearch.disabled = true;
     this.pairDropdown.classList.remove('visible');
     this.timeframeSelect.disabled = true;
-    this.chart?.destroy();
-    this.chart = null;
-    this.allKlines = [];
     this.activeIndicators = [];
     this.clearStrategyState();
-    this.chartContainer.innerHTML = '<div class="loading">选择交易对和周期</div>';
-    this.indicatorsEl.innerHTML = '';
-    document.querySelectorAll('.param-editor').forEach((e) => e.remove());
+    this.teardownChart('选择交易对和周期');
     await this.loadPairs();
+    this.scheduleSave();
   }
 
   private async onTimeframeChange(): Promise<void> {
+    await this.flushPendingSaves();
     this._timeframe = this.timeframeSelect.value;
-    this.chart?.destroy();
-    this.chart = null;
-    this.allKlines = [];
     this.activeIndicators = [];
     this.clearStrategyState();
-    this.indicatorsEl.innerHTML = '';
-    document.querySelectorAll('.param-editor').forEach((e) => e.remove());
+    this.teardownChart('加载中...');
     if (this._timeframe) await this.loadKlines();
+    this.scheduleSave();
   }
 
   private onTimeJump(input: HTMLInputElement) {

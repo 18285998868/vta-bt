@@ -1,9 +1,18 @@
 use std::path::Path;
+use std::sync::Arc;
 
 use tempfile::TempDir;
 use tradingview_backend::app::data_loader::MarketType;
 use tradingview_backend::app::routes::AppState;
+use tradingview_backend::app::state::StateStore;
 use tradingview_backend::app::strategy::{BacktestParams, MarkerKind, StrategyError, TradeSide};
+
+fn test_state(dir: &Path) -> AppState {
+    AppState::new(
+        dir,
+        Arc::new(StateStore::open_in_memory().expect("in-memory state store")),
+    )
+}
 
 /// 20 根 100 横盘 + 20 根上行（110→200）：BBRK 应在突破处开多并持有到末尾。
 fn write_trend_zip(dir: &Path) {
@@ -63,7 +72,7 @@ fn test_bbrk_end_to_end_markers_equity_summary() {
     let dir = TempDir::new().unwrap();
     write_trend_zip(dir.path());
 
-    let state = AppState::new(dir.path());
+    let state = test_state(dir.path());
     let result = tradingview_backend::app::strategy::run_backtest(
         &state,
         &params("type = \"bbrk\"\nsigma = 2.0"),
@@ -90,7 +99,7 @@ fn test_blocked_strategy_returns_user_error() {
     let dir = TempDir::new().unwrap();
     write_trend_zip(dir.path());
 
-    let state = AppState::new(dir.path());
+    let state = test_state(dir.path());
     let err = tradingview_backend::app::strategy::run_backtest(
         &state,
         &params("type = \"turtle\"\nentry = 20\nexit = 10"),
@@ -104,7 +113,7 @@ fn test_rejects_invalid_balance_and_fees() {
     let dir = TempDir::new().unwrap();
     write_trend_zip(dir.path());
 
-    let state = AppState::new(dir.path());
+    let state = test_state(dir.path());
 
     let mut p = params("type = \"bbrk\"\nsigma = 2.0");
     p.initial_balance = 0.0;
@@ -126,7 +135,7 @@ fn test_rejects_out_of_range_sigma() {
     let dir = TempDir::new().unwrap();
     write_trend_zip(dir.path());
 
-    let state = AppState::new(dir.path());
+    let state = test_state(dir.path());
     let err = tradingview_backend::app::strategy::run_backtest(
         &state,
         &params("type = \"bbrk\"\nsigma = 100.0"),
@@ -140,7 +149,7 @@ fn test_time_window_filters_bars() {
     let dir = TempDir::new().unwrap();
     write_trend_zip(dir.path());
 
-    let state = AppState::new(dir.path());
+    let state = test_state(dir.path());
     let mut p = params("type = \"bbrk\"\nsigma = 2.0");
     p.after = Some(1_700_000_000_000 + 10 * 3_600_000);
     let result = tradingview_backend::app::strategy::run_backtest(&state, &p).unwrap();
@@ -153,7 +162,7 @@ fn test_missing_pair_returns_not_found() {
     let dir = TempDir::new().unwrap();
     write_trend_zip(dir.path());
 
-    let state = AppState::new(dir.path());
+    let state = test_state(dir.path());
     let mut p = params("type = \"bbrk\"\nsigma = 2.0");
     p.pair = "NOPEUSDT";
     let err = tradingview_backend::app::strategy::run_backtest(&state, &p).unwrap_err();
@@ -165,7 +174,7 @@ fn test_param_grid_runs_every_point() {
     let dir = TempDir::new().unwrap();
     write_trend_zip(dir.path());
 
-    let state = AppState::new(dir.path());
+    let state = test_state(dir.path());
     // 3 档：period 5 / 15 / 25
     let result = tradingview_backend::app::strategy::run_backtest(
         &state,
@@ -187,7 +196,7 @@ fn test_param_grid_reports_skipped() {
     let dir = TempDir::new().unwrap();
     write_trend_zip(dir.path());
 
-    let state = AppState::new(dir.path());
+    let state = test_state(dir.path());
     // period 30 > 40 根 bar 时，sma 仍可算；但 period 100 超出数据长度 ⇒ 该档不可算。
     let result = tradingview_backend::app::strategy::run_backtest(
         &state,
@@ -207,7 +216,7 @@ fn test_param_grid_too_large_rejected() {
     let dir = TempDir::new().unwrap();
     write_trend_zip(dir.path());
 
-    let state = AppState::new(dir.path());
+    let state = test_state(dir.path());
     let err = tradingview_backend::app::strategy::run_backtest(
         &state,
         &params("type = \"sma\"\nperiod = { start = 1, end = 1000, step = 1 }"),
