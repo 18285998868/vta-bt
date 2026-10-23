@@ -358,7 +358,7 @@ MFE/MAE 的取值区间与旧口径一致；变化的是**曲线时点**与由�
 v
 加载配置 -> config::load_config：toml 反序列化 → Config(deny_unknown_fields) + validate(资金>0 / symbol / timeframe 非空 / 周期合法 / 各策略参数范围)
 v
-构建策略 -> build_strategies_checked(config.strategy)：单个穷尽 match 覆盖全部 85 个变体 + 参数网格两层唯一性自检(字符串/编码) -> Vec<Box<dyn Strategy>>
+构建策略 -> build_strategies_checked(config.strategy)：单个穷尽 match 覆盖全部 82 个变体 + 参数网格两层唯一性自检(字符串/编码) -> Vec<Box<dyn Strategy>>
 v
 for symbol in symbols                        # 品种层（串行）
 v
@@ -398,7 +398,7 @@ app/04_write_output/parquet.rs # Parquet 读写：write_single_parquet(单组合
 app/05_strategies/      # 策略叶（lib 映射为 strategies，~80+ 子目录）
 app/05_strategies/mod.rs # Strategy trait(name/param_count/param_str/generate_signals_full/generate_signals_batch, Send+Sync) + shared 再导出
 app/05_strategies/shared.rs # Signal 枚举(Hold/Buy/Sell/Close) / price_cross_signal 穿越信号 / bars_per_year
-app/05_strategies/build.rs # 策略构建工厂：build_one 单个穷尽 match(全部 85 变体, 无 `_` 兜底) → Box<dyn Strategy>；build_jobs_checked 保留每条 stop 并加两层唯一性自检
+app/05_strategies/build.rs # 策略构建工厂：build_one 单个穷尽 match(全部 82 变体, 无 `_` 兜底) → Box<dyn Strategy>；build_jobs_checked 保留每条 stop 并加两层唯一性自检
 app/05_strategies/{alma,dema,...,zlema}/… # 单 MA 策略（周期遍历 → vector_ta 指标 → 价格穿越）
 ```
 
@@ -527,7 +527,7 @@ cargo run --release -- --pbo /path/to/reports_XXX
 - **策略构建的三处手工同步清单收敛为一处**（P5）
   - 原先 `build_ma!` 宏的 `unreachable!()` 兜底、`matches!` 排除表、60 条 `filter_map` 分支
     需同步维护；漏改前两处**不报错**，只会让该策略被静默跳过（配置写了却不跑）。
-  - 现在是单个**穷尽 match**（`build_one`，无 `_` 兜底），编译器强制覆盖全部 85 个变体。
+  - 现在是单个**穷尽 match**（`build_one`，无 `_` 兜底），编译器强制覆盖全部 82 个变体。
     回归测试 `every_variant_has_a_construction_arm` / `real_configs_build_all_their_strategies`。
 - **指标与落盘产物在类型上分离**（Q2）
   - `ScanOut` 拆成 `MetricsSource`（指标唯一来源）与 `DetailArtifacts`（仅 detailed）。
@@ -753,9 +753,9 @@ cargo run --release -- --pbo /path/to/reports_XXX
 
 ### 策略契约
 
-- 12 个仍有“算不出来就全 Hold”残余降级的策略改为返回 `ParamSkipped`：
+- 7 个仍有“算不出来就全 Hold”残余降级的策略改为返回 `ParamSkipped`：
   `macd`、`vwap`、`ma_atr`、`ma_slope_atr_gate`、`mabb_long`、`mabb_short`、
-  `bbrk_ttm_fire`、`bbrk_hma_v{1..5}_sl`。`invalid` 与 `no_signals` 不再混为一谈。
+  `bbrk_ttm_fire`。`invalid` 与 `no_signals` 不再混为一谈。
 
 ### 缓存与 PBO
 
@@ -831,24 +831,25 @@ cargo run --release -- --pbo /path/to/reports_XXX
 验证）；但 `params` 列文本与 `strategy_params` 编码**变了**，历史报告的
 `params` 不可直接与新报告对齐。主动设置 `bblen` 范围会增大 N ⇒ PBO 噪声底线上移。
 
-### D4. 7 个策略用**盘中**止损判定，与框架自身的成交模型冲突
+### D4. 策略内建止损曾用**盘中**判定，与框架自身的成交模型冲突
 
 `swing_fractal` 的文档明写"止损为**收盘价**判定，非盘中 stop 单"（成交价只由
 `ExecConfig` 决定，无法表达"盘中触及即按止损价成交"），但 `mabb_long/short`、
-`bbrk_kdj`、`bbrk_hma_v1/v2/v3/v4/v5_sl` 用的正是 `low[i] <= stop` 形态 ——
-止损在 bar `i` **盘中**判定触及，却按 bar `i+1` 的开盘成交，实际盈亏由**跳空**
-决定（系统性高估），与框架的延迟口径冲突。
+`bbrk_kdj` 以及当时仍存在的 `bbrk_hma_v1/v2/v3/v4/v5_sl` 用的正是
+`low[i] <= stop` 形态 —— 止损在 bar `i` **盘中**判定触及，却按 bar `i+1` 的
+开盘成交，实际盈亏由**跳空**决定（系统性高估），与框架的延迟口径冲突。
 
-**实施**：11 处盘中判定全部统一为**收盘价**判定，与 `swing_fractal` 同口径，
-并在每个函数上写明理由。
+**实施**：当时这些策略中的盘中判定统一为**收盘价**判定，与 `swing_fractal`
+同口径，并在每个函数上写明理由。
 
-**代价**：这 7 个策略的**历史结果失效**（数值改变）。这是"统一"的必然代价。
+**代价**：当时受影响策略的**历史结果失效**（数值改变）。这是"统一"的必然代价。
 
 **后续（引擎级 stop）**：新增的 `[[strategy]].stop` 已能在引擎层表达“盘中触及
 即按止损价成交、跳空按开盘价成交”，因此 D4 中“框架无法表达盘中止损”的前提
-不再成立。但**策略内建止损**（包括 `_sl` 变体）仍保留 D4 的收盘价口径，属于
-遗留实现；新策略应使用引擎 `stop`，不要继续复制 `_sl`。引擎 stop 与旧 `_sl`
-的语义差异见「持仓期止损（引擎级 `stop`）」一节。
+不再成立。五个 `_sl` 变体已由引擎 stop 取代并删除；仍保留的 `mabb_long/short`、
+`bbrk_kdj` 按 D4 的收盘价口径执行策略内建止损。新策略应使用引擎 `stop`，
+不要继续复制 `_sl`。引擎 stop 与旧 `_sl` 的语义差异见
+「持仓期止损（引擎级 `stop`）」一节。
 
 ### D5. 30+ 个 bar 数参数用 `f64` 承载再 `.round() as usize`
 
@@ -971,10 +972,11 @@ period = { start = 5, end = 100, step = 5 } # 范围或单值
 `;stop_loss_pct=...` / `;trailing_stop_pct=...` 后缀，缓存指纹包含 stop，
 报告新增 `stop_loss_exits` / `trailing_stop_exits` 两列（整数计数）。
 
-> **遗留 `_sl` 策略**：`bbrk_hma_v1_sl` … `bbrk_hma_v5_sl` 仍是旧实现 ——
-> 止损只作用于 `pos=2` 的逆势腿，距离用入场根冻结的 `stopk × ATR`，且按收盘价
-> 判定，与这里的“全持仓、百分比、盘中 high/low”口径**不同**，历史结果不可直接
-> 对比。它们暂时保留用于回归；引擎 stop 验证通过后再删除。
+> **旧 `_sl` 已删除**：`bbrk_hma_v1_sl` … `bbrk_hma_v5_sl` 已被引擎 stop 取代，
+> 并从策略注册表/源码中移除，旧报告中的这些策略名不再可配置。旧实现只作用于
+> `pos=2` 的逆势腿，距离用入场根冻结的 `stopk × ATR`，且按收盘价判定，与这里的
+> “全持仓、百分比、盘中 high/low”口径**不同**，历史结果不可直接对比。需要止损时
+> 请使用对应基础策略 + 引擎 stop（百分比口径，非 ATR），不要再新增 `_sl` 变体。
 
 ## 完整执行逻辑
 

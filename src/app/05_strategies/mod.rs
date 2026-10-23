@@ -30,24 +30,14 @@ pub mod bbrk_hma;
 pub mod bbrk_hma_ema;
 /// **BBRK HMA V1** 策略: 配置 [`BbrkHmaV1Config`], 实现 [`BbrkHmaV1Strategy`]。
 pub mod bbrk_hma_v1;
-/// **BBRK HMA V1 SL** 策略: 配置 [`BbrkHmaV1SlConfig`], 实现 [`BbrkHmaV1SlStrategy`]。
-pub mod bbrk_hma_v1_sl;
 /// **BBRK HMA V2** 策略: 配置 [`BbrkHmaV2Config`], 实现 [`BbrkHmaV2Strategy`]。
 pub mod bbrk_hma_v2;
-/// **BBRK HMA V2 SL** 策略: 配置 [`BbrkHmaV2SlConfig`], 实现 [`BbrkHmaV2SlStrategy`]。
-pub mod bbrk_hma_v2_sl;
 /// **BBRK HMA V3** 策略: 配置 [`BbrkHmaV3Config`], 实现 [`BbrkHmaV3Strategy`]。
 pub mod bbrk_hma_v3;
-/// **BBRK HMA V3 SL** 策略: 配置 [`BbrkHmaV3SlConfig`], 实现 [`BbrkHmaV3SlStrategy`]。
-pub mod bbrk_hma_v3_sl;
 /// **BBRK HMA V4** 策略: 配置 [`BbrkHmaV4Config`], 实现 [`BbrkHmaV4Strategy`]。
 pub mod bbrk_hma_v4;
-/// **BBRK HMA V4 SL** 策略: 配置 [`BbrkHmaV4SlConfig`], 实现 [`BbrkHmaV4SlStrategy`]。
-pub mod bbrk_hma_v4_sl;
 /// **BBRK HMA V5** 策略: 配置 [`BbrkHmaV5Config`], 实现 [`BbrkHmaV5Strategy`]。
 pub mod bbrk_hma_v5;
-/// **BBRK HMA V5 SL** 策略: 配置 [`BbrkHmaV5SlConfig`], 实现 [`BbrkHmaV5SlStrategy`]。
-pub mod bbrk_hma_v5_sl;
 /// **BBRK KDJ** 策略: 配置 [`BbrkKdjConfig`], 实现 [`BbrkKdjStrategy`]。
 pub mod bbrk_kdj;
 /// **BBRK M2** 策略: 配置 [`BbrkM2Config`], 实现 [`BbrkM2Strategy`]。

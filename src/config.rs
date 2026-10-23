@@ -20,15 +20,10 @@ use crate::strategies::bbrk_ema::BbrkEmaConfig;
 use crate::strategies::bbrk_hma::BbrkHmaConfig;
 use crate::strategies::bbrk_hma_ema::BbrkHmaEmaConfig;
 use crate::strategies::bbrk_hma_v1::BbrkHmaV1Config;
-use crate::strategies::bbrk_hma_v1_sl::BbrkHmaV1SlConfig;
 use crate::strategies::bbrk_hma_v2::BbrkHmaV2Config;
-use crate::strategies::bbrk_hma_v2_sl::BbrkHmaV2SlConfig;
 use crate::strategies::bbrk_hma_v3::BbrkHmaV3Config;
-use crate::strategies::bbrk_hma_v3_sl::BbrkHmaV3SlConfig;
 use crate::strategies::bbrk_hma_v4::BbrkHmaV4Config;
-use crate::strategies::bbrk_hma_v4_sl::BbrkHmaV4SlConfig;
 use crate::strategies::bbrk_hma_v5::BbrkHmaV5Config;
-use crate::strategies::bbrk_hma_v5_sl::BbrkHmaV5SlConfig;
 use crate::strategies::bbrk_kdj::BbrkKdjConfig;
 use crate::strategies::bbrk_m2::BbrkM2Config;
 use crate::strategies::bbrk_m3::BbrkM3Config;
@@ -271,15 +266,10 @@ impl Config {
                 StrategyConfig::BbrkHma(c) => c.validate()?,
                 StrategyConfig::BbrkHmaEma(c) => c.validate()?,
                 StrategyConfig::BbrkHmaV1(c) => c.validate()?,
-                StrategyConfig::BbrkHmaV1Sl(c) => c.validate()?,
                 StrategyConfig::BbrkHmaV2(c) => c.validate()?,
-                StrategyConfig::BbrkHmaV2Sl(c) => c.validate()?,
                 StrategyConfig::BbrkHmaV3(c) => c.validate()?,
-                StrategyConfig::BbrkHmaV3Sl(c) => c.validate()?,
                 StrategyConfig::BbrkHmaV4(c) => c.validate()?,
-                StrategyConfig::BbrkHmaV4Sl(c) => c.validate()?,
                 StrategyConfig::BbrkHmaV5(c) => c.validate()?,
-                StrategyConfig::BbrkHmaV5Sl(c) => c.validate()?,
                 StrategyConfig::BbrkKdj(c) => c.validate()?,
                 StrategyConfig::BbrkM2(c) => c.validate()?,
                 StrategyConfig::BbrkM3(c) => c.validate()?,
@@ -701,16 +691,6 @@ pub enum StrategyConfig {
     BbrkHmaV4(BbrkHmaV4Config),
     /// **BbrkHmaV5** 策略: 配置 [`BbrkHmaV5Config`]。
     BbrkHmaV5(BbrkHmaV5Config),
-    /// **BbrkHmaV1Sl** 策略: 配置 [`BbrkHmaV1SlConfig`]。
-    BbrkHmaV1Sl(BbrkHmaV1SlConfig),
-    /// **BbrkHmaV2Sl** 策略: 配置 [`BbrkHmaV2SlConfig`]。
-    BbrkHmaV2Sl(BbrkHmaV2SlConfig),
-    /// **BbrkHmaV3Sl** 策略: 配置 [`BbrkHmaV3SlConfig`]。
-    BbrkHmaV3Sl(BbrkHmaV3SlConfig),
-    /// **BbrkHmaV4Sl** 策略: 配置 [`BbrkHmaV4SlConfig`]。
-    BbrkHmaV4Sl(BbrkHmaV4SlConfig),
-    /// **BbrkHmaV5Sl** 策略: 配置 [`BbrkHmaV5SlConfig`]。
-    BbrkHmaV5Sl(BbrkHmaV5SlConfig),
     /// **BbrkZlemaEma** 策略: 配置 [`BbrkZlemaEmaConfig`]。
     BbrkZlemaEma(BbrkZlemaEmaConfig),
     /// **BbrkRex** 策略: 配置 [`BbrkRexConfig`]。
@@ -1228,11 +1208,6 @@ mod tests {
             "type = \"bbrk_hma_v3\"\nsigma = 2.5\nbblen = 20",
             "type = \"bbrk_hma_v4\"\nsigma = 2.5\nbblen = 20",
             "type = \"bbrk_hma_v5\"\nsigma = 2.5\nbblen = 20\nhmalen = 450",
-            "type = \"bbrk_hma_v1_sl\"\nsigma = 2.5\nbblen = 20\nhmalen = 450\nstopk = 2.0\natrlen = 50",
-            "type = \"bbrk_hma_v2_sl\"\nsigma = 2.5\nbblen = 20\nhmalen = 450\nstopk = 2.0\natrlen = 50",
-            "type = \"bbrk_hma_v3_sl\"\nsigma = 2.5\nbblen = 20\nstopk = 2.0\natrlen = 50",
-            "type = \"bbrk_hma_v4_sl\"\nsigma = 2.5\nbblen = 20\nstopk = 2.0\natrlen = 50",
-            "type = \"bbrk_hma_v5_sl\"\nsigma = 2.5\nbblen = 20\nhmalen = 450\nstopk = 2.0\natrlen = 50",
             "type = \"mabb_long\"\nma = [\"sma\"]\nbblen = 20\nsigma = 2.5\nstopk = 0.0\natrlen = 14",
             "type = \"mabb_short\"\nma = [\"ema\"]\nbblen = 20\nsigma = 2.5\nstopk = 2.0\natrlen = 14",
             "type = \"bbrk_zlema_ema\"\nsigma = 2.5\nzlemareg = 100",

@@ -15,15 +15,10 @@ use super::bbrk_ema::BbrkEmaStrategy;
 use super::bbrk_hma::BbrkHmaStrategy;
 use super::bbrk_hma_ema::BbrkHmaEmaStrategy;
 use super::bbrk_hma_v1::BbrkHmaV1Strategy;
-use super::bbrk_hma_v1_sl::BbrkHmaV1SlStrategy;
 use super::bbrk_hma_v2::BbrkHmaV2Strategy;
-use super::bbrk_hma_v2_sl::BbrkHmaV2SlStrategy;
 use super::bbrk_hma_v3::BbrkHmaV3Strategy;
-use super::bbrk_hma_v3_sl::BbrkHmaV3SlStrategy;
 use super::bbrk_hma_v4::BbrkHmaV4Strategy;
-use super::bbrk_hma_v4_sl::BbrkHmaV4SlStrategy;
 use super::bbrk_hma_v5::BbrkHmaV5Strategy;
-use super::bbrk_hma_v5_sl::BbrkHmaV5SlStrategy;
 use super::bbrk_kdj::BbrkKdjStrategy;
 use super::bbrk_m2::BbrkM2Strategy;
 use super::bbrk_m3::BbrkM3Strategy;
@@ -267,11 +262,6 @@ fn build_one(sc: &StrategyConfig) -> Box<dyn Strategy> {
         StrategyConfig::BbrkHmaV3(c) => Box::new(BbrkHmaV3Strategy::new(c.clone())),
         StrategyConfig::BbrkHmaV4(c) => Box::new(BbrkHmaV4Strategy::new(c.clone())),
         StrategyConfig::BbrkHmaV5(c) => Box::new(BbrkHmaV5Strategy::new(c.clone())),
-        StrategyConfig::BbrkHmaV1Sl(c) => Box::new(BbrkHmaV1SlStrategy::new(c.clone())),
-        StrategyConfig::BbrkHmaV2Sl(c) => Box::new(BbrkHmaV2SlStrategy::new(c.clone())),
-        StrategyConfig::BbrkHmaV3Sl(c) => Box::new(BbrkHmaV3SlStrategy::new(c.clone())),
-        StrategyConfig::BbrkHmaV4Sl(c) => Box::new(BbrkHmaV4SlStrategy::new(c.clone())),
-        StrategyConfig::BbrkHmaV5Sl(c) => Box::new(BbrkHmaV5SlStrategy::new(c.clone())),
         StrategyConfig::BbrkZlemaEma(c) => Box::new(BbrkZlemaEmaStrategy::new(c.clone())),
         StrategyConfig::BbrkRex(c) => Box::new(BbrkRexStrategy::new(c.clone())),
         StrategyConfig::BbrkVol(c) => Box::new(BbrkVolStrategy::new(c.clone())),
