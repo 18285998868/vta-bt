@@ -3,7 +3,7 @@ use std::num::NonZeroUsize;
 use rayon::prelude::*;
 use serde::Deserialize;
 
-use crate::strategies::Signal;
+use crate::strategies::{Signal, StopLines};
 
 /// 单次求值的全部回测指标。
 ///
@@ -34,10 +34,12 @@ pub struct SummaryMetrics {
     pub calmar_ratio: f64,
     /// 已平仓交易笔数(往返各计一次)。
     pub num_trades: u32,
-    /// 因固定百分比止损离场的笔数。
+    /// 因固定百分比/ATR 止损离场的笔数。
     pub stop_loss_exits: u32,
-    /// 因百分比追踪止损离场的笔数。
+    /// 因百分比/ATR 追踪止损或保本止损离场的笔数。
     pub trailing_stop_exits: u32,
+    /// 因策略提供的止损价格线离场的笔数。
+    pub strategy_stop_exits: u32,
     /// 盈利笔的平均 pnl(货币; 定点十进制)。
     pub avg_win: crate::money::Amount,
     /// 亏损笔的平均亏损**绝对值**(货币, 正数; 定点十进制)。
@@ -125,31 +127,74 @@ impl SummaryMetrics {
     }
 }
 
+/// ATR 止损规则。
+///
+/// `mult` 是 ATR 倍数; `trailing=false` 为入场时固定的 ATR 止损,
+/// `trailing=true` 为跟随有利极值移动的 ATR 追踪止损。ATR 使用 Wilder
+/// 平滑, 入场时取**上一根已收盘 bar** 的 ATR(收盘成交取入场 bar 的 ATR),
+/// 避免用入场后才走完的行情计算初始止损。
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AtrStopConfig {
+    /// ATR 周期, 必须 >= 1。
+    pub period: usize,
+    /// ATR 倍数, 必须 > 0 且有限。
+    pub mult: f64,
+    /// 是否追踪有利极值。
+    #[serde(default)]
+    pub trailing: bool,
+}
+
+/// 保本止损规则。
+///
+/// 收盘价相对入场价的有利幅度达到 `trigger_pct` 后, 把止损移到入场价
+/// 加减 `offset_pct`。触发与移动都在**收盘后**完成, 下一根 bar 才生效,
+/// 不使用当根 high/low 做前视判定。
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BreakevenConfig {
+    /// 触发保本的有利幅度(百分比, 必须位于 `(0, 100)`)。
+    pub trigger_pct: f64,
+    /// 保本止损相对入场价的偏移(百分比, `>= 0` 且 `< 100`)。
+    #[serde(default)]
+    pub offset_pct: f64,
+}
+
 /// 持仓期风险覆盖(按 `[[strategy]]` 配置)。
 ///
-/// 两个字段都是**百分比**: `2.0` = 2%。`None` 表示该止损关闭。
-/// 止损只作用于**引擎已成交的持仓**, 不改变策略信号本身。
+/// 百分比字段都是 `2.0` = 2%。`None` 表示该规则关闭。多条规则可同时配置,
+/// 引擎取**更紧的一侧**(多头取较大止损价, 空头取较小止损价)。止损只作用于
+/// **引擎已成交的持仓**, 不改变策略信号本身。
 #[derive(Debug, Clone, Copy, PartialEq, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct StopConfig {
-    /// 固定止损: 多头 `entry × (1 - pct/100)`, 空头 `entry × (1 + pct/100)`。
+    /// 固定百分比止损: 多头 `entry × (1 - pct/100)`, 空头 `entry × (1 + pct/100)`。
     pub stop_loss_pct: Option<f64>,
-    /// 追踪止损: 多头 `extreme × (1 - pct/100)`, 空头 `extreme × (1 + pct/100)`;
+    /// 百分比追踪止损: 多头 `extreme × (1 - pct/100)`, 空头 `extreme × (1 + pct/100)`;
     /// `extreme` 为入场后的最高 high / 最低 low。
     pub trailing_stop_pct: Option<f64>,
+    /// ATR 固定/追踪止损。
+    pub atr: Option<AtrStopConfig>,
+    /// 保本止损。
+    pub breakeven: Option<BreakevenConfig>,
 }
 
 impl StopConfig {
     /// 是否未配置任何止损。
     #[must_use]
     pub fn is_none(&self) -> bool {
-        self.stop_loss_pct.is_none() && self.trailing_stop_pct.is_none()
+        self.stop_loss_pct.is_none()
+            && self.trailing_stop_pct.is_none()
+            && self.atr.is_none()
+            && self.breakeven.is_none()
     }
 
-    /// 校验百分比范围: 必须严格位于 `(0, 100)`。
+    /// 校验百分比与 ATR/保本参数范围。
     ///
     /// # Errors
-    /// 任一配置值非有限、`<= 0` 或 `>= 100` 时返回 [`crate::error::AppError::Msg`]。
+    /// 百分比不在 `(0, 100)`、ATR 周期为 0、ATR 倍数非正/非有限、
+    /// 保本触发不在 `(0, 100)` 或偏移不在 `[0, 100)` 时返回
+    /// [`crate::error::AppError::Msg`]。
     pub fn validate(&self) -> crate::error::Result<()> {
         for (name, value) in [
             ("stop_loss_pct", self.stop_loss_pct),
@@ -160,6 +205,33 @@ impl StopConfig {
             {
                 return Err(crate::error::AppError::Msg(format!(
                     "{name} 必须是 (0, 100) 内的有限百分比, 当前为 {p}"
+                )));
+            }
+        }
+        if let Some(atr) = self.atr {
+            if atr.period == 0 {
+                return Err(crate::error::AppError::Msg(
+                    "stop.atr.period 必须 >= 1".to_string(),
+                ));
+            }
+            if !(atr.mult.is_finite() && atr.mult > 0.0) {
+                return Err(crate::error::AppError::Msg(format!(
+                    "stop.atr.mult 必须是 > 0 的有限值, 当前为 {}",
+                    atr.mult
+                )));
+            }
+        }
+        if let Some(be) = self.breakeven {
+            if !(be.trigger_pct.is_finite() && be.trigger_pct > 0.0 && be.trigger_pct < 100.0) {
+                return Err(crate::error::AppError::Msg(format!(
+                    "stop.breakeven.trigger_pct 必须是 (0, 100) 内的有限百分比, 当前为 {}",
+                    be.trigger_pct
+                )));
+            }
+            if !(be.offset_pct.is_finite() && (0.0..100.0).contains(&be.offset_pct)) {
+                return Err(crate::error::AppError::Msg(format!(
+                    "stop.breakeven.offset_pct 必须是 [0, 100) 内的有限百分比, 当前为 {}",
+                    be.offset_pct
                 )));
             }
         }
@@ -175,6 +247,17 @@ impl StopConfig {
         }
         if let Some(v) = self.trailing_stop_pct {
             parts.push(format!("trailing_stop_pct={v}"));
+        }
+        if let Some(atr) = self.atr {
+            parts.push(format!("atr_period={}", atr.period));
+            parts.push(format!("atr_mult={}", atr.mult));
+            if atr.trailing {
+                parts.push("atr_trailing=true".to_string());
+            }
+        }
+        if let Some(be) = self.breakeven {
+            parts.push(format!("breakeven_trigger_pct={}", be.trigger_pct));
+            parts.push(format!("breakeven_offset_pct={}", be.offset_pct));
         }
         parts.join(",")
     }
@@ -410,7 +493,7 @@ impl Side {
         match s {
             Signal::Buy => Self::Long,
             Signal::Sell => Self::Short,
-            Signal::Close | Signal::Hold => Self::Flat,
+            Signal::Close | Signal::Hold | Signal::ExitLong | Signal::ExitShort => Self::Flat,
         }
     }
 }
@@ -462,10 +545,12 @@ pub struct Trade {
 pub enum ExitReason {
     /// 持仓被反向信号平掉。
     Signal,
-    /// 固定百分比止损触发。
+    /// 固定百分比/ATR 止损触发。
     StopLoss,
-    /// 百分比追踪止损触发。
+    /// 百分比/ATR 追踪止损或保本止损触发。
     TrailingStop,
+    /// 策略提供的止损价格线触发。
+    StrategyStop,
     /// 数据末尾强制平仓。
     EndOfData,
 }
@@ -478,6 +563,7 @@ impl ExitReason {
             Self::Signal => "signal",
             Self::StopLoss => "stop_loss",
             Self::TrailingStop => "trailing_stop",
+            Self::StrategyStop => "strategy_stop",
             Self::EndOfData => "end_of_data",
         }
     }
@@ -510,7 +596,9 @@ fn next_target(prev: Side, sig: Signal) -> Side {
         Signal::Buy => Side::Long,
         Signal::Sell => Side::Short,
         Signal::Close => Side::Flat,
-        Signal::Hold => prev,
+        Signal::ExitLong if prev == Side::Long => Side::Flat,
+        Signal::ExitShort if prev == Side::Short => Side::Flat,
+        Signal::ExitLong | Signal::ExitShort | Signal::Hold => prev,
     }
 }
 
@@ -636,10 +724,12 @@ struct CloseOutcome {
 #[derive(Debug, Default)]
 struct TradeAccum {
     num_trades: u32,
-    /// 固定止损离场笔数。
+    /// 固定百分比/ATR 止损离场笔数。
     stop_loss_exits: u32,
-    /// 追踪止损离场笔数。
+    /// 百分比/ATR 追踪或保本止损离场笔数。
     trailing_stop_exits: u32,
+    /// 策略止损线离场笔数。
+    strategy_stop_exits: u32,
     /// 逐笔 `pnl`: SQN / skew / kurtosis / pf-stability 的分半统计都要用它。
     ///
     /// **统计序列用 `f64`**: 这些是**统计量**(偏度/峰度/SQN), 本身是连续量,
@@ -790,27 +880,89 @@ fn close_at(args: CloseArgs, st: &mut CloseState<'_>) -> crate::error::Result<()
     Ok(())
 }
 
+/// 两个止损价中更紧的一条: 多头取较高价, 空头取较低价。
+///
+/// 非法价格(非有限/`<= 0`)视为未设置。两边都非法时返回 `None`。
+fn tighter_stop(side: Side, a: Option<f64>, b: Option<f64>) -> Option<f64> {
+    let a = a.filter(|p| valid_fill_price(*p));
+    let b = b.filter(|p| valid_fill_price(*p));
+    match (side, a, b) {
+        (Side::Long, Some(x), Some(y)) => Some(x.max(y)),
+        (Side::Short, Some(x), Some(y)) => Some(x.min(y)),
+        (Side::Long | Side::Short, Some(x), None) | (Side::Long | Side::Short, None, Some(x)) => {
+            Some(x)
+        }
+        (Side::Flat, _, _) | (_, None, None) => None,
+    }
+}
+
+/// Wilder 平滑 ATR。前 `period` 根没有可用值, 以 `NaN` 填充。
+///
+/// 引擎只用已收盘 bar 的 ATR: 开盘成交取 `atr[bar - 1]`, 收盘成交取
+/// `atr[bar]`; 追踪止损在收盘后更新, 下一根 bar 生效。
+fn wilder_atr(high: &[f64], low: &[f64], close: &[f64], period: usize) -> Vec<f64> {
+    let n = close.len();
+    let mut atr = vec![f64::NAN; n];
+    if period == 0 || n <= period {
+        return atr;
+    }
+    let tr = |i: usize| -> f64 {
+        let h = high.get(i).copied().unwrap_or(close[i]);
+        let l = low.get(i).copied().unwrap_or(close[i]);
+        let prev = close[i - 1];
+        if !h.is_finite() || !l.is_finite() || !prev.is_finite() {
+            return f64::NAN;
+        }
+        (h - l).max((h - prev).abs()).max((l - prev).abs())
+    };
+    let mut sum = 0.0;
+    for i in 1..=period {
+        sum += tr(i);
+    }
+    atr[period] = sum / period as f64;
+    for i in (period + 1)..n {
+        atr[i] = (atr[i - 1] * (period - 1) as f64 + tr(i)) / period as f64;
+    }
+    atr
+}
+
+/// 入场时使用的 ATR: 开盘成交取上一根已收盘 bar, 收盘成交取当前 bar。
+fn atr_at_entry(atr: &[f64], bar: usize, fill_close: bool) -> Option<f64> {
+    let idx = if fill_close { bar } else { bar.checked_sub(1)? };
+    atr.get(idx).copied().filter(|v| v.is_finite() && *v > 0.0)
+}
+
 /// 当前持仓的有效止损价与原因。
 ///
-/// 同时配置固定止损和追踪止损时取**更紧**的一条: 多头取较高价, 空头取较低价。
-/// 追踪止损尚未超过固定止损时, 有效止损仍是固定止损。
+/// 同时配置多条规则时取**更紧**的一条: 多头取较高价, 空头取较低价。
+/// 价格相同时按固定止损 > 策略止损 > 追踪/保本的顺序归因。
 fn active_stop(
     cur_pos: Side,
     stop_loss: Option<f64>,
+    strategy_stop: Option<f64>,
     trailing_stop: Option<f64>,
+    breakeven_stop: Option<f64>,
 ) -> Option<(f64, ExitReason)> {
-    match (stop_loss, trailing_stop) {
-        (Some(sl), Some(tr)) => match cur_pos {
-            Side::Long if sl >= tr => Some((sl, ExitReason::StopLoss)),
-            Side::Long => Some((tr, ExitReason::TrailingStop)),
-            Side::Short if sl <= tr => Some((sl, ExitReason::StopLoss)),
-            Side::Short => Some((tr, ExitReason::TrailingStop)),
-            Side::Flat => None,
-        },
-        (Some(sl), None) => Some((sl, ExitReason::StopLoss)),
-        (None, Some(tr)) => Some((tr, ExitReason::TrailingStop)),
-        (None, None) => None,
+    let mut best: Option<(f64, ExitReason)> = None;
+    for (value, reason) in [
+        (stop_loss, ExitReason::StopLoss),
+        (strategy_stop, ExitReason::StrategyStop),
+        (trailing_stop, ExitReason::TrailingStop),
+        (breakeven_stop, ExitReason::TrailingStop),
+    ] {
+        let Some(value) = value.filter(|p| valid_fill_price(*p)) else {
+            continue;
+        };
+        let stricter = match best {
+            None => true,
+            Some((current, _)) if cur_pos == Side::Long => value > current,
+            Some((current, _)) => value < current,
+        };
+        if stricter {
+            best = Some((value, reason));
+        }
     }
+    best
 }
 
 /// 本 bar 是否触发止损, 返回**未扣滑点**的成交基准价与原因。
@@ -826,9 +978,17 @@ fn stop_exit_price(
     open: &[f64],
     close: &[f64],
     stop_loss: Option<f64>,
+    strategy_stop: Option<f64>,
     trailing_stop: Option<f64>,
+    breakeven_stop: Option<f64>,
 ) -> Option<(f64, ExitReason)> {
-    let (stop, reason) = active_stop(cur_pos, stop_loss, trailing_stop)?;
+    let (stop, reason) = active_stop(
+        cur_pos,
+        stop_loss,
+        strategy_stop,
+        trailing_stop,
+        breakeven_stop,
+    )?;
     if !stop.is_finite() || stop <= 0.0 {
         return None;
     }
@@ -910,8 +1070,8 @@ struct ScanOut {
 /// 退回收盘价, **不会**因此少回测末尾的 bar。旧实现把 `open.len()` 也算进
 /// `n` 的 `min`, 于是 `open = []` 时整段信号被静默丢弃、一笔都不成交。
 ///
-/// `high` / `low` 只在配置了 [`StopConfig`] 时参与盘中止损判定; 未配置时
-/// 完全不影响结果。`risk` 为空时与旧路径逐位一致。
+/// `high` / `low` 只在配置了 [`StopConfig`] 或策略提供了 [`StopLines`] 时
+/// 参与盘中止损判定; 两者都为空时完全不影响结果, 与旧路径逐位一致。
 #[allow(clippy::too_many_arguments)]
 fn scan_trades(
     high: &[f64],
@@ -919,6 +1079,7 @@ fn scan_trades(
     close: &[f64],
     open: &[f64],
     signals: &[Signal],
+    strategy_stops: Option<&StopLines>,
     time: &[i64],
     initial_cash: crate::money::Amount,
     exec: &ExecConfig,
@@ -927,6 +1088,10 @@ fn scan_trades(
 ) -> crate::error::Result<ScanOut> {
     risk.validate()?;
     let n = close.len().min(signals.len());
+    if let Some(lines) = strategy_stops {
+        lines.validate_len(n)?;
+    }
+    let atr_values = risk.atr.map(|cfg| wilder_atr(high, low, close, cfg.period));
     let ts = |i: usize| if i < time.len() { time[i] } else { i as i64 };
     // 钱账本: 全部定点十进制(`domain-fintech`: 不用 f64 承载货币)。
     let mut cash = initial_cash;
@@ -981,6 +1146,8 @@ fn scan_trades(
     let mut pos_stop_loss: Option<f64> = None;
     let mut pos_trail_extreme: Option<f64> = None;
     let mut pos_trail_stop: Option<f64> = None;
+    let mut pos_strategy_stop: Option<f64> = None;
+    let mut pos_breakeven_stop: Option<f64> = None;
 
     // 信号在 fill bar 才生效: 每个 bar 算出的目标方向要延迟 `delay` 根 bar 再应用。
     // 队列只保存尚未到期的目标(O(delay) 内存), 不物化 O(T) 的目标序列。
@@ -994,6 +1161,15 @@ fn scan_trades(
     // 可变借用 `cash`/`acc`/`trades`, 与循环内其他读写冲突。
     macro_rules! try_stop_exit {
         ($bar:expr) => {{
+            if cur_pos.is_open() {
+                // 策略止损线是逐 bar 输出: 每根 bar 开始前取当前方向的价格线。
+                // 无 line / NaN / 非正价格 => 该 bar 不设策略止损。
+                pos_strategy_stop = match cur_pos {
+                    Side::Long => strategy_stops.and_then(|s| s.long_at($bar)),
+                    Side::Short => strategy_stops.and_then(|s| s.short_at($bar)),
+                    Side::Flat => None,
+                };
+            }
             if cur_pos.is_open()
                 && !($bar == pos_entry_bar && pos_entry_at_close)
                 && let Some((base, reason)) = stop_exit_price(
@@ -1004,7 +1180,9 @@ fn scan_trades(
                     open,
                     close,
                     pos_stop_loss,
+                    pos_strategy_stop,
                     pos_trail_stop,
+                    pos_breakeven_stop,
                 )
             {
                 let exit_price = fill_price(cur_pos.opposite(), base, exec.slip_rate);
@@ -1041,6 +1219,8 @@ fn scan_trades(
                     pos_stop_loss = None;
                     pos_trail_extreme = None;
                     pos_trail_stop = None;
+                    pos_strategy_stop = None;
+                    pos_breakeven_stop = None;
                     // 止损是风险覆盖, 不是策略信号: 平仓后把目标重置为 Flat,
                     // 并把 stop 之前已经排队的陈旧目标全部改成 Flat。**不能
                     // clear**: 队列长度编码了 delay 的时序, 清空会让下一根
@@ -1108,6 +1288,8 @@ fn scan_trades(
                     pos_stop_loss = None;
                     pos_trail_extreme = None;
                     pos_trail_stop = None;
+                    pos_strategy_stop = None;
+                    pos_breakeven_stop = None;
                 }
             }
 
@@ -1147,21 +1329,41 @@ fn scan_trades(
                     trade_mae = 0.0;
                     // 收盘成交时, 本根 high/low 发生在入场之前, 不得回溯触发止损。
                     pos_entry_at_close = exec.fill_close || open.get(i).is_none();
-                    pos_stop_loss = risk.stop_loss_pct.map(|pct| {
+                    let pct_stop = |pct: f64| {
                         if due == Side::Long {
                             entry_price * (1.0 - pct / 100.0)
                         } else {
                             entry_price * (1.0 + pct / 100.0)
                         }
+                    };
+                    let atr_entry = risk.atr.and_then(|_| {
+                        atr_values
+                            .as_deref()
+                            .and_then(|atr| atr_at_entry(atr, i, exec.fill_close))
                     });
-                    pos_trail_extreme = risk.trailing_stop_pct.map(|_| entry_price);
-                    pos_trail_stop = risk.trailing_stop_pct.map(|pct| {
-                        if due == Side::Long {
-                            entry_price * (1.0 - pct / 100.0)
-                        } else {
-                            entry_price * (1.0 + pct / 100.0)
-                        }
-                    });
+                    let atr_stop = |cfg: AtrStopConfig| {
+                        atr_entry.map(|atr| {
+                            if due == Side::Long {
+                                entry_price - cfg.mult * atr
+                            } else {
+                                entry_price + cfg.mult * atr
+                            }
+                        })
+                    };
+                    // 固定止损: 百分比与 ATR 固定止损取更紧的一侧。
+                    let atr_fixed = risk.atr.filter(|c| !c.trailing).and_then(atr_stop);
+                    pos_stop_loss = tighter_stop(due, risk.stop_loss_pct.map(pct_stop), atr_fixed);
+                    // 追踪止损: 百分比与 ATR 追踪止损共用同一个有利极值。
+                    let atr_trail = risk.atr.filter(|c| c.trailing).and_then(atr_stop);
+                    let trail = tighter_stop(due, risk.trailing_stop_pct.map(pct_stop), atr_trail);
+                    // 即使初始 ATR 尚不可用, 也要先记录极值; 后续 bar 的 ATR
+                    // 一旦可用, 追踪止损即可启动。
+                    pos_trail_extreme = (risk.trailing_stop_pct.is_some()
+                        || risk.atr.is_some_and(|c| c.trailing))
+                    .then_some(entry_price);
+                    pos_trail_stop = trail;
+                    pos_strategy_stop = None;
+                    pos_breakeven_stop = None;
                 }
             }
         }
@@ -1228,9 +1430,8 @@ fn scan_trades(
 
         // 3b) 追踪止损只用**已收盘 bar** 的 high/low 更新 extreme, 供下一根
         //     bar 判定; 当根入场且为收盘成交时跳过, 避免把入场前的行情算进去。
-        if cur_pos.is_open()
-            && let Some(pct) = risk.trailing_stop_pct
-        {
+        let trail_atr = risk.atr.filter(|c| c.trailing);
+        if cur_pos.is_open() && (risk.trailing_stop_pct.is_some() || trail_atr.is_some()) {
             if !(i == pos_entry_bar && pos_entry_at_close) {
                 let h = high.get(i).copied().unwrap_or(close[i]);
                 let l = low.get(i).copied().unwrap_or(close[i]);
@@ -1244,11 +1445,56 @@ fn scan_trades(
                 }
             }
             if let Some(ext) = pos_trail_extreme {
-                pos_trail_stop = Some(if cur_pos == Side::Long {
-                    ext * (1.0 - pct / 100.0)
-                } else {
-                    ext * (1.0 + pct / 100.0)
+                let pct_stop = risk.trailing_stop_pct.map(|pct| {
+                    if cur_pos == Side::Long {
+                        ext * (1.0 - pct / 100.0)
+                    } else {
+                        ext * (1.0 + pct / 100.0)
+                    }
                 });
+                let atr_stop = trail_atr.and_then(|cfg| {
+                    let atr = atr_values
+                        .as_ref()
+                        .and_then(|values| values.get(i))
+                        .copied()
+                        .filter(|v| v.is_finite() && *v > 0.0)?;
+                    Some(if cur_pos == Side::Long {
+                        ext - cfg.mult * atr
+                    } else {
+                        ext + cfg.mult * atr
+                    })
+                });
+                // 追踪止损只能收紧: ATR 放大时 `extreme - mult*ATR` 可能比
+                // 上一根更松, 必须与已有止损取更紧的一侧, 否则止损会向后
+                // 退让。百分比追踪本身单调, 与旧值合并不改变结果。
+                let candidate = tighter_stop(cur_pos, pct_stop, atr_stop);
+                if let Some(stop) = tighter_stop(cur_pos, pos_trail_stop, candidate) {
+                    pos_trail_stop = Some(stop);
+                }
+            }
+        }
+
+        // 3c) 保本止损: 收盘价有利幅度达到 trigger 后, 把止损移到入场价
+        //     加减 offset。收盘后更新, 下一根 bar 才生效, 不使用当根 high/low。
+        if cur_pos.is_open()
+            && let Some(be) = risk.breakeven
+            && !(i == pos_entry_bar && pos_entry_at_close)
+            && pos_entry.is_finite()
+            && pos_entry > 0.0
+            && close[i].is_finite()
+        {
+            let favorable_pct = if cur_pos == Side::Long {
+                (close[i] - pos_entry) / pos_entry * 100.0
+            } else {
+                (pos_entry - close[i]) / pos_entry * 100.0
+            };
+            if favorable_pct >= be.trigger_pct {
+                let candidate = if cur_pos == Side::Long {
+                    pos_entry * (1.0 + be.offset_pct / 100.0)
+                } else {
+                    pos_entry * (1.0 - be.offset_pct / 100.0)
+                };
+                pos_breakeven_stop = tighter_stop(cur_pos, pos_breakeven_stop, Some(candidate));
             }
         }
 
@@ -1400,6 +1646,7 @@ impl TradeAccum {
         match o.reason {
             ExitReason::StopLoss => self.stop_loss_exits += 1,
             ExitReason::TrailingStop => self.trailing_stop_exits += 1,
+            ExitReason::StrategyStop => self.strategy_stop_exits += 1,
             ExitReason::Signal | ExitReason::EndOfData => {}
         }
         self.pnls.push(o.pnl.to_f64());
@@ -1912,6 +2159,7 @@ fn compute_metrics(
         num_trades,
         stop_loss_exits: out.acc.stop_loss_exits,
         trailing_stop_exits: out.acc.trailing_stop_exits,
+        strategy_stop_exits: out.acc.strategy_stop_exits,
         avg_win,
         avg_loss,
         expectancy,
@@ -2015,10 +2263,50 @@ pub fn simulate_ohlc(
     exec: &ExecConfig,
     risk: &StopConfig,
 ) -> crate::error::Result<SummaryMetrics> {
+    simulate_ohlc_with_stops(
+        high,
+        low,
+        close,
+        open,
+        signals,
+        None,
+        initial_cash,
+        bars_per_year,
+        exec,
+        risk,
+    )
+}
+
+/// 带策略止损线的盘中回测。
+///
+/// 与 [`simulate_ohlc`] 相同, 额外接受策略输出的 [`StopLines`]。策略止损线
+/// 与引擎 [`StopConfig`] 可以同时存在, 引擎取更紧的一侧; 策略止损触发时
+/// 平仓原因记为 [`ExitReason::StrategyStop`]。
+///
+/// # Errors
+/// 执行费率非法、止损参数越界、策略止损线长度不足, 或配置了任一种盘中
+/// 止损但 `high` / `low` 短于 `close` 时返回错误。
+#[allow(clippy::too_many_arguments)]
+pub fn simulate_ohlc_with_stops(
+    high: &[f64],
+    low: &[f64],
+    close: &[f64],
+    open: &[f64],
+    signals: &[Signal],
+    strategy_stops: Option<&StopLines>,
+    initial_cash: crate::money::Amount,
+    bars_per_year: f64,
+    exec: &ExecConfig,
+    risk: &StopConfig,
+) -> crate::error::Result<SummaryMetrics> {
     exec.validate_rates()?;
     risk.validate()?;
     let n = close.len().min(signals.len());
-    if !risk.is_none() && (high.len() < n || low.len() < n) {
+    if let Some(lines) = strategy_stops {
+        lines.validate_len(n)?;
+    }
+    let needs_ohlc = !risk.is_none() || strategy_stops.is_some_and(|s| !s.is_none());
+    if needs_ohlc && (high.len() < n || low.len() < n) {
         return Err(crate::error::AppError::Msg(format!(
             "配置了止损但 high/low 长度不足: high={}, low={}, close={n}",
             high.len(),
@@ -2043,6 +2331,7 @@ pub fn simulate_ohlc(
         close,
         open,
         signals,
+        strategy_stops,
         &[],
         initial_cash,
         exec,
@@ -2103,10 +2392,49 @@ pub fn simulate_detailed_ohlc(
     exec: &ExecConfig,
     risk: &StopConfig,
 ) -> crate::error::Result<SimResult> {
+    simulate_detailed_ohlc_with_stops(
+        time,
+        high,
+        low,
+        close,
+        open,
+        signals,
+        None,
+        initial_cash,
+        bars_per_year,
+        exec,
+        risk,
+    )
+}
+
+/// 带策略止损线的详细回测。
+///
+/// 与 [`simulate_detailed_ohlc`] 相同, 额外接受策略输出的 [`StopLines`]。
+///
+/// # Errors
+/// 同 [`simulate_ohlc_with_stops`]。
+#[allow(clippy::too_many_arguments)]
+pub fn simulate_detailed_ohlc_with_stops(
+    time: &[i64],
+    high: &[f64],
+    low: &[f64],
+    close: &[f64],
+    open: &[f64],
+    signals: &[Signal],
+    strategy_stops: Option<&StopLines>,
+    initial_cash: crate::money::Amount,
+    bars_per_year: f64,
+    exec: &ExecConfig,
+    risk: &StopConfig,
+) -> crate::error::Result<SimResult> {
     exec.validate_rates()?;
     risk.validate()?;
     let n = close.len().min(signals.len());
-    if !risk.is_none() && (high.len() < n || low.len() < n) {
+    if let Some(lines) = strategy_stops {
+        lines.validate_len(n)?;
+    }
+    let needs_ohlc = !risk.is_none() || strategy_stops.is_some_and(|s| !s.is_none());
+    if needs_ohlc && (high.len() < n || low.len() < n) {
         return Err(crate::error::AppError::Msg(format!(
             "配置了止损但 high/low 长度不足: high={}, low={}, close={n}",
             high.len(),
@@ -2134,6 +2462,7 @@ pub fn simulate_detailed_ohlc(
         close,
         open,
         signals,
+        strategy_stops,
         time,
         initial_cash,
         exec,
@@ -2949,6 +3278,7 @@ mod tests {
             &close,
             &close,
             &sig,
+            None,
             &[],
             crate::money::Amount::from_i64(10_000),
             &exec,
@@ -3403,6 +3733,392 @@ mod tests {
         .expect("合法回测必须成功")
     }
 
+    /// 构造带策略止损线的详细回测; 默认零费率、零滑点、`delay=1`。
+    #[allow(clippy::too_many_arguments)]
+    fn run_stops(
+        open: &[f64],
+        high: &[f64],
+        low: &[f64],
+        close: &[f64],
+        signals: &[Signal],
+        stop_lines: Option<&StopLines>,
+        stop: StopConfig,
+        fill_close: bool,
+    ) -> SimResult {
+        let time: Vec<i64> = (0..close.len() as i64).collect();
+        let exec = ExecConfig::try_from_bps_fill(1, 0.0, 0.0, fill_close)
+            .expect("零费率/零滑点/延迟 1 必须合法");
+        simulate_detailed_ohlc_with_stops(
+            &time,
+            high,
+            low,
+            close,
+            open,
+            signals,
+            stop_lines,
+            crate::money::Amount::from_i64(1_000),
+            252.0,
+            &exec,
+            &stop,
+        )
+        .expect("合法回测必须成功")
+    }
+
+    #[test]
+    fn exit_long_and_exit_short_only_close_matching_side() {
+        assert_eq!(next_target(Side::Long, Signal::ExitLong), Side::Flat);
+        assert_eq!(next_target(Side::Short, Signal::ExitLong), Side::Short);
+        assert_eq!(next_target(Side::Short, Signal::ExitShort), Side::Flat);
+        assert_eq!(next_target(Side::Long, Signal::ExitShort), Side::Long);
+
+        let open = [100.0; 5];
+        let signals = [
+            Signal::Buy,
+            Signal::Hold,
+            Signal::ExitLong,
+            Signal::Hold,
+            Signal::Hold,
+        ];
+        let d = run_stop(
+            &open,
+            &open,
+            &open,
+            &open,
+            &signals,
+            StopConfig::default(),
+            false,
+        );
+        assert_eq!(d.trades.len(), 1);
+        assert_eq!(d.trades[0].entry_time, 1);
+        assert_eq!(d.trades[0].exit_time, 3, "ExitLong 必须延迟一根 bar 成交");
+        assert_eq!(d.trades[0].exit_reason, "signal");
+    }
+
+    #[test]
+    fn strategy_stop_line_long_triggers_intrabar() {
+        let open = [100.0, 100.0, 100.0, 100.0, 100.0];
+        let high = [101.0, 101.0, 101.0, 101.0, 101.0];
+        let low = [99.0, 99.0, 95.0, 99.0, 99.0];
+        let close = [100.0, 100.0, 96.0, 100.0, 100.0];
+        let signals = [
+            Signal::Buy,
+            Signal::Hold,
+            Signal::Hold,
+            Signal::Hold,
+            Signal::Hold,
+        ];
+        let lines = StopLines {
+            long: Some(vec![f64::NAN, 96.0, 96.0, 96.0, 96.0]),
+            short: None,
+        };
+        let d = run_stops(
+            &open,
+            &high,
+            &low,
+            &close,
+            &signals,
+            Some(&lines),
+            StopConfig::default(),
+            false,
+        );
+        assert_eq!(d.trades.len(), 1);
+        assert_eq!(d.trades[0].side, Side::Long);
+        assert_eq!(d.trades[0].exit_time, 2);
+        assert!((d.trades[0].exit_price - 96.0).abs() < 1e-12);
+        assert_eq!(d.trades[0].exit_reason, "strategy_stop");
+        assert_eq!(d.summary.strategy_stop_exits, 1);
+        assert_eq!(d.summary.stop_loss_exits, 0);
+        assert_eq!(d.summary.trailing_stop_exits, 0);
+        assert!((d.summary.final_equity.to_f64() - 960.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn strategy_stop_line_short_triggers_intrabar() {
+        let open = [100.0, 100.0, 100.0, 100.0, 100.0];
+        let high = [101.0, 101.0, 105.0, 101.0, 101.0];
+        let low = [99.0, 99.0, 99.0, 99.0, 99.0];
+        let close = [100.0, 100.0, 104.0, 100.0, 100.0];
+        let signals = [
+            Signal::Sell,
+            Signal::Hold,
+            Signal::Hold,
+            Signal::Hold,
+            Signal::Hold,
+        ];
+        let lines = StopLines {
+            long: None,
+            short: Some(vec![f64::NAN, 104.0, 104.0, 104.0, 104.0]),
+        };
+        let d = run_stops(
+            &open,
+            &high,
+            &low,
+            &close,
+            &signals,
+            Some(&lines),
+            StopConfig::default(),
+            false,
+        );
+        assert_eq!(d.trades.len(), 1);
+        assert_eq!(d.trades[0].side, Side::Short);
+        assert_eq!(d.trades[0].exit_time, 2);
+        assert!((d.trades[0].exit_price - 104.0).abs() < 1e-12);
+        assert_eq!(d.trades[0].exit_reason, "strategy_stop");
+        assert_eq!(d.summary.strategy_stop_exits, 1);
+        assert!((d.summary.final_equity.to_f64() - 960.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn strategy_stop_line_gap_fills_at_open() {
+        let open = [100.0, 100.0, 94.0, 94.0, 94.0];
+        let high = [101.0, 101.0, 95.0, 95.0, 95.0];
+        let low = [99.0, 99.0, 93.0, 93.0, 93.0];
+        let close = [100.0, 100.0, 94.0, 94.0, 94.0];
+        let signals = [
+            Signal::Buy,
+            Signal::Hold,
+            Signal::Hold,
+            Signal::Hold,
+            Signal::Hold,
+        ];
+        let lines = StopLines {
+            long: Some(vec![f64::NAN, 96.0, 96.0, 96.0, 96.0]),
+            short: None,
+        };
+        let d = run_stops(
+            &open,
+            &high,
+            &low,
+            &close,
+            &signals,
+            Some(&lines),
+            StopConfig::default(),
+            false,
+        );
+        assert_eq!(d.trades.len(), 1);
+        assert_eq!(d.trades[0].exit_time, 2);
+        assert!(
+            (d.trades[0].exit_price - 94.0).abs() < 1e-12,
+            "跳空必须按 open 成交, exit={}",
+            d.trades[0].exit_price
+        );
+        assert_eq!(d.trades[0].exit_reason, "strategy_stop");
+    }
+
+    #[test]
+    fn strategy_stop_line_is_tighter_than_engine_stop() {
+        let open = [100.0; 4];
+        let high = [101.0, 101.0, 101.0, 101.0];
+        let low = [99.0, 98.5, 99.0, 99.0];
+        let close = [100.0; 4];
+        let signals = [Signal::Buy, Signal::Hold, Signal::Hold, Signal::Hold];
+        let lines = StopLines {
+            long: Some(vec![f64::NAN, 99.0, 99.0, 99.0]),
+            short: None,
+        };
+        let d = run_stops(
+            &open,
+            &high,
+            &low,
+            &close,
+            &signals,
+            Some(&lines),
+            StopConfig {
+                stop_loss_pct: Some(2.0),
+                ..StopConfig::default()
+            },
+            false,
+        );
+        assert_eq!(d.trades.len(), 1);
+        assert!((d.trades[0].exit_price - 99.0).abs() < 1e-12);
+        assert_eq!(d.trades[0].exit_reason, "strategy_stop");
+        assert_eq!(d.summary.strategy_stop_exits, 1);
+        assert_eq!(d.summary.stop_loss_exits, 0);
+    }
+
+    #[test]
+    fn strategy_stop_lines_must_cover_signal_length() {
+        let close = [100.0; 3];
+        let signals = [Signal::Buy, Signal::Hold, Signal::Hold];
+        let lines = StopLines {
+            long: Some(vec![99.0]),
+            short: None,
+        };
+        let err = simulate_ohlc_with_stops(
+            &close,
+            &close,
+            &close,
+            &close,
+            &signals,
+            Some(&lines),
+            crate::money::Amount::from_i64(1_000),
+            252.0,
+            &ExecConfig::default(),
+            &StopConfig::default(),
+        )
+        .expect_err("短止损线必须报错");
+        assert!(err.to_string().contains("长度不足"), "err={err}");
+    }
+
+    #[test]
+    fn atr_fixed_stop_uses_prior_completed_bar_atr() {
+        let open = [100.0, 100.0, 100.0, 100.0, 100.0, 100.0];
+        let high = [101.0, 101.0, 101.0, 101.0, 101.0, 101.0];
+        let low = [99.0, 99.0, 99.0, 99.0, 99.0, 95.0];
+        let close = [100.0; 6];
+        let signals = [
+            Signal::Hold,
+            Signal::Hold,
+            Signal::Hold,
+            Signal::Buy,
+            Signal::Hold,
+            Signal::Hold,
+        ];
+        let d = run_stops(
+            &open,
+            &high,
+            &low,
+            &close,
+            &signals,
+            None,
+            StopConfig {
+                atr: Some(AtrStopConfig {
+                    period: 2,
+                    mult: 2.0,
+                    trailing: false,
+                }),
+                ..StopConfig::default()
+            },
+            false,
+        );
+        assert_eq!(d.trades.len(), 1);
+        assert_eq!(d.trades[0].entry_time, 4);
+        assert_eq!(d.trades[0].exit_time, 5);
+        assert!((d.trades[0].exit_price - 96.0).abs() < 1e-12);
+        assert_eq!(d.trades[0].exit_reason, "stop_loss");
+        assert_eq!(d.summary.stop_loss_exits, 1);
+    }
+
+    #[test]
+    fn atr_trailing_stop_ratchets_from_highest_high() {
+        let open = [100.0, 100.0, 100.0, 100.0, 100.0, 100.0];
+        let high = [101.0, 101.0, 101.0, 101.0, 110.0, 101.0];
+        let low = [99.0, 99.0, 99.0, 99.0, 99.0, 90.0];
+        let close = [100.0, 100.0, 100.0, 100.0, 105.0, 95.0];
+        let signals = [
+            Signal::Hold,
+            Signal::Hold,
+            Signal::Hold,
+            Signal::Buy,
+            Signal::Hold,
+            Signal::Hold,
+        ];
+        let d = run_stops(
+            &open,
+            &high,
+            &low,
+            &close,
+            &signals,
+            None,
+            StopConfig {
+                atr: Some(AtrStopConfig {
+                    period: 2,
+                    mult: 2.0,
+                    trailing: true,
+                }),
+                ..StopConfig::default()
+            },
+            false,
+        );
+        assert_eq!(d.trades.len(), 1);
+        assert_eq!(d.trades[0].entry_time, 4);
+        // bar4 收盘: extreme=110, ATR=6.5, trail=110-2*6.5=97。
+        assert_eq!(d.trades[0].exit_time, 5);
+        assert!(
+            (d.trades[0].exit_price - 97.0).abs() < 1e-12,
+            "exit={}",
+            d.trades[0].exit_price
+        );
+        assert_eq!(d.trades[0].exit_reason, "trailing_stop");
+        assert_eq!(d.summary.trailing_stop_exits, 1);
+    }
+
+    #[test]
+    fn atr_trailing_stop_never_loosens_when_atr_expands() {
+        let open = [100.0; 7];
+        let high = [101.0, 101.0, 101.0, 101.0, 110.0, 111.0, 105.0];
+        let low = [99.0, 99.0, 99.0, 99.0, 99.0, 100.0, 96.0];
+        let close = [100.0, 100.0, 100.0, 100.0, 105.0, 105.0, 100.0];
+        let signals = [
+            Signal::Hold,
+            Signal::Hold,
+            Signal::Hold,
+            Signal::Buy,
+            Signal::Hold,
+            Signal::Hold,
+            Signal::Hold,
+        ];
+        let d = run_stops(
+            &open,
+            &high,
+            &low,
+            &close,
+            &signals,
+            None,
+            StopConfig {
+                atr: Some(AtrStopConfig {
+                    period: 2,
+                    mult: 2.0,
+                    trailing: true,
+                }),
+                ..StopConfig::default()
+            },
+            false,
+        );
+        assert_eq!(d.trades.len(), 1);
+        assert_eq!(d.trades[0].entry_time, 4);
+        // bar4 后 trail=97; bar5 ATR 放大到 8.75, 裸公式会退到 93.5。
+        // 追踪止损必须保持 97, 于是 bar6 low=96 仍按 97 触发。
+        assert_eq!(d.trades[0].exit_time, 6);
+        assert!(
+            (d.trades[0].exit_price - 97.0).abs() < 1e-12,
+            "exit={}",
+            d.trades[0].exit_price
+        );
+        assert_eq!(d.trades[0].exit_reason, "trailing_stop");
+    }
+
+    #[test]
+    fn breakeven_stop_moves_to_entry_after_trigger() {
+        let open = [100.0, 100.0, 101.0, 101.0];
+        let high = [101.0, 104.0, 101.0, 101.0];
+        let low = [99.0, 99.0, 99.0, 99.0];
+        let close = [100.0, 103.0, 100.0, 100.0];
+        let signals = [Signal::Buy, Signal::Hold, Signal::Hold, Signal::Hold];
+        let d = run_stops(
+            &open,
+            &high,
+            &low,
+            &close,
+            &signals,
+            None,
+            StopConfig {
+                breakeven: Some(BreakevenConfig {
+                    trigger_pct: 2.0,
+                    offset_pct: 0.0,
+                }),
+                ..StopConfig::default()
+            },
+            false,
+        );
+        assert_eq!(d.trades.len(), 1);
+        assert_eq!(d.trades[0].entry_time, 1);
+        assert_eq!(d.trades[0].exit_time, 2);
+        assert!((d.trades[0].exit_price - 100.0).abs() < 1e-12);
+        assert_eq!(d.trades[0].exit_reason, "trailing_stop");
+        assert_eq!(d.summary.trailing_stop_exits, 1);
+    }
+
     #[test]
     fn stop_loss_long_triggers_intrabar_and_fills_at_stop() {
         let open = [100.0, 100.0, 100.0, 98.0, 98.0];
@@ -3425,6 +4141,7 @@ mod tests {
             StopConfig {
                 stop_loss_pct: Some(2.0),
                 trailing_stop_pct: None,
+                ..StopConfig::default()
             },
             false,
         );
@@ -3461,6 +4178,7 @@ mod tests {
             StopConfig {
                 stop_loss_pct: Some(2.0),
                 trailing_stop_pct: None,
+                ..StopConfig::default()
             },
             false,
         );
@@ -3500,6 +4218,7 @@ mod tests {
             StopConfig {
                 stop_loss_pct: Some(2.0),
                 trailing_stop_pct: None,
+                ..StopConfig::default()
             },
             false,
         );
@@ -3541,6 +4260,7 @@ mod tests {
             &StopConfig {
                 stop_loss_pct: Some(2.0),
                 trailing_stop_pct: None,
+                ..StopConfig::default()
             },
         )
         .expect("合法回测必须成功");
@@ -3586,6 +4306,7 @@ mod tests {
             StopConfig {
                 stop_loss_pct: None,
                 trailing_stop_pct: Some(5.0),
+                ..StopConfig::default()
             },
             false,
         );
@@ -3625,6 +4346,7 @@ mod tests {
             StopConfig {
                 stop_loss_pct: None,
                 trailing_stop_pct: Some(5.0),
+                ..StopConfig::default()
             },
             false,
         );
@@ -3665,6 +4387,7 @@ mod tests {
             StopConfig {
                 stop_loss_pct: Some(2.0),
                 trailing_stop_pct: Some(5.0),
+                ..StopConfig::default()
             },
             false,
         );
@@ -3700,6 +4423,7 @@ mod tests {
             StopConfig {
                 stop_loss_pct: Some(2.0),
                 trailing_stop_pct: None,
+                ..StopConfig::default()
             },
             true,
         );
@@ -3733,6 +4457,7 @@ mod tests {
             StopConfig {
                 stop_loss_pct: Some(2.0),
                 trailing_stop_pct: None,
+                ..StopConfig::default()
             },
             true,
         );
@@ -3764,6 +4489,7 @@ mod tests {
             StopConfig {
                 stop_loss_pct: Some(2.0),
                 trailing_stop_pct: None,
+                ..StopConfig::default()
             },
             false,
         );
@@ -3798,6 +4524,7 @@ mod tests {
             StopConfig {
                 stop_loss_pct: Some(2.0),
                 trailing_stop_pct: None,
+                ..StopConfig::default()
             },
             false,
         );
@@ -3822,6 +4549,7 @@ mod tests {
             StopConfig {
                 stop_loss_pct: Some(2.0),
                 trailing_stop_pct: None,
+                ..StopConfig::default()
             },
             false,
         );
@@ -3863,6 +4591,7 @@ mod tests {
             &StopConfig {
                 stop_loss_pct: Some(2.0),
                 trailing_stop_pct: None,
+                ..StopConfig::default()
             },
         )
         .expect("合法回测必须成功");
@@ -3921,6 +4650,7 @@ mod tests {
         assert_eq!(a, b, "未配置止损时 high/low 不得改变任何指标");
         assert_eq!(a.stop_loss_exits, 0);
         assert_eq!(a.trailing_stop_exits, 0);
+        assert_eq!(a.strategy_stop_exits, 0);
 
         let da = simulate_detailed(
             &[],
@@ -3957,6 +4687,7 @@ mod tests {
         assert_eq!(ExitReason::Signal.as_str(), "signal");
         assert_eq!(ExitReason::StopLoss.as_str(), "stop_loss");
         assert_eq!(ExitReason::TrailingStop.as_str(), "trailing_stop");
+        assert_eq!(ExitReason::StrategyStop.as_str(), "strategy_stop");
         assert_eq!(ExitReason::EndOfData.as_str(), "end_of_data");
         let n = 60;
         let close = make_prices(n);

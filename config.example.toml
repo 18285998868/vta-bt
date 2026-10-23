@@ -63,10 +63,12 @@ overwrite = false
 #   kama, lin_reg, mc_ginley, pwma, sin_wma, swma,
 #   tilson, trima, vidya, vwma, wilders, wma, ssf, ssf_st
 #
-# 可选: 该条策略专属的持仓期止损(百分比, 缺省关闭; 只作用于引擎成交的持仓)。
+# 可选: 该条策略专属的持仓期风险规则(缺省关闭; 只作用于引擎成交的持仓)。
 # 同一策略重复写多条 [[strategy]]、每条配不同 stop, 即形成止损网格。
 # stop = { stop_loss_pct = 2.0, trailing_stop_pct = 5.0 }
-# 也可写成表: 先写 [[strategy]], 再写 [strategy.stop] 与两个键。
+# stop = { atr = { period = 14, mult = 2.0, trailing = true } }
+# stop = { breakeven = { trigger_pct = 2.0, offset_pct = 0.0 } }
+# 也可写成表: 先写 [[strategy]], 再写 [strategy.stop] 与对应键。
 # ========================================
 
 [[strategy]]

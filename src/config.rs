@@ -1364,6 +1364,76 @@ mod tests {
     }
 
     #[test]
+    fn strategy_stop_parses_atr_and_breakeven_rules() {
+        let toml = make_stop_toml(
+            "stop = { atr = { period = 14, mult = 2.0, trailing = true }, \
+             breakeven = { trigger_pct = 3.0, offset_pct = 0.5 } }\n",
+        );
+        let cfg: Config = toml::from_str(&toml).unwrap();
+        let stop = &cfg.strategy[0].stop;
+        assert_eq!(
+            stop.atr,
+            Some(crate::engine::AtrStopConfig {
+                period: 14,
+                mult: 2.0,
+                trailing: true,
+            })
+        );
+        assert_eq!(
+            stop.breakeven,
+            Some(crate::engine::BreakevenConfig {
+                trigger_pct: 3.0,
+                offset_pct: 0.5,
+            })
+        );
+        assert!(!stop.is_none());
+        assert!(cfg.validate().is_ok());
+        let params = stop.param_str();
+        assert!(params.contains("atr_period=14"));
+        assert!(params.contains("atr_mult=2"));
+        assert!(params.contains("atr_trailing=true"));
+        assert!(params.contains("breakeven_trigger_pct=3"));
+        assert!(params.contains("breakeven_offset_pct=0.5"));
+
+        // 省略 `trailing` 默认为固定 ATR 止损; 省略 `offset_pct` 默认为 0。
+        let toml = make_stop_toml(
+            "stop = { atr = { period = 14, mult = 2.0 }, breakeven = { trigger_pct = 3.0 } }\n",
+        );
+        let cfg: Config = toml::from_str(&toml).unwrap();
+        assert!(!cfg.strategy[0].stop.atr.unwrap().trailing);
+        assert_eq!(cfg.strategy[0].stop.breakeven.unwrap().offset_pct, 0.0);
+    }
+
+    #[test]
+    fn strategy_stop_rejects_bad_atr_and_breakeven_values() {
+        for bad in [
+            "stop = { atr = { period = 0, mult = 2.0 } }\n",
+            "stop = { atr = { period = 14, mult = 0.0 } }\n",
+            "stop = { atr = { period = 14, mult = nan } }\n",
+            "stop = { breakeven = { trigger_pct = 0.0 } }\n",
+            "stop = { breakeven = { trigger_pct = 100.0 } }\n",
+            "stop = { breakeven = { trigger_pct = 3.0, offset_pct = -1.0 } }\n",
+            "stop = { breakeven = { trigger_pct = 3.0, offset_pct = 100.0 } }\n",
+        ] {
+            let cfg: Config = toml::from_str(&make_stop_toml(bad)).unwrap();
+            assert!(cfg.validate().is_err(), "非法止损必须被拒绝: {bad}");
+        }
+
+        for missing in [
+            "stop = { atr = { period = 14 } }\n",
+            "stop = { atr = { mult = 2.0 } }\n",
+            "stop = { breakeven = { offset_pct = 0.0 } }\n",
+            "stop = { atr = { period = 14, mult = 2.0, bogus = 1 } }\n",
+            "stop = { breakeven = { trigger_pct = 3.0, bogus = 1 } }\n",
+        ] {
+            assert!(
+                toml::from_str::<Config>(&make_stop_toml(missing)).is_err(),
+                "缺失/未知嵌套键必须被拒绝: {missing}"
+            );
+        }
+    }
+
+    #[test]
     fn strategy_stop_rejects_unknown_keys_and_out_of_range_values() {
         let typo = make_stop_toml("stop = { stop_los_pct = 2.0 }\n");
         assert!(

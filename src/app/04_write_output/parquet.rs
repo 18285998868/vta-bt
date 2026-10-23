@@ -484,7 +484,7 @@ fn single_underscore_form(s: &str) -> Option<u64> {
 /// 此前这里用 `.expect("Parquet schema/column count mismatch")` 直接 panic, 而
 /// `write_parquet` 的 `# Errors` 段却承诺"schema 与列数不匹配时返回 [`AppError`](crate::error::AppError)"——
 /// **文档与实现直接矛盾**。且 `cols` 与 `fields` 是两份手工同步的平行数组
-/// (各 51 项), 加一列忘了改另一列就会在**生产路径**上崩掉整轮回测。
+/// (各 53 项), 加一列忘了改另一列就会在**生产路径**上崩掉整轮回测。
 fn build_parquet(results: &[RunResult], balance: crate::money::Amount) -> Result<RecordBatch> {
     let mut strategy = StringBuilder::new();
     let mut symbol = StringBuilder::new();
@@ -500,6 +500,7 @@ fn build_parquet(results: &[RunResult], balance: crate::money::Amount) -> Result
     let mut trades = UInt32Builder::new();
     let mut stop_loss_exits = UInt32Builder::new();
     let mut trailing_stop_exits = UInt32Builder::new();
+    let mut strategy_stop_exits = UInt32Builder::new();
     let mut sharpe = Float64Builder::new();
     let mut sortino = Float64Builder::new();
     let mut win_rate = Float64Builder::new();
@@ -556,6 +557,7 @@ fn build_parquet(results: &[RunResult], balance: crate::money::Amount) -> Result
         trades.append_value(m.num_trades);
         stop_loss_exits.append_value(m.stop_loss_exits);
         trailing_stop_exits.append_value(m.trailing_stop_exits);
+        strategy_stop_exits.append_value(m.strategy_stop_exits);
         sharpe.append_value(m.sharpe_ratio);
         sortino.append_value(m.sortino_ratio);
         win_rate.append_value(m.win_rate / 100.0);
@@ -611,6 +613,7 @@ fn build_parquet(results: &[RunResult], balance: crate::money::Amount) -> Result
         Arc::new(trades.finish()),
         Arc::new(stop_loss_exits.finish()),
         Arc::new(trailing_stop_exits.finish()),
+        Arc::new(strategy_stop_exits.finish()),
         Arc::new(sharpe.finish()),
         Arc::new(sortino.finish()),
         Arc::new(win_rate.finish()),
@@ -674,6 +677,7 @@ fn build_parquet(results: &[RunResult], balance: crate::money::Amount) -> Result
         Field::new("trades", DataType::UInt32, false),
         Field::new("stop_loss_exits", DataType::UInt32, false),
         Field::new("trailing_stop_exits", DataType::UInt32, false),
+        Field::new("strategy_stop_exits", DataType::UInt32, false),
         Field::new("sharpe", DataType::Float64, false),
         Field::new("sortino", DataType::Float64, false),
         Field::new("win_rate", DataType::Float64, false),
@@ -1890,6 +1894,7 @@ pub const COLUMNS: &[(&str, Unit)] = &[
     ("trades", Unit::Count),
     ("stop_loss_exits", Unit::Count),
     ("trailing_stop_exits", Unit::Count),
+    ("strategy_stop_exits", Unit::Count),
     ("sharpe", Unit::Dimensionless),
     ("sortino", Unit::Dimensionless),
     ("win_rate", Unit::Ratio),
@@ -2076,6 +2081,7 @@ pub fn read_parquet(path: &Path) -> Result<Vec<RunResult>> {
         // 旧缓存文件没有止损计数列 → 回退 0(表示"未记录/无止损")。
         let stop_loss_exits = opt_u32(&batch, &ci, "stop_loss_exits", n, path)?;
         let trailing_stop_exits = opt_u32(&batch, &ci, "trailing_stop_exits", n, path)?;
+        let strategy_stop_exits = opt_u32(&batch, &ci, "strategy_stop_exits", n, path)?;
         let sharpe = f64_col(&batch, sharpe_idx, path)?;
         let sortino = f64_col(&batch, sortino_idx, path)?;
         let wr = f64_col(&batch, win_rate_idx, path)?;
@@ -2171,6 +2177,7 @@ pub fn read_parquet(path: &Path) -> Result<Vec<RunResult>> {
                     num_trades: trades[i],
                     stop_loss_exits: stop_loss_exits[i],
                     trailing_stop_exits: trailing_stop_exits[i],
+                    strategy_stop_exits: strategy_stop_exits[i],
                     avg_win: avg_win[i],
                     avg_loss: avg_loss[i],
                     expectancy: expectancy[i],
@@ -2961,6 +2968,7 @@ mod tests {
             metrics: SummaryMetrics {
                 stop_loss_exits: 7,
                 trailing_stop_exits: 3,
+                strategy_stop_exits: 2,
                 ..SummaryMetrics::default()
             },
             delay_bars: 1,
@@ -2980,6 +2988,7 @@ mod tests {
         let back = read_parquet(&p).unwrap();
         assert_eq!(back[0].metrics.stop_loss_exits, 7);
         assert_eq!(back[0].metrics.trailing_stop_exits, 3);
+        assert_eq!(back[0].metrics.strategy_stop_exits, 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

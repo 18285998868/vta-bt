@@ -750,25 +750,48 @@ fn run_combo(
                 .enumerate()
                 .map(|(k, outcome)| {
                     let i = start + k;
+                    let params = stop.apply_to(&strategy.param_str(i));
                     match outcome {
                         crate::strategies::ParamOutcome::Signals(signals) => {
-                            let sim = crate::engine::simulate_detailed_ohlc(
+                            let stop_lines = match strategy.generate_stop_lines(
+                                cols.open(),
+                                cols.high(),
+                                cols.low(),
+                                cols.close(),
+                                cols.volume(),
+                                cols.time(),
+                                i,
+                            ) {
+                                Ok(lines) => lines,
+                                Err(crate::error::AppError::ParamSkipped { reason }) => {
+                                    tracing::warn!(
+                                        "  [{}] 参数档位 {params} 的策略止损线不可计算: {reason}(记为 invalid, 继续)",
+                                        strategy.name(),
+                                    );
+                                    return Ok((params, None, RunStatus::Invalid));
+                                }
+                                Err(e) => return Err(e),
+                            };
+                            if let Some(lines) = &stop_lines {
+                                lines.validate_len(signals.len())?;
+                            }
+                            let sim = crate::engine::simulate_detailed_ohlc_with_stops(
                                 cols.time(),
                                 cols.high(),
                                 cols.low(),
                                 cols.close(),
                                 cols.open(),
                                 &signals,
+                                stop_lines.as_ref(),
                                 ctx.balance,
                                 bpy,
                                 &ctx.exec,
                                 stop,
                             )?;
                             let status = RunStatus::classify(&signals, &sim.summary);
-                            Ok((stop.apply_to(&strategy.param_str(i)), Some(sim), status))
+                            Ok((params, Some(sim), status))
                         }
                         crate::strategies::ParamOutcome::Skipped(reason) => {
-                            let params = stop.apply_to(&strategy.param_str(i));
                             tracing::warn!(
                                 "  [{}] 参数档位 {params} 不可计算: {reason}(记为 invalid, 继续)",
                                 strategy.name(),
@@ -879,12 +902,43 @@ fn run_combo(
                     let params = stop.apply_to(&strategy.param_str(i));
                     match outcome {
                         crate::strategies::ParamOutcome::Signals(signals) => {
-                            let metrics = crate::engine::simulate_ohlc(
+                            let stop_lines = match strategy.generate_stop_lines(
+                                cols.open(),
+                                cols.high(),
+                                cols.low(),
+                                cols.close(),
+                                cols.volume(),
+                                cols.time(),
+                                i,
+                            ) {
+                                Ok(lines) => lines,
+                                Err(crate::error::AppError::ParamSkipped { reason }) => {
+                                    tracing::warn!(
+                                        "  [{}] 参数档位 {params} 的策略止损线不可计算: {reason}(记为 invalid, 继续)",
+                                        strategy.name(),
+                                    );
+                                    return Ok(ctx.invalid_row(
+                                        symbol,
+                                        tf,
+                                        strategy,
+                                        &params,
+                                        cols.len(),
+                                        bh_pnl,
+                                        bh_ret,
+                                    ));
+                                }
+                                Err(e) => return Err(e),
+                            };
+                            if let Some(lines) = &stop_lines {
+                                lines.validate_len(signals.len())?;
+                            }
+                            let metrics = crate::engine::simulate_ohlc_with_stops(
                                 cols.high(),
                                 cols.low(),
                                 cols.close(),
                                 cols.open(),
                                 &signals,
+                                stop_lines.as_ref(),
                                 ctx.balance,
                                 bpy,
                                 &ctx.exec,
@@ -1494,10 +1548,27 @@ mod tests {
         let sl = crate::engine::StopConfig {
             stop_loss_pct: Some(2.0),
             trailing_stop_pct: None,
+            ..crate::engine::StopConfig::default()
         };
         let trail = crate::engine::StopConfig {
             stop_loss_pct: None,
             trailing_stop_pct: Some(5.0),
+            ..crate::engine::StopConfig::default()
+        };
+        let atr = crate::engine::StopConfig {
+            atr: Some(crate::engine::AtrStopConfig {
+                period: 14,
+                mult: 2.0,
+                trailing: true,
+            }),
+            ..crate::engine::StopConfig::default()
+        };
+        let breakeven = crate::engine::StopConfig {
+            breakeven: Some(crate::engine::BreakevenConfig {
+                trigger_pct: 2.0,
+                offset_pct: 0.5,
+            }),
+            ..crate::engine::StopConfig::default()
         };
         let with_sl = params_fingerprint_with_stop(
             &*s,
@@ -1519,9 +1590,125 @@ mod tests {
             outputs,
             &trail,
         );
+        let with_atr = params_fingerprint_with_stop(
+            &*s,
+            1,
+            crate::money::Amount::from_i64(10_000),
+            "a~b",
+            fp,
+            &exec,
+            outputs,
+            &atr,
+        );
+        let with_breakeven = params_fingerprint_with_stop(
+            &*s,
+            1,
+            crate::money::Amount::from_i64(10_000),
+            "a~b",
+            fp,
+            &exec,
+            outputs,
+            &breakeven,
+        );
         assert_ne!(base, with_sl, "固定止损必须改变缓存指纹");
         assert_ne!(base, with_trail, "追踪止损必须改变缓存指纹");
+        assert_ne!(base, with_atr, "ATR 止损必须改变缓存指纹");
+        assert_ne!(base, with_breakeven, "保本止损必须改变缓存指纹");
         assert_ne!(with_sl, with_trail, "不同止损配置必须可区分");
+        assert_ne!(with_atr, with_breakeven, "不同止损配置必须可区分");
+    }
+
+    /// App 层必须把 `generate_stop_lines` 的 `Some` 路径接到引擎, 并在报告中
+    /// 计入 `strategy_stop_exits`。这里用一个最小策略直接跑 `run_combo`。
+    #[test]
+    fn app_runs_strategy_stop_lines_and_counts_strategy_stop_exits() {
+        struct StopLineStrategy;
+
+        impl crate::strategies::Strategy for StopLineStrategy {
+            fn name(&self) -> &'static str {
+                "stopline_test"
+            }
+
+            fn param_count(&self) -> usize {
+                1
+            }
+
+            fn param_str(&self, _idx: usize) -> String {
+                "period=1".to_string()
+            }
+
+            fn generate_signals_full(
+                &self,
+                _open: &[f64],
+                _high: &[f64],
+                _low: &[f64],
+                close: &[f64],
+                _volume: &[f64],
+                _time: &[i64],
+                _param_idx: usize,
+            ) -> crate::error::Result<Vec<crate::strategies::Signal>> {
+                let mut signals = vec![crate::strategies::Signal::Hold; close.len()];
+                if signals.len() > 1 {
+                    signals[1] = crate::strategies::Signal::Buy;
+                }
+                Ok(signals)
+            }
+
+            fn generate_stop_lines(
+                &self,
+                _open: &[f64],
+                _high: &[f64],
+                _low: &[f64],
+                close: &[f64],
+                _volume: &[f64],
+                _time: &[i64],
+                _param_idx: usize,
+            ) -> crate::error::Result<Option<crate::strategies::StopLines>> {
+                Ok(Some(crate::strategies::StopLines {
+                    long: Some(vec![101.5; close.len()]),
+                    short: None,
+                }))
+            }
+        }
+
+        let dir = std::env::temp_dir().join(format!("vta-app-stop-lines-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("创建临时目录");
+        let cols = cols(10);
+        let ctx = ComboCtx {
+            balance: crate::money::Amount::from_i64(10_000),
+            detail: false,
+            fixed_curves: false,
+            overwrite: true,
+            no_cache: true,
+            temps_dir: dir.clone(),
+            detail_dir: dir.join("detail"),
+            window: "test".to_string(),
+            exec: engine::ExecConfig::default(),
+        };
+        let job = StrategyJob {
+            strategy: Box::new(StopLineStrategy),
+            stop: engine::StopConfig::default(),
+        };
+        let (path, computed) = run_combo(
+            &job,
+            "BTCUSDT",
+            "1d",
+            &cols,
+            365.0,
+            data_fingerprint(&cols),
+            &ctx,
+        )
+        .expect("run_combo");
+        assert!(computed);
+        let rows = output::read_parquet(&path).expect("读回组合结果");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].metrics.num_trades, 1);
+        assert_eq!(rows[0].metrics.strategy_stop_exits, 1);
+        assert_eq!(rows[0].metrics.stop_loss_exits, 0);
+        assert_eq!(rows[0].metrics.trailing_stop_exits, 0);
+        assert_eq!(rows[0].status, RunStatus::Ok);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// **回归**: 指纹必须含**实现版本**(源码内容哈希)。
