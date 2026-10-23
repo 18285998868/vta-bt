@@ -21,6 +21,23 @@ use crate::error::Result;
 #[must_use]
 pub fn params_to_json(params: &str) -> String {
     let clean = params.replace(' ', "");
+    // 止损后缀: `<策略参数>;stop_loss_pct=2,trailing_stop_pct=5`。
+    // 先递归解析策略参数(可能是 `ema_3` / `fast=...` / `period=...` 等任意形态),
+    // 再把止损键值并入同一个 JSON 对象。
+    if let Some((base, stop)) = clean.split_once(';') {
+        let base_json = params_to_json(base);
+        let mut out = base_json
+            .strip_suffix('}')
+            .unwrap_or(base_json.as_str())
+            .to_string();
+        for kv in stop.split(',') {
+            if let Some((k, v)) = kv.split_once('=') {
+                out.push_str(&format!(",\"{}\":{}", k, json_str(v)));
+            }
+        }
+        out.push('}');
+        return out;
+    }
     // 双均线 "fast=F,slow=S" → {"fast":"F","slow":"S"}。
     if let Some(rest) = clean.strip_prefix("fast=") {
         let mut it = rest.split(',');
@@ -154,7 +171,7 @@ fn json_str(s: &str) -> String {
 /// 为什么要显式: `as` 从 f64 到 u64 是**饱和**的 —— 负数 → 0, NaN → 0。
 /// 于是 `sigma = -1.0` 会编码成 0, 与真实的 `sigma = 0` **撞值**: 报告里两个
 /// 不同参数在 `strategy_params` 列上不可区分, 排序也失去意义。
-/// 启动期的唯一性自检(`build_strategies_checked`)会把撞值变成启动错误,
+/// 启动期的唯一性自检(`build_jobs_checked`, 逐条策略)会把撞值变成启动错误,
 /// 但错误信息会指向"参数网格碰撞"这个**误导性**根因。
 ///
 /// 这里把负数与非有限值统一编码到 `u64::MAX`(彼此仍可能撞, 但**不会**与
@@ -183,15 +200,31 @@ fn fnv1a_32(s: &str) -> u32 {
     h
 }
 
+/// FNV-1a 64。用于带止损后缀的参数串: 后缀不属于已知槽位编码, 用 64 位
+/// 哈希降低 stop 网格在 `strategy_params` 列上的碰撞概率。
+fn fnv1a_64(s: &str) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in s.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
 /// 参数串 → 可排序的 `u64` 代理编码(报告的 `strategy_params` 列)。
 ///
 /// **同一策略内必须唯一**: 该列是报告里「按参数大小排序 / 取 top-N」的依据。
 /// 编码分两种 —— 已知形态按槽位打包, 未识别形态回退 FNV-32(有损)。
-/// 唯一性由 [`build_strategies_checked`](crate::strategies::build::build_strategies_checked)
-/// 在启动时自检, 碰撞即报错。
+/// 唯一性由 [`build_jobs_checked`](crate::strategies::build::build_jobs_checked)
+/// 在启动时逐条策略自检, 碰撞即报错。
 #[must_use]
 pub fn strategy_params_value(params: &str) -> u64 {
     let clean = params.replace(' ', "");
+    // 带止损后缀时, 后缀不属于任何槽位编码; 用 FNV-64 覆盖整个字符串。
+    // 同一策略内基参数仍由启动期唯一性自检保证; 不同 stop 由后缀区分。
+    if clean.contains(';') {
+        return fnv1a_64(&clean);
+    }
     // 已知形态白名单前缀。走到最后的分支意味着参数串形态未被识别。
     // 该形态不在白名单里时走 FNV 回退 + warn, 而不是静默编码成"末尾数字"
     // (后者在 `period=abc` 之类输入下会退化成 0, 与真实的 period=0 撞值)。
@@ -465,6 +498,8 @@ fn build_parquet(results: &[RunResult], balance: crate::money::Amount) -> Result
     let mut final_equity = money_builder()?;
     let mut max_dd = Float64Builder::new();
     let mut trades = UInt32Builder::new();
+    let mut stop_loss_exits = UInt32Builder::new();
+    let mut trailing_stop_exits = UInt32Builder::new();
     let mut sharpe = Float64Builder::new();
     let mut sortino = Float64Builder::new();
     let mut win_rate = Float64Builder::new();
@@ -519,6 +554,8 @@ fn build_parquet(results: &[RunResult], balance: crate::money::Amount) -> Result
         final_equity.append_value(money_mantissa(m.final_equity)?);
         max_dd.append_value(m.max_drawdown_pct / 100.0);
         trades.append_value(m.num_trades);
+        stop_loss_exits.append_value(m.stop_loss_exits);
+        trailing_stop_exits.append_value(m.trailing_stop_exits);
         sharpe.append_value(m.sharpe_ratio);
         sortino.append_value(m.sortino_ratio);
         win_rate.append_value(m.win_rate / 100.0);
@@ -572,6 +609,8 @@ fn build_parquet(results: &[RunResult], balance: crate::money::Amount) -> Result
         Arc::new(final_equity.finish()),
         Arc::new(max_dd.finish()),
         Arc::new(trades.finish()),
+        Arc::new(stop_loss_exits.finish()),
+        Arc::new(trailing_stop_exits.finish()),
         Arc::new(sharpe.finish()),
         Arc::new(sortino.finish()),
         Arc::new(win_rate.finish()),
@@ -633,6 +672,8 @@ fn build_parquet(results: &[RunResult], balance: crate::money::Amount) -> Result
         ),
         Field::new("max_drawdown", DataType::Float64, false),
         Field::new("trades", DataType::UInt32, false),
+        Field::new("stop_loss_exits", DataType::UInt32, false),
+        Field::new("trailing_stop_exits", DataType::UInt32, false),
         Field::new("sharpe", DataType::Float64, false),
         Field::new("sortino", DataType::Float64, false),
         Field::new("win_rate", DataType::Float64, false),
@@ -1847,6 +1888,8 @@ pub const COLUMNS: &[(&str, Unit)] = &[
     ("final_equity", Unit::Money),
     ("max_drawdown", Unit::Ratio),
     ("trades", Unit::Count),
+    ("stop_loss_exits", Unit::Count),
+    ("trailing_stop_exits", Unit::Count),
     ("sharpe", Unit::Dimensionless),
     ("sortino", Unit::Dimensionless),
     ("win_rate", Unit::Ratio),
@@ -2030,6 +2073,9 @@ pub fn read_parquet(path: &Path) -> Result<Vec<RunResult>> {
         let eq = dec_col(&batch, final_equity_idx, path)?;
         let mdd = f64_col(&batch, max_dd_idx, path)?;
         let trades = u32_col(&batch, trades_idx, path)?;
+        // 旧缓存文件没有止损计数列 → 回退 0(表示"未记录/无止损")。
+        let stop_loss_exits = opt_u32(&batch, &ci, "stop_loss_exits", n, path)?;
+        let trailing_stop_exits = opt_u32(&batch, &ci, "trailing_stop_exits", n, path)?;
         let sharpe = f64_col(&batch, sharpe_idx, path)?;
         let sortino = f64_col(&batch, sortino_idx, path)?;
         let wr = f64_col(&batch, win_rate_idx, path)?;
@@ -2123,6 +2169,8 @@ pub fn read_parquet(path: &Path) -> Result<Vec<RunResult>> {
                     profit_factor: pf[i],
                     calmar_ratio: calmar[i],
                     num_trades: trades[i],
+                    stop_loss_exits: stop_loss_exits[i],
+                    trailing_stop_exits: trailing_stop_exits[i],
                     avg_win: avg_win[i],
                     avg_loss: avg_loss[i],
                     expectancy: expectancy[i],
@@ -2483,6 +2531,35 @@ mod tests {
             "{\"period\":\"20\",\"variant\":\"Three\"}"
         );
         assert_eq!(params_to_json("ema_100"), "{\"period\":\"100\"}");
+    }
+
+    /// 止损后缀必须同时进入 JSON 与排序编码, 否则 stop 网格行无法区分。
+    #[test]
+    fn stop_suffix_is_reflected_in_json_and_encoding() {
+        let p = "sma_10;stop_loss_pct=2,trailing_stop_pct=5";
+        let js = params_to_json(p);
+        assert_eq!(
+            js,
+            r#"{"period":"10","stop_loss_pct":"2","trailing_stop_pct":"5"}"#
+        );
+        assert!(
+            js.parse::<serde_json::Value>().is_ok(),
+            "止损参数 JSON 非法: {js}"
+        );
+        assert_ne!(
+            strategy_params_value("sma_10;stop_loss_pct=2"),
+            strategy_params_value("sma_10;stop_loss_pct=3"),
+            "不同 stop 必须有不同 strategy_params"
+        );
+        assert_ne!(
+            strategy_params_value("sma_10"),
+            strategy_params_value("sma_10;stop_loss_pct=2"),
+            "无止损与有止损必须有不同 strategy_params"
+        );
+        assert_eq!(
+            params_to_json("period=20;stop_loss_pct=2"),
+            r#"{"period":"20","stop_loss_pct":"2"}"#
+        );
     }
 
     /// 转义: 键值内的引号/反斜杠/控制字符必须被转义, 否则 JSON 失效。
@@ -2868,6 +2945,41 @@ mod tests {
         assert_eq!(back[0].params, back[2].params);
         assert_ne!(back[0].bars_used, back[2].bars_used);
         assert_ne!(back[0].status, back[2].status);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 止损计数列必须真正落盘并按列名读回; 否则报告无法解释 stop 网格的差异。
+    #[test]
+    fn stop_exit_counts_roundtrip_through_parquet() {
+        let r = RunResult {
+            symbol: "BTCUSDT".into(),
+            timeframe: "1d".into(),
+            strategy: "sma".into(),
+            params: "sma_20;stop_loss_pct=2".into(),
+            strategy_params: 42,
+            strategy_params_json: "{\"period\":\"20\",\"stop_loss_pct\":\"2\"}".into(),
+            metrics: SummaryMetrics {
+                stop_loss_exits: 7,
+                trailing_stop_exits: 3,
+                ..SummaryMetrics::default()
+            },
+            delay_bars: 1,
+            fee_bps: 0.0,
+            slippage_bps: 0.0,
+            fill_close: false,
+            buy_hold_pnl: crate::money::Amount::ZERO,
+            buy_hold_return: 0.0,
+            bars_used: 300,
+            status: crate::app::RunStatus::Ok,
+        };
+        let dir = std::env::temp_dir().join(format!("vta-stop-counts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("r.parquet");
+        write_parquet(&p, &[r], crate::money::Amount::from_i64(10_000)).unwrap();
+        let back = read_parquet(&p).unwrap();
+        assert_eq!(back[0].metrics.stop_loss_exits, 7);
+        assert_eq!(back[0].metrics.trailing_stop_exits, 3);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -4,7 +4,9 @@ use crate::config;
 use crate::engine;
 use crate::output;
 use crate::strategies::bars_per_year;
+#[cfg(test)]
 use crate::strategies::build::build_strategies_checked;
+use crate::strategies::build::{StrategyJob, build_jobs_checked};
 
 #[derive(Debug, Clone)]
 /// 单个参数求值的结果行, 即报告 `result.parquet` 的一行。
@@ -295,6 +297,7 @@ pub fn source_hash() -> &'static str {
 /// 会**全部命中缓存**, `detail/` 目录一个文件都没有, 而用户以为自己拿到了
 /// detail 数据; 紧接着 `vta --pbo` 报"未找到 *_fixedcurve.parquet" —— 死循环。
 /// 指纹的定义即"这次要产出什么", 产出集不同 ⇒ 身份不同 ⇒ 必然重算。
+#[cfg(test)]
 fn params_fingerprint(
     strategy: &dyn crate::strategies::Strategy,
     n: usize,
@@ -304,7 +307,7 @@ fn params_fingerprint(
     exec: &crate::engine::ExecConfig,
     outputs: OutputSet,
 ) -> u64 {
-    params_fingerprint_with_source(
+    params_fingerprint_with_stop(
         strategy,
         n,
         balance,
@@ -312,6 +315,32 @@ fn params_fingerprint(
         data_fp,
         exec,
         outputs,
+        &crate::engine::StopConfig::default(),
+    )
+}
+
+/// 带止损的指纹。止损会改变成交序列与指标, 必须进入缓存身份; 否则同一策略
+/// 换 stop 后会**命中旧缓存**, 报告里仍是旧止损的结果。
+#[allow(clippy::too_many_arguments)]
+fn params_fingerprint_with_stop(
+    strategy: &dyn crate::strategies::Strategy,
+    n: usize,
+    balance: crate::money::Amount,
+    window: &str,
+    data_fp: u64,
+    exec: &crate::engine::ExecConfig,
+    outputs: OutputSet,
+    stop: &crate::engine::StopConfig,
+) -> u64 {
+    params_fingerprint_with_source_and_stop(
+        strategy,
+        n,
+        balance,
+        window,
+        data_fp,
+        exec,
+        outputs,
+        stop,
         source_hash(),
     )
 }
@@ -321,6 +350,7 @@ fn params_fingerprint(
 /// 抽出参数是为了让"指纹是否真的含实现版本"这件事**可测**:
 /// 测试可以拿 `""`(空实现版本)算一遍, 断言与真实指纹**不同** ——
 /// 否则"实现版本这一维被漏混进去"无法被任何测试发现。
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn params_fingerprint_with_source(
     strategy: &dyn crate::strategies::Strategy,
@@ -330,6 +360,31 @@ fn params_fingerprint_with_source(
     data_fp: u64,
     exec: &crate::engine::ExecConfig,
     outputs: OutputSet,
+    source: &str,
+) -> u64 {
+    params_fingerprint_with_source_and_stop(
+        strategy,
+        n,
+        balance,
+        window,
+        data_fp,
+        exec,
+        outputs,
+        &crate::engine::StopConfig::default(),
+        source,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn params_fingerprint_with_source_and_stop(
+    strategy: &dyn crate::strategies::Strategy,
+    n: usize,
+    balance: crate::money::Amount,
+    window: &str,
+    data_fp: u64,
+    exec: &crate::engine::ExecConfig,
+    outputs: OutputSet,
+    stop: &crate::engine::StopConfig,
     source: &str,
 ) -> u64 {
     let mut h = fnv_bytes(FNV_OFFSET, &data_fp.to_le_bytes());
@@ -348,8 +403,19 @@ fn params_fingerprint_with_source(
     // 实现版本: 代码一变, 指纹必变 ⇒ 旧缓存必然不命中。
     h = fnv_bytes(h, source.as_bytes());
     h = fnv_bytes(h, &[FNV_COL_SEP]);
+    // 止损是运行口径的一部分: 同一策略同一参数换 stop 必须重算。
+    let stop_params = stop.param_str();
+    h = fnv_bytes(h, stop_params.as_bytes());
+    h = fnv_bytes(h, &[FNV_COL_SEP]);
     for i in 0..n {
-        h = fnv_bytes(h, strategy.param_str(i).as_bytes());
+        // 与报告行主键 `stop.apply_to(param_str)` 逐字节等价, 但避免每档
+        // 多分配一个 `base;stop` 字符串(FNV 逐字节, 拼接哈希可分段喂入)。
+        let base = strategy.param_str(i);
+        h = fnv_bytes(h, base.as_bytes());
+        if !stop_params.is_empty() {
+            h = fnv_bytes(h, b";");
+            h = fnv_bytes(h, stop_params.as_bytes());
+        }
         h = fnv_bytes(h, &[FNV_COL_SEP]);
     }
     h
@@ -551,7 +617,7 @@ fn check_batch_len(name: &str, got: usize, want: usize) -> crate::error::Result<
 /// 它要全量扫描 4 条价格列, 放在这里等于把一次 O(T) 扫描乘以策略数。
 /// 返回 (组合文件路径, 是否本次计算; false 表示命中缓存被跳过)。
 fn run_combo(
-    strategy: &dyn crate::strategies::Strategy,
+    job: &StrategyJob,
     symbol: &str,
     tf: &str,
     cols: &kline_reader::KlineColumns,
@@ -559,6 +625,8 @@ fn run_combo(
     data_fp: u64,
     ctx: &ComboCtx,
 ) -> crate::error::Result<(PathBuf, bool)> {
+    let strategy = job.strategy.as_ref();
+    let stop = &job.stop;
     let n = strategy.param_count();
 
     let combo_path = combo_parquet_path(
@@ -566,7 +634,7 @@ fn run_combo(
         symbol,
         tf,
         strategy.name(),
-        params_fingerprint(
+        params_fingerprint_with_stop(
             strategy,
             n,
             ctx.balance,
@@ -577,6 +645,7 @@ fn run_combo(
                 detail: ctx.detail,
                 fixed_curves: ctx.fixed_curves,
             },
+            stop,
         ),
     );
 
@@ -683,25 +752,28 @@ fn run_combo(
                     let i = start + k;
                     match outcome {
                         crate::strategies::ParamOutcome::Signals(signals) => {
-                            let sim = crate::engine::simulate_detailed(
+                            let sim = crate::engine::simulate_detailed_ohlc(
                                 cols.time(),
+                                cols.high(),
+                                cols.low(),
                                 cols.close(),
                                 cols.open(),
                                 &signals,
                                 ctx.balance,
                                 bpy,
                                 &ctx.exec,
+                                stop,
                             )?;
                             let status = RunStatus::classify(&signals, &sim.summary);
-                            Ok((strategy.param_str(i), Some(sim), status))
+                            Ok((stop.apply_to(&strategy.param_str(i)), Some(sim), status))
                         }
                         crate::strategies::ParamOutcome::Skipped(reason) => {
+                            let params = stop.apply_to(&strategy.param_str(i));
                             tracing::warn!(
-                                "  [{}] 参数档位 {} 不可计算: {reason}(记为 invalid, 继续)",
+                                "  [{}] 参数档位 {params} 不可计算: {reason}(记为 invalid, 继续)",
                                 strategy.name(),
-                                strategy.param_str(i)
                             );
-                            Ok((strategy.param_str(i), None, RunStatus::Invalid))
+                            Ok((params, None, RunStatus::Invalid))
                         }
                     }
                 })
@@ -802,17 +874,21 @@ fn run_combo(
                 .map(|(k, outcome)| {
                     let i = start + k;
                     // `param_str` 会为每次调用分配一个 `String`。本分支需要它三次
-                    // (params 列 + 两列派生编码), 故只算一次再复用。
-                    let params = strategy.param_str(i);
+                    // (params 列 + 两列派生编码), 故只算一次再复用。止损后缀必须
+                    // 拼进 params, 否则同一策略的 stop 网格行主键会碰撞。
+                    let params = stop.apply_to(&strategy.param_str(i));
                     match outcome {
                         crate::strategies::ParamOutcome::Signals(signals) => {
-                            let metrics = crate::engine::simulate(
+                            let metrics = crate::engine::simulate_ohlc(
+                                cols.high(),
+                                cols.low(),
                                 cols.close(),
                                 cols.open(),
                                 &signals,
                                 ctx.balance,
                                 bpy,
                                 &ctx.exec,
+                                stop,
                             )?;
                             let status = RunStatus::classify(&signals, &metrics);
                             Ok(ctx.run_row(
@@ -901,10 +977,10 @@ pub struct RunOptions {
 pub fn run_with(config_path: &std::path::Path, opts: RunOptions) -> crate::error::Result<()> {
     let config = config::load_config(config_path)?;
     config.validate()?;
-    // 必须走 `build_strategies_checked`: 它在构建后对展开网格做 `param_str` 唯一性
-    // 自检, 碰撞即报错。直接用 `build_strategies` 会静默产出 parquet
-    // `strategy_params` 列碰撞的组合(见 build.rs 的文档)。
-    let strategies = build_strategies_checked(&config.strategy)?;
+    // 必须走 `build_jobs_checked`: 它构建策略 + 该条配置的 stop, 并在每条策略内
+    // 对展开网格做 `param_str` 唯一性自检。直接用 `build_strategies` 会丢掉 stop,
+    // 也静默放过 parquet `strategy_params` 列碰撞(见 build.rs 的文档)。
+    let jobs = build_jobs_checked(&config.strategy)?;
     let detail = config.output.as_ref().is_some_and(|o| o.detail);
     let fixed_curves = config.output.as_ref().is_some_and(|o| o.fixed_curves);
     let overwrite = config.output.as_ref().is_some_and(|o| o.overwrite);
@@ -970,8 +1046,8 @@ pub fn run_with(config_path: &std::path::Path, opts: RunOptions) -> crate::error
         "  扫描规模: {} 品种 × {} 周期 × {} 策略 = {} 组",
         symbols.len(),
         timeframes.len(),
-        strategies.len(),
-        pairs_total * strategies.len()
+        jobs.len(),
+        pairs_total * jobs.len()
     );
     tracing::info!("{}", "=".repeat(70));
 
@@ -1013,9 +1089,8 @@ pub fn run_with(config_path: &std::path::Path, opts: RunOptions) -> crate::error
             // 语义不变 —— 同一份 `cols` 对全部策略的判定本就相同, 提前失败
             // 反而更早报错(且不依赖是否走到策略层)。
             validate_columns(&cols, &format!("{symbol}/{tf}"))?;
-            for strategy in &strategies {
-                let (combo_path, computed) =
-                    run_combo(strategy.as_ref(), symbol, tf, &cols, bpy, data_fp, &ctx)?;
+            for job in &jobs {
+                let (combo_path, computed) = run_combo(job, symbol, tf, &cols, bpy, data_fp, &ctx)?;
                 if computed {
                     ran += 1;
                 } else {
@@ -1393,6 +1468,62 @@ mod tests {
         );
     }
 
+    /// 止损配置必须进入缓存指纹: 同一策略同参数换 stop 必须重算, 不能命中
+    /// 旧缓存后把旧止损结果冒充新结果。
+    #[test]
+    fn fingerprint_covers_stop_config() {
+        let s = build_strategies_checked(&[config::StrategyConfig::Sma(config::MaGridCfg {
+            period: config::PeriodParam::Single(20),
+        })])
+        .expect("sma 网格合法")
+        .pop()
+        .expect("sma");
+        let fp = data_fingerprint(&cols(10));
+        let exec = crate::engine::ExecConfig::default();
+        let outputs = OutputSet::default();
+        let base = params_fingerprint_with_stop(
+            &*s,
+            1,
+            crate::money::Amount::from_i64(10_000),
+            "a~b",
+            fp,
+            &exec,
+            outputs,
+            &crate::engine::StopConfig::default(),
+        );
+        let sl = crate::engine::StopConfig {
+            stop_loss_pct: Some(2.0),
+            trailing_stop_pct: None,
+        };
+        let trail = crate::engine::StopConfig {
+            stop_loss_pct: None,
+            trailing_stop_pct: Some(5.0),
+        };
+        let with_sl = params_fingerprint_with_stop(
+            &*s,
+            1,
+            crate::money::Amount::from_i64(10_000),
+            "a~b",
+            fp,
+            &exec,
+            outputs,
+            &sl,
+        );
+        let with_trail = params_fingerprint_with_stop(
+            &*s,
+            1,
+            crate::money::Amount::from_i64(10_000),
+            "a~b",
+            fp,
+            &exec,
+            outputs,
+            &trail,
+        );
+        assert_ne!(base, with_sl, "固定止损必须改变缓存指纹");
+        assert_ne!(base, with_trail, "追踪止损必须改变缓存指纹");
+        assert_ne!(with_sl, with_trail, "不同止损配置必须可区分");
+    }
+
     /// **回归**: 指纹必须含**实现版本**(源码内容哈希)。
     ///
     /// 可触发场景: 指纹只覆盖"输入"(数据/资金/窗口/口径/参数)时, 改完策略代码
@@ -1681,12 +1812,10 @@ mod tests {
             "run() 中应只算一次 data_fingerprint"
         );
         let fp_at = run_body.find("data_fingerprint(").expect("已定位");
-        let loop_at = run_body
-            .find("for strategy in &strategies")
-            .expect("已定位策略循环");
+        let loop_at = run_body.find("for job in &jobs").expect("已定位策略循环");
         assert!(
             fp_at < loop_at,
-            "data_fingerprint 必须在 `for strategy in &strategies` 之前计算"
+            "data_fingerprint 必须在 `for job in &jobs` 之前计算"
         );
 
         // run_combo 内部不得再算(否则按策略重复)。
@@ -1701,20 +1830,20 @@ mod tests {
         );
     }
 
-    /// 回归: `build_strategies_checked` 的唯一性自检必须在**生产路径** `run()` 上生效。
+    /// 回归: `build_jobs_checked` 的唯一性自检必须在**生产路径** `run()` 上生效。
     ///
     /// 可触发场景: `run()` 曾直接调 `build_strategies`(不做自检), 而
     /// `build_strategies_checked` 全仓库无调用方 —— 于是 `param_str` 碰撞完全静默,
     /// parquet 的 `strategy_params` 列排序错乱且无任何提示; README 却宣称该自检
-    /// "每次启动时"运行。此测试锁定 `run()` 必须走 checked 变体。
+    /// "每次启动时"运行。此测试锁定 `run()` 必须走 checked 变体, 且保留 stop。
     #[test]
     fn run_uses_the_uniqueness_checked_strategy_builder() {
         let src = include_str!("mod.rs");
         let body = src.split("pub fn run(").nth(1).expect("源码中应存在 run()");
         let body = body.split("\n#[cfg(test)]").next().expect("run() 函数体");
         assert!(
-            body.contains("build_strategies_checked("),
-            "run() 必须调用 build_strategies_checked, 否则参数网格碰撞检查形同虚设"
+            body.contains("build_jobs_checked("),
+            "run() 必须调用 build_jobs_checked, 否则参数网格碰撞检查与 stop 都会失效"
         );
         assert!(
             !body.contains("= build_strategies("),

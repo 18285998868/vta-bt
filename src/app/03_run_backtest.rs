@@ -1,6 +1,7 @@
 use std::num::NonZeroUsize;
 
 use rayon::prelude::*;
+use serde::Deserialize;
 
 use crate::strategies::Signal;
 
@@ -33,6 +34,10 @@ pub struct SummaryMetrics {
     pub calmar_ratio: f64,
     /// 已平仓交易笔数(往返各计一次)。
     pub num_trades: u32,
+    /// 因固定百分比止损离场的笔数。
+    pub stop_loss_exits: u32,
+    /// 因百分比追踪止损离场的笔数。
+    pub trailing_stop_exits: u32,
     /// 盈利笔的平均 pnl(货币; 定点十进制)。
     pub avg_win: crate::money::Amount,
     /// 亏损笔的平均亏损**绝对值**(货币, 正数; 定点十进制)。
@@ -117,6 +122,71 @@ impl SummaryMetrics {
         self.delay_bars = exec.delay_u32();
         self.fee_bps = exec.fee_rate * 10_000.0;
         self.slippage_bps = exec.slip_rate * 10_000.0;
+    }
+}
+
+/// 持仓期风险覆盖(按 `[[strategy]]` 配置)。
+///
+/// 两个字段都是**百分比**: `2.0` = 2%。`None` 表示该止损关闭。
+/// 止损只作用于**引擎已成交的持仓**, 不改变策略信号本身。
+#[derive(Debug, Clone, Copy, PartialEq, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct StopConfig {
+    /// 固定止损: 多头 `entry × (1 - pct/100)`, 空头 `entry × (1 + pct/100)`。
+    pub stop_loss_pct: Option<f64>,
+    /// 追踪止损: 多头 `extreme × (1 - pct/100)`, 空头 `extreme × (1 + pct/100)`;
+    /// `extreme` 为入场后的最高 high / 最低 low。
+    pub trailing_stop_pct: Option<f64>,
+}
+
+impl StopConfig {
+    /// 是否未配置任何止损。
+    #[must_use]
+    pub fn is_none(&self) -> bool {
+        self.stop_loss_pct.is_none() && self.trailing_stop_pct.is_none()
+    }
+
+    /// 校验百分比范围: 必须严格位于 `(0, 100)`。
+    ///
+    /// # Errors
+    /// 任一配置值非有限、`<= 0` 或 `>= 100` 时返回 [`crate::error::AppError::Msg`]。
+    pub fn validate(&self) -> crate::error::Result<()> {
+        for (name, value) in [
+            ("stop_loss_pct", self.stop_loss_pct),
+            ("trailing_stop_pct", self.trailing_stop_pct),
+        ] {
+            if let Some(p) = value
+                && !(p.is_finite() && p > 0.0 && p < 100.0)
+            {
+                return Err(crate::error::AppError::Msg(format!(
+                    "{name} 必须是 (0, 100) 内的有限百分比, 当前为 {p}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// 参数串(用于报告 `params` 后缀与缓存指纹)。
+    #[must_use]
+    pub fn param_str(&self) -> String {
+        let mut parts = Vec::new();
+        if let Some(v) = self.stop_loss_pct {
+            parts.push(format!("stop_loss_pct={v}"));
+        }
+        if let Some(v) = self.trailing_stop_pct {
+            parts.push(format!("trailing_stop_pct={v}"));
+        }
+        parts.join(",")
+    }
+
+    /// 把止损参数追加到策略参数串; 未配置时**原样返回**, 保证旧结果键不变。
+    #[must_use]
+    pub fn apply_to(&self, base: &str) -> String {
+        if self.is_none() {
+            base.to_string()
+        } else {
+            format!("{base};{}", self.param_str())
+        }
     }
 }
 
@@ -392,6 +462,10 @@ pub struct Trade {
 pub enum ExitReason {
     /// 持仓被反向信号平掉。
     Signal,
+    /// 固定百分比止损触发。
+    StopLoss,
+    /// 百分比追踪止损触发。
+    TrailingStop,
     /// 数据末尾强制平仓。
     EndOfData,
 }
@@ -402,6 +476,8 @@ impl ExitReason {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Signal => "signal",
+            Self::StopLoss => "stop_loss",
+            Self::TrailingStop => "trailing_stop",
             Self::EndOfData => "end_of_data",
         }
     }
@@ -552,12 +628,18 @@ struct CloseOutcome {
     bars_held: i64,
     max_runup: f64,
     max_drawdown: f64,
+    /// 平仓原因, 用于累计止损笔数。
+    reason: ExitReason,
 }
 
 /// 已平仓交易的累计量。非 detailed 路径只需要它, 不需要保留逐笔 [`Trade`]。
 #[derive(Debug, Default)]
 struct TradeAccum {
     num_trades: u32,
+    /// 固定止损离场笔数。
+    stop_loss_exits: u32,
+    /// 追踪止损离场笔数。
+    trailing_stop_exits: u32,
     /// 逐笔 `pnl`: SQN / skew / kurtosis / pf-stability 的分半统计都要用它。
     ///
     /// **统计序列用 `f64`**: 这些是**统计量**(偏度/峰度/SQN), 本身是连续量,
@@ -659,6 +741,7 @@ fn close_outcome(args: CloseArgs) -> crate::error::Result<CloseOutcome> {
         bars_held: (exit_bar as i64) - (pos_entry_bar as i64),
         max_runup: trade_mfe,
         max_drawdown: trade_mae,
+        reason: args.reason,
     })
 }
 
@@ -678,6 +761,94 @@ fn materialize_trade(args: &CloseArgs, out: CloseOutcome) -> Trade {
         max_runup: out.max_runup,
         max_drawdown: out.max_drawdown,
         exit_reason: args.reason.as_str(),
+    }
+}
+
+/// 平仓时需要更新的账本/产物引用。
+///
+/// 单独成结构体而不是把 6 个 `&mut` 参数平铺: 调用点只构造一次, 且
+/// 「信号平仓 / 止损平仓 / 末根强平」三条路径共用同一段资金结算逻辑。
+struct CloseState<'a> {
+    cash: &'a mut crate::money::Amount,
+    acc: &'a mut TradeAccum,
+    trades: &'a mut Vec<Trade>,
+    fixed_realized: &'a mut crate::money::Amount,
+    fixed_qty: &'a mut crate::money::Amount,
+    collect_curves: bool,
+}
+
+/// 结算一笔平仓并更新所有账本/产物。
+fn close_at(args: CloseArgs, st: &mut CloseState<'_>) -> crate::error::Result<()> {
+    let out = close_outcome(args)?;
+    *st.cash = st.cash.plus(out.cash_delta)?;
+    st.acc.push(out)?;
+    if st.collect_curves {
+        st.trades.push(materialize_trade(&args, out));
+    }
+    *st.fixed_realized = st.fixed_realized.plus(out.fixed_pnl)?;
+    *st.fixed_qty = crate::money::Amount::ZERO;
+    Ok(())
+}
+
+/// 当前持仓的有效止损价与原因。
+///
+/// 同时配置固定止损和追踪止损时取**更紧**的一条: 多头取较高价, 空头取较低价。
+/// 追踪止损尚未超过固定止损时, 有效止损仍是固定止损。
+fn active_stop(
+    cur_pos: Side,
+    stop_loss: Option<f64>,
+    trailing_stop: Option<f64>,
+) -> Option<(f64, ExitReason)> {
+    match (stop_loss, trailing_stop) {
+        (Some(sl), Some(tr)) => match cur_pos {
+            Side::Long if sl >= tr => Some((sl, ExitReason::StopLoss)),
+            Side::Long => Some((tr, ExitReason::TrailingStop)),
+            Side::Short if sl <= tr => Some((sl, ExitReason::StopLoss)),
+            Side::Short => Some((tr, ExitReason::TrailingStop)),
+            Side::Flat => None,
+        },
+        (Some(sl), None) => Some((sl, ExitReason::StopLoss)),
+        (None, Some(tr)) => Some((tr, ExitReason::TrailingStop)),
+        (None, None) => None,
+    }
+}
+
+/// 本 bar 是否触发止损, 返回**未扣滑点**的成交基准价与原因。
+///
+/// 盘中触发: 多头 `low <= stop`, 空头 `high >= stop`。跳空时按 `open` 成交
+/// (多头向下跳空、空头向上跳空), 否则按止损价成交。
+#[allow(clippy::too_many_arguments)]
+fn stop_exit_price(
+    bar: usize,
+    cur_pos: Side,
+    high: &[f64],
+    low: &[f64],
+    open: &[f64],
+    close: &[f64],
+    stop_loss: Option<f64>,
+    trailing_stop: Option<f64>,
+) -> Option<(f64, ExitReason)> {
+    let (stop, reason) = active_stop(cur_pos, stop_loss, trailing_stop)?;
+    if !stop.is_finite() || stop <= 0.0 {
+        return None;
+    }
+    let fallback = close.get(bar).copied()?;
+    let o = open
+        .get(bar)
+        .copied()
+        .filter(|p| p.is_finite() && *p > 0.0)
+        .unwrap_or(fallback);
+    let h = high.get(bar).copied().unwrap_or(fallback);
+    let l = low.get(bar).copied().unwrap_or(fallback);
+    if !o.is_finite() || !h.is_finite() || !l.is_finite() {
+        return None;
+    }
+    match cur_pos {
+        Side::Long if o <= stop => Some((o, reason)),
+        Side::Long if l <= stop => Some((stop, reason)),
+        Side::Short if o >= stop => Some((o, reason)),
+        Side::Short if h >= stop => Some((stop, reason)),
+        _ => None,
     }
 }
 
@@ -738,15 +909,23 @@ struct ScanOut {
 /// `open` 允许比 `close` 短(公共 API 的宽松契约): 缺失的开盘价由 [`fill_at`]
 /// 退回收盘价, **不会**因此少回测末尾的 bar。旧实现把 `open.len()` 也算进
 /// `n` 的 `min`, 于是 `open = []` 时整段信号被静默丢弃、一笔都不成交。
+///
+/// `high` / `low` 只在配置了 [`StopConfig`] 时参与盘中止损判定; 未配置时
+/// 完全不影响结果。`risk` 为空时与旧路径逐位一致。
+#[allow(clippy::too_many_arguments)]
 fn scan_trades(
+    high: &[f64],
+    low: &[f64],
     close: &[f64],
     open: &[f64],
     signals: &[Signal],
     time: &[i64],
     initial_cash: crate::money::Amount,
     exec: &ExecConfig,
+    risk: &StopConfig,
     collect_curves: bool,
 ) -> crate::error::Result<ScanOut> {
+    risk.validate()?;
     let n = close.len().min(signals.len());
     let ts = |i: usize| if i < time.len() { time[i] } else { i as i64 };
     // 钱账本: 全部定点十进制(`domain-fintech`: 不用 f64 承载货币)。
@@ -795,17 +974,97 @@ fn scan_trades(
     let mut trade_mfe: f64 = 0.0;
     let mut trade_mae: f64 = 0.0;
 
+    // 持仓期止损状态。全部 `Option`: 未配置 / 已平仓时为 None, 不用 NaN 哨兵。
+    // `pos_entry_at_close`: 本笔入场是否发生在 bar 收盘。收盘成交时当根
+    // high/low 已在入场前走完, 故当根**不得**回溯触发止损。
+    let mut pos_entry_at_close = false;
+    let mut pos_stop_loss: Option<f64> = None;
+    let mut pos_trail_extreme: Option<f64> = None;
+    let mut pos_trail_stop: Option<f64> = None;
+
     // 信号在 fill bar 才生效: 每个 bar 算出的目标方向要延迟 `delay` 根 bar 再应用。
     // 队列只保存尚未到期的目标(O(delay) 内存), 不物化 O(T) 的目标序列。
-    //
-    // 旧实现把 `cur_pos`/`cash` 在**信号 bar** 就改掉、却用 `i + delay` 的价格成交,
-    // 于是权益曲线在成交前就按未来价格盯市 —— Sharpe / 回撤 / Sortino 全部被污染。
-    // 现在所有状态变更都推迟到 fill bar, 曲线在 bar i 只反映 bar i 及之前已发生的成交。
+    // 声明在止损宏之前: 止损平仓时宏要把“stop 之前排队”的陈旧目标作废。
     let delay = exec.delay();
     let mut pending: std::collections::VecDeque<Side> =
         std::collections::VecDeque::with_capacity(delay.min(n));
 
+    // 止损平仓与信号平仓共用同一套账本结算; 宏只负责把当前 bar 的止损
+    // 状态、成交价与原因拼成 `CloseArgs`。用宏而不是闭包: 闭包会长期
+    // 可变借用 `cash`/`acc`/`trades`, 与循环内其他读写冲突。
+    macro_rules! try_stop_exit {
+        ($bar:expr) => {{
+            if cur_pos.is_open()
+                && !($bar == pos_entry_bar && pos_entry_at_close)
+                && let Some((base, reason)) = stop_exit_price(
+                    $bar,
+                    cur_pos,
+                    high,
+                    low,
+                    open,
+                    close,
+                    pos_stop_loss,
+                    pos_trail_stop,
+                )
+            {
+                let exit_price = fill_price(cur_pos.opposite(), base, exec.slip_rate);
+                if valid_fill_price(exit_price) {
+                    let cargs = CloseArgs {
+                        cur_pos,
+                        pos_qty,
+                        pos_entry,
+                        pos_entry_time,
+                        pos_entry_bar,
+                        exit_price,
+                        exit_time: ts($bar),
+                        exit_bar: $bar,
+                        initial_cash,
+                        trade_mfe,
+                        trade_mae,
+                        fee_rate: exec.fee_rate,
+                        reason,
+                    };
+                    close_at(
+                        cargs,
+                        &mut CloseState {
+                            cash: &mut cash,
+                            acc: &mut acc,
+                            trades: &mut trades,
+                            fixed_realized: &mut fixed_realized,
+                            fixed_qty: &mut fixed_qty,
+                            collect_curves,
+                        },
+                    )?;
+                    cur_pos = Side::Flat;
+                    trade_mfe = 0.0;
+                    trade_mae = 0.0;
+                    pos_stop_loss = None;
+                    pos_trail_extreme = None;
+                    pos_trail_stop = None;
+                    // 止损是风险覆盖, 不是策略信号: 平仓后把目标重置为 Flat,
+                    // 并把 stop 之前已经排队的陈旧目标全部改成 Flat。**不能
+                    // clear**: 队列长度编码了 delay 的时序, 清空会让下一根
+                    // 新信号提前成交; 用 Flat 占位既保持长度, 又不会重入。
+                    // 只有止损 bar 及之后新出现的 Buy/Sell 才会重新入场。
+                    target = Side::Flat;
+                    for slot in &mut pending {
+                        *slot = Side::Flat;
+                    }
+                }
+            }
+        }};
+    }
+
+    // 旧实现把 `cur_pos`/`cash` 在**信号 bar** 就改掉、却用 `i + delay` 的价格成交,
+    // 于是权益曲线在成交前就按未来价格盯市 —— Sharpe / 回撤 / Sortino 全部被污染。
+    // 现在所有状态变更都推迟到 fill bar, 曲线在 bar i 只反映 bar i 及之前已发生的成交。
     for i in 0..n {
+        // 0) `fill_close=true` 时, 到期信号在收盘才成交; 盘中 stop 可能先触发。
+        //    先查 stop, 再执行收盘信号, 避免用收盘价"跳过"盘中已经发生的止损。
+        if exec.fill_close {
+            try_stop_exit!(i);
+        }
+
         // 1) 先处理本 bar 到期的成交(信号 bar `i - delay` 的目标方向)。
         if i >= delay
             && let Some(due) = pending.pop_front()
@@ -832,17 +1091,23 @@ fn scan_trades(
                         fee_rate: exec.fee_rate,
                         reason: ExitReason::Signal,
                     };
-                    let out = close_outcome(cargs)?;
-                    cash = cash.plus(out.cash_delta)?;
-                    acc.push(out)?;
-                    if collect_curves {
-                        trades.push(materialize_trade(&cargs, out));
-                    }
-                    fixed_realized = fixed_realized.plus(out.fixed_pnl)?;
-                    fixed_qty = crate::money::Amount::ZERO;
+                    close_at(
+                        cargs,
+                        &mut CloseState {
+                            cash: &mut cash,
+                            acc: &mut acc,
+                            trades: &mut trades,
+                            fixed_realized: &mut fixed_realized,
+                            fixed_qty: &mut fixed_qty,
+                            collect_curves,
+                        },
+                    )?;
                     cur_pos = Side::Flat;
                     trade_mfe = 0.0;
                     trade_mae = 0.0;
+                    pos_stop_loss = None;
+                    pos_trail_extreme = None;
+                    pos_trail_stop = None;
                 }
             }
 
@@ -880,8 +1145,31 @@ fn scan_trades(
                     cur_pos = due;
                     trade_mfe = 0.0;
                     trade_mae = 0.0;
+                    // 收盘成交时, 本根 high/low 发生在入场之前, 不得回溯触发止损。
+                    pos_entry_at_close = exec.fill_close || open.get(i).is_none();
+                    pos_stop_loss = risk.stop_loss_pct.map(|pct| {
+                        if due == Side::Long {
+                            entry_price * (1.0 - pct / 100.0)
+                        } else {
+                            entry_price * (1.0 + pct / 100.0)
+                        }
+                    });
+                    pos_trail_extreme = risk.trailing_stop_pct.map(|_| entry_price);
+                    pos_trail_stop = risk.trailing_stop_pct.map(|pct| {
+                        if due == Side::Long {
+                            entry_price * (1.0 - pct / 100.0)
+                        } else {
+                            entry_price * (1.0 + pct / 100.0)
+                        }
+                    });
                 }
             }
+        }
+
+        // `fill_close=false` 时, 到期信号已在开盘成交; 新仓在**同一根 bar**
+        // 内就可能触发止损(开盘成交, 盘中 high/low 尚未走完)。
+        if !exec.fill_close {
+            try_stop_exit!(i);
         }
 
         // 2) 浮动盈亏只统计已成交持仓(fill bar 之后), fill 前的漂移不计入 MFE/MAE。
@@ -938,6 +1226,32 @@ fn scan_trades(
             tail_feq = feq;
         }
 
+        // 3b) 追踪止损只用**已收盘 bar** 的 high/low 更新 extreme, 供下一根
+        //     bar 判定; 当根入场且为收盘成交时跳过, 避免把入场前的行情算进去。
+        if cur_pos.is_open()
+            && let Some(pct) = risk.trailing_stop_pct
+        {
+            if !(i == pos_entry_bar && pos_entry_at_close) {
+                let h = high.get(i).copied().unwrap_or(close[i]);
+                let l = low.get(i).copied().unwrap_or(close[i]);
+                if let Some(ext) = pos_trail_extreme {
+                    let next = match cur_pos {
+                        Side::Long if h.is_finite() => ext.max(h),
+                        Side::Short if l.is_finite() => ext.min(l),
+                        _ => ext,
+                    };
+                    pos_trail_extreme = Some(next);
+                }
+            }
+            if let Some(ext) = pos_trail_extreme {
+                pos_trail_stop = Some(if cur_pos == Side::Long {
+                    ext * (1.0 - pct / 100.0)
+                } else {
+                    ext * (1.0 + pct / 100.0)
+                });
+            }
+        }
+
         // 4) 本 bar 的信号只影响 `i + delay` 的成交, 先算出新目标并排队。
         target = next_target(target, signals[i]);
         pending.push_back(target);
@@ -963,13 +1277,17 @@ fn scan_trades(
                 fee_rate: exec.fee_rate,
                 reason: ExitReason::EndOfData,
             };
-            let out = close_outcome(cargs)?;
-            cash = cash.plus(out.cash_delta)?;
-            acc.push(out)?;
-            if collect_curves {
-                trades.push(materialize_trade(&cargs, out));
-            }
-            fixed_realized = fixed_realized.plus(out.fixed_pnl)?;
+            close_at(
+                cargs,
+                &mut CloseState {
+                    cash: &mut cash,
+                    acc: &mut acc,
+                    trades: &mut trades,
+                    fixed_realized: &mut fixed_realized,
+                    fixed_qty: &mut fixed_qty,
+                    collect_curves,
+                },
+            )?;
             // 强制平仓: 末根权益由盯市值改写为已实现 cash(扣掉平仓费与滑点)。
             tail_eq = cash.to_f64();
             tail_eq_amt = cash;
@@ -1079,6 +1397,11 @@ impl TradeAccum {
     /// pf-stability 分半统计都需要逐笔 pnl。其余字段都可以从它导出, 故不重复存。
     fn push(&mut self, o: CloseOutcome) -> crate::error::Result<()> {
         self.num_trades += 1;
+        match o.reason {
+            ExitReason::StopLoss => self.stop_loss_exits += 1,
+            ExitReason::TrailingStop => self.trailing_stop_exits += 1,
+            ExitReason::Signal | ExitReason::EndOfData => {}
+        }
         self.pnls.push(o.pnl.to_f64());
         self.fixed_pnls.push(o.fixed_pnl.to_f64());
         self.total_fixed_pnl = self
@@ -1587,6 +1910,8 @@ fn compute_metrics(
         profit_factor,
         calmar_ratio: calmar,
         num_trades,
+        stop_loss_exits: out.acc.stop_loss_exits,
+        trailing_stop_exits: out.acc.trailing_stop_exits,
         avg_win,
         avg_loss,
         expectancy,
@@ -1656,8 +1981,50 @@ pub fn simulate(
     bars_per_year: f64,
     exec: &ExecConfig,
 ) -> crate::error::Result<SummaryMetrics> {
+    simulate_ohlc(
+        close,
+        close,
+        close,
+        open,
+        signals,
+        initial_cash,
+        bars_per_year,
+        exec,
+        &StopConfig::default(),
+    )
+}
+
+/// 带盘中 high/low 与持仓期止损的回测。
+///
+/// `high` / `low` 必须与 `close` 同长(生产路径由 `KlineColumns` 保证); 缺失时
+/// 止损判定退回收盘价, 仅用于兼容旧调用。未配置 `risk` 时, `high` / `low`
+/// 完全不参与计算, 结果与 [`simulate`] 逐位一致。
+///
+/// # Errors
+/// 执行费率非法、止损百分比越界, 或配置了止损但 `high` / `low` 短于
+/// `close` 时返回错误。
+#[allow(clippy::too_many_arguments)]
+pub fn simulate_ohlc(
+    high: &[f64],
+    low: &[f64],
+    close: &[f64],
+    open: &[f64],
+    signals: &[Signal],
+    initial_cash: crate::money::Amount,
+    bars_per_year: f64,
+    exec: &ExecConfig,
+    risk: &StopConfig,
+) -> crate::error::Result<SummaryMetrics> {
     exec.validate_rates()?;
+    risk.validate()?;
     let n = close.len().min(signals.len());
+    if !risk.is_none() && (high.len() < n || low.len() < n) {
+        return Err(crate::error::AppError::Msg(format!(
+            "配置了止损但 high/low 长度不足: high={}, low={}, close={n}",
+            high.len(),
+            low.len()
+        )));
+    }
     if n < 2 {
         // 无成交 ⇒ 权益就是初始资金; 执行口径仍需回填, 否则报告里同一列
         // 会出现"数据不足的行是 0、正常行是真实值"的混排。
@@ -1670,7 +2037,18 @@ pub fn simulate(
     }
     // collect_curves = false: 不物化曲线与逐笔 Trade; 曲线统计在线累计,
     // 逐笔 pnl 仍保留(O(交易笔数))用于高阶矩与分半 PF。
-    let out = scan_trades(close, open, signals, &[], initial_cash, exec, false)?;
+    let out = scan_trades(
+        high,
+        low,
+        close,
+        open,
+        signals,
+        &[],
+        initial_cash,
+        exec,
+        risk,
+        false,
+    )?;
     debug_assert!(
         !out.collect_curves && out.detail.trades.is_empty(),
         "simulate 不得物化落盘产物"
@@ -1692,8 +2070,49 @@ pub fn simulate_detailed(
     bars_per_year: f64,
     exec: &ExecConfig,
 ) -> crate::error::Result<SimResult> {
+    simulate_detailed_ohlc(
+        time,
+        close,
+        close,
+        close,
+        open,
+        signals,
+        initial_cash,
+        bars_per_year,
+        exec,
+        &StopConfig::default(),
+    )
+}
+
+/// 带盘中 high/low 与持仓期止损的详细回测。
+///
+/// 与 [`simulate_ohlc`] 使用**同一条**指标计算路径, 仅额外物化逐笔交易与曲线。
+///
+/// # Errors
+/// 同 [`simulate_ohlc`]。
+#[allow(clippy::too_many_arguments)]
+pub fn simulate_detailed_ohlc(
+    time: &[i64],
+    high: &[f64],
+    low: &[f64],
+    close: &[f64],
+    open: &[f64],
+    signals: &[Signal],
+    initial_cash: crate::money::Amount,
+    bars_per_year: f64,
+    exec: &ExecConfig,
+    risk: &StopConfig,
+) -> crate::error::Result<SimResult> {
     exec.validate_rates()?;
+    risk.validate()?;
     let n = close.len().min(signals.len());
+    if !risk.is_none() && (high.len() < n || low.len() < n) {
+        return Err(crate::error::AppError::Msg(format!(
+            "配置了止损但 high/low 长度不足: high={}, low={}, close={n}",
+            high.len(),
+            low.len()
+        )));
+    }
     if n < 2 {
         let mut summary = SummaryMetrics {
             final_equity: initial_cash,
@@ -1709,7 +2128,18 @@ pub fn simulate_detailed(
     }
     // detailed 路径要落盘, 故额外物化逐笔 Trade 与两条曲线。
     // 注意指标仍只经 `out.metrics` 计算 —— 与 `simulate` 完全同源。
-    let out = scan_trades(close, open, signals, time, initial_cash, exec, true)?;
+    let out = scan_trades(
+        high,
+        low,
+        close,
+        open,
+        signals,
+        time,
+        initial_cash,
+        exec,
+        risk,
+        true,
+    )?;
     let mut summary = compute_metrics(&out.metrics, initial_cash, bars_per_year)?;
     summary.apply_exec(exec);
 
@@ -2516,10 +2946,13 @@ mod tests {
         let out = scan_trades(
             &close,
             &close,
+            &close,
+            &close,
             &sig,
             &[],
             crate::money::Amount::from_i64(10_000),
             &exec,
+            &StopConfig::default(),
             false,
         )
         .expect("合法回测必须成功");
@@ -2942,10 +3375,588 @@ mod tests {
         );
     }
 
+    /// 构造带止损的详细回测; 默认零费率、零滑点、`delay=1`。
+    fn run_stop(
+        open: &[f64],
+        high: &[f64],
+        low: &[f64],
+        close: &[f64],
+        signals: &[Signal],
+        stop: StopConfig,
+        fill_close: bool,
+    ) -> SimResult {
+        let time: Vec<i64> = (0..close.len() as i64).collect();
+        let exec = ExecConfig::try_from_bps_fill(1, 0.0, 0.0, fill_close)
+            .expect("零费率/零滑点/延迟 1 必须合法");
+        simulate_detailed_ohlc(
+            &time,
+            high,
+            low,
+            close,
+            open,
+            signals,
+            crate::money::Amount::from_i64(1_000),
+            252.0,
+            &exec,
+            &stop,
+        )
+        .expect("合法回测必须成功")
+    }
+
+    #[test]
+    fn stop_loss_long_triggers_intrabar_and_fills_at_stop() {
+        let open = [100.0, 100.0, 100.0, 98.0, 98.0];
+        let high = [101.0, 101.0, 100.0, 99.0, 99.0];
+        let low = [99.0, 99.0, 97.0, 97.0, 97.0];
+        let close = [100.0, 100.0, 98.0, 98.0, 98.0];
+        let signals = [
+            Signal::Buy,
+            Signal::Hold,
+            Signal::Close,
+            Signal::Hold,
+            Signal::Hold,
+        ];
+        let d = run_stop(
+            &open,
+            &high,
+            &low,
+            &close,
+            &signals,
+            StopConfig {
+                stop_loss_pct: Some(2.0),
+                trailing_stop_pct: None,
+            },
+            false,
+        );
+        assert_eq!(d.trades.len(), 1);
+        let t = &d.trades[0];
+        assert_eq!(t.side, Side::Long);
+        assert!((t.entry_price - 100.0).abs() < 1e-12);
+        assert!((t.exit_price - 98.0).abs() < 1e-12, "exit={}", t.exit_price);
+        assert_eq!(t.exit_reason, "stop_loss");
+        assert_eq!(d.summary.stop_loss_exits, 1);
+        assert_eq!(d.summary.trailing_stop_exits, 0);
+        assert!((d.summary.final_equity.to_f64() - 980.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn stop_loss_short_triggers_intrabar_and_fills_at_stop() {
+        let open = [100.0, 100.0, 100.0, 102.0, 102.0];
+        let high = [101.0, 101.0, 103.0, 103.0, 103.0];
+        let low = [99.0, 99.0, 99.0, 101.0, 101.0];
+        let close = [100.0, 100.0, 102.0, 102.0, 102.0];
+        let signals = [
+            Signal::Sell,
+            Signal::Hold,
+            Signal::Close,
+            Signal::Hold,
+            Signal::Hold,
+        ];
+        let d = run_stop(
+            &open,
+            &high,
+            &low,
+            &close,
+            &signals,
+            StopConfig {
+                stop_loss_pct: Some(2.0),
+                trailing_stop_pct: None,
+            },
+            false,
+        );
+        assert_eq!(d.trades.len(), 1);
+        let t = &d.trades[0];
+        assert_eq!(t.side, Side::Short);
+        assert!((t.entry_price - 100.0).abs() < 1e-12);
+        assert!(
+            (t.exit_price - 102.0).abs() < 1e-12,
+            "exit={}",
+            t.exit_price
+        );
+        assert_eq!(t.exit_reason, "stop_loss");
+        assert_eq!(d.summary.stop_loss_exits, 1);
+        assert!((d.summary.final_equity.to_f64() - 980.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn stop_loss_gap_fills_at_open_not_stop_price() {
+        let open = [100.0, 100.0, 95.0, 95.0, 95.0];
+        let high = [101.0, 101.0, 96.0, 96.0, 96.0];
+        let low = [99.0, 99.0, 94.0, 94.0, 94.0];
+        let close = [100.0, 100.0, 95.0, 95.0, 95.0];
+        let signals = [
+            Signal::Buy,
+            Signal::Hold,
+            Signal::Close,
+            Signal::Hold,
+            Signal::Hold,
+        ];
+        let d = run_stop(
+            &open,
+            &high,
+            &low,
+            &close,
+            &signals,
+            StopConfig {
+                stop_loss_pct: Some(2.0),
+                trailing_stop_pct: None,
+            },
+            false,
+        );
+        assert_eq!(d.trades.len(), 1);
+        let t = &d.trades[0];
+        assert!(
+            (t.exit_price - 95.0).abs() < 1e-12,
+            "跳空必须按 open 成交: {}",
+            t.exit_price
+        );
+        assert_eq!(t.exit_reason, "stop_loss");
+        assert!((d.summary.final_equity.to_f64() - 950.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn stop_exit_still_applies_slippage_and_fees() {
+        let open = [100.0, 100.0, 100.0, 100.0, 100.0];
+        let high = [101.0, 101.0, 100.0, 100.0, 100.0];
+        let low = [99.0, 99.0, 97.0, 97.0, 97.0];
+        let close = [100.0, 100.0, 98.0, 98.0, 98.0];
+        let signals = [
+            Signal::Buy,
+            Signal::Hold,
+            Signal::Close,
+            Signal::Hold,
+            Signal::Hold,
+        ];
+        let exec = ExecConfig::try_from_bps_fill(1, 10.0, 5.0, false).expect("费率/滑点合法");
+        let d = simulate_detailed_ohlc(
+            &[0, 1, 2, 3, 4],
+            &high,
+            &low,
+            &close,
+            &open,
+            &signals,
+            crate::money::Amount::from_i64(1_000),
+            252.0,
+            &exec,
+            &StopConfig {
+                stop_loss_pct: Some(2.0),
+                trailing_stop_pct: None,
+            },
+        )
+        .expect("合法回测必须成功");
+        assert_eq!(d.trades.len(), 1);
+        let t = &d.trades[0];
+        // 入场 100×(1+5bp)=100.05, 止损 100.05×0.98=98.049;
+        // 平仓再扣 5bp 逆向滑点 ⇒ 97.9999755。
+        assert!(
+            (t.exit_price - 97.999_975_5).abs() < 1e-9,
+            "exit={}",
+            t.exit_price
+        );
+        assert!(t.pnl < crate::money::Amount::ZERO, "止损必须是亏损");
+        assert!(
+            d.summary.final_equity.to_f64() < 980.0,
+            "费用/滑点必须计入止损路径: {}",
+            d.summary.final_equity.to_f64()
+        );
+        assert_eq!(d.summary.stop_loss_exits, 1);
+        assert!((d.summary.fee_bps - 10.0).abs() < 1e-12);
+        assert!((d.summary.slippage_bps - 5.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn trailing_stop_uses_prior_bar_extreme() {
+        let open = [100.0, 100.0, 108.0, 108.0, 108.0];
+        let high = [101.0, 110.0, 109.0, 109.0, 109.0];
+        let low = [99.0, 100.0, 104.0, 104.0, 104.0];
+        let close = [100.0, 108.0, 105.0, 105.0, 105.0];
+        let signals = [
+            Signal::Buy,
+            Signal::Hold,
+            Signal::Close,
+            Signal::Hold,
+            Signal::Hold,
+        ];
+        let d = run_stop(
+            &open,
+            &high,
+            &low,
+            &close,
+            &signals,
+            StopConfig {
+                stop_loss_pct: None,
+                trailing_stop_pct: Some(5.0),
+            },
+            false,
+        );
+        assert_eq!(d.trades.len(), 1);
+        let t = &d.trades[0];
+        // bar1 收盘后 extreme=110, 追踪止损=110×0.95=104.5; bar2 盘中触及。
+        assert!(
+            (t.exit_price - 104.5).abs() < 1e-12,
+            "exit={}",
+            t.exit_price
+        );
+        assert_eq!(t.exit_reason, "trailing_stop");
+        assert_eq!(d.summary.trailing_stop_exits, 1);
+        assert_eq!(d.summary.stop_loss_exits, 0);
+        assert!((d.summary.final_equity.to_f64() - 1_045.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn trailing_stop_short_ratchets_down_from_lowest_low() {
+        let open = [100.0, 100.0, 99.0, 99.0, 99.0];
+        let high = [101.0, 101.0, 100.0, 100.0, 100.0];
+        let low = [99.0, 95.0, 98.0, 98.0, 98.0];
+        let close = [100.0, 99.0, 99.5, 99.5, 99.5];
+        let signals = [
+            Signal::Sell,
+            Signal::Hold,
+            Signal::Close,
+            Signal::Hold,
+            Signal::Hold,
+        ];
+        let d = run_stop(
+            &open,
+            &high,
+            &low,
+            &close,
+            &signals,
+            StopConfig {
+                stop_loss_pct: None,
+                trailing_stop_pct: Some(5.0),
+            },
+            false,
+        );
+        assert_eq!(d.trades.len(), 1);
+        let t = &d.trades[0];
+        assert_eq!(t.side, Side::Short);
+        // bar1 收盘后 extreme=95, 空头追踪止损=95×1.05=99.75; bar2 盘中触及。
+        assert!(
+            (t.exit_price - 99.75).abs() < 1e-12,
+            "exit={}",
+            t.exit_price
+        );
+        assert_eq!(t.exit_reason, "trailing_stop");
+        assert_eq!(d.summary.trailing_stop_exits, 1);
+        assert_eq!(d.summary.stop_loss_exits, 0);
+        assert!((d.summary.final_equity.to_f64() - 1_002.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn fixed_stop_wins_when_it_is_tighter_than_initial_trailing_stop() {
+        let open = [100.0, 100.0, 100.0, 100.0, 100.0];
+        let high = [101.0, 110.0, 100.0, 100.0, 100.0];
+        let low = [99.0, 97.5, 99.0, 99.0, 99.0];
+        let close = [100.0, 100.0, 100.0, 100.0, 100.0];
+        let signals = [
+            Signal::Buy,
+            Signal::Close,
+            Signal::Hold,
+            Signal::Hold,
+            Signal::Hold,
+        ];
+        let d = run_stop(
+            &open,
+            &high,
+            &low,
+            &close,
+            &signals,
+            StopConfig {
+                stop_loss_pct: Some(2.0),
+                trailing_stop_pct: Some(5.0),
+            },
+            false,
+        );
+        assert_eq!(d.trades.len(), 1);
+        let t = &d.trades[0];
+        // 入场当根: 固定止损 98 比追踪止损 95 更紧; 即使 high=110, 追踪止损
+        // 也只能在**收盘后**更新, 不得回溯到当根。
+        assert!((t.exit_price - 98.0).abs() < 1e-12, "exit={}", t.exit_price);
+        assert_eq!(t.exit_reason, "stop_loss");
+        assert_eq!(d.summary.stop_loss_exits, 1);
+        assert_eq!(d.summary.trailing_stop_exits, 0);
+    }
+
+    #[test]
+    fn stop_checks_before_close_fill_signal() {
+        let open = [100.0, 100.0, 100.0, 100.0, 100.0];
+        let high = [101.0, 101.0, 101.0, 101.0, 101.0];
+        let low = [99.0, 99.0, 97.0, 99.0, 99.0];
+        let close = [100.0, 100.0, 99.0, 99.0, 99.0];
+        let signals = [
+            Signal::Buy,
+            Signal::Close,
+            Signal::Hold,
+            Signal::Hold,
+            Signal::Hold,
+        ];
+        let d = run_stop(
+            &open,
+            &high,
+            &low,
+            &close,
+            &signals,
+            StopConfig {
+                stop_loss_pct: Some(2.0),
+                trailing_stop_pct: None,
+            },
+            true,
+        );
+        assert_eq!(d.trades.len(), 1);
+        let t = &d.trades[0];
+        // bar1 收盘入场; bar2 盘中 stop 先于 bar1 发出的收盘平仓信号。
+        assert!((t.exit_price - 98.0).abs() < 1e-12, "exit={}", t.exit_price);
+        assert_eq!(t.exit_reason, "stop_loss");
+    }
+
+    #[test]
+    fn entry_at_close_does_not_trigger_stop_on_entry_bar() {
+        let open = [100.0, 100.0, 100.0, 100.0, 100.0];
+        let high = [101.0, 101.0, 101.0, 101.0, 101.0];
+        // bar1 的 low=90 发生在收盘入场之前, 不得回溯触发 98 的止损。
+        let low = [99.0, 90.0, 99.0, 99.0, 99.0];
+        let close = [100.0, 100.0, 100.0, 100.0, 100.0];
+        let signals = [
+            Signal::Buy,
+            Signal::Close,
+            Signal::Hold,
+            Signal::Hold,
+            Signal::Hold,
+        ];
+        let d = run_stop(
+            &open,
+            &high,
+            &low,
+            &close,
+            &signals,
+            StopConfig {
+                stop_loss_pct: Some(2.0),
+                trailing_stop_pct: None,
+            },
+            true,
+        );
+        assert_eq!(d.trades.len(), 1);
+        let t = &d.trades[0];
+        assert_eq!(t.exit_reason, "signal", "收盘入场当根不得触发止损");
+        assert!((t.exit_price - 100.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn entry_at_open_can_trigger_stop_on_same_bar() {
+        let open = [100.0, 100.0, 100.0, 100.0, 100.0];
+        let high = [101.0, 101.0, 101.0, 101.0, 101.0];
+        let low = [99.0, 97.0, 99.0, 99.0, 99.0];
+        let close = [100.0, 100.0, 100.0, 100.0, 100.0];
+        let signals = [
+            Signal::Buy,
+            Signal::Close,
+            Signal::Hold,
+            Signal::Hold,
+            Signal::Hold,
+        ];
+        let d = run_stop(
+            &open,
+            &high,
+            &low,
+            &close,
+            &signals,
+            StopConfig {
+                stop_loss_pct: Some(2.0),
+                trailing_stop_pct: None,
+            },
+            false,
+        );
+        assert_eq!(d.trades.len(), 1);
+        let t = &d.trades[0];
+        assert_eq!(t.exit_reason, "stop_loss");
+        assert!((t.exit_price - 98.0).abs() < 1e-12);
+        assert_eq!(t.bars_held, 0, "开盘入场当根止损: 持仓 0 bar");
+    }
+
+    #[test]
+    fn stop_forces_flat_until_a_new_entry_signal() {
+        // 止损后目标被重置为 Flat: 后续 Hold 不得把同一方向“接回来”。
+        let open = [100.0; 6];
+        let high = [101.0; 6];
+        let low = [99.0, 99.0, 97.0, 99.0, 99.0, 99.0];
+        let close = [100.0, 100.0, 98.0, 99.0, 99.0, 99.0];
+        let signals = [
+            Signal::Buy,
+            Signal::Hold,
+            Signal::Hold,
+            Signal::Hold,
+            Signal::Hold,
+            Signal::Hold,
+        ];
+        let d = run_stop(
+            &open,
+            &high,
+            &low,
+            &close,
+            &signals,
+            StopConfig {
+                stop_loss_pct: Some(2.0),
+                trailing_stop_pct: None,
+            },
+            false,
+        );
+        assert_eq!(d.trades.len(), 1, "Hold 不应在止损后自动重入");
+        assert_eq!(d.trades[0].exit_reason, "stop_loss");
+
+        // 新 Buy 信号仍可在 delay 后重新入场。
+        let signals = [
+            Signal::Buy,
+            Signal::Hold,
+            Signal::Hold,
+            Signal::Buy,
+            Signal::Hold,
+            Signal::Hold,
+        ];
+        let d = run_stop(
+            &open,
+            &high,
+            &low,
+            &close,
+            &signals,
+            StopConfig {
+                stop_loss_pct: Some(2.0),
+                trailing_stop_pct: None,
+            },
+            false,
+        );
+        assert_eq!(d.trades.len(), 2, "新 Buy 必须能重新入场");
+        assert_eq!(d.trades[1].entry_time, 4, "新 Buy 在信号后一根 bar 成交");
+        assert_eq!(d.trades[1].exit_reason, "end_of_data");
+    }
+
+    #[test]
+    fn stop_reset_preserves_delay_two_queue_alignment() {
+        // delay=2 + fill_close=true: 止损后队列必须用 Flat 占位而不是 clear,
+        // 否则下一根新 Buy 会提前一根 bar 成交。
+        let open = [100.0; 8];
+        let high = [101.0; 8];
+        let low = [99.0, 99.0, 99.0, 97.0, 99.0, 99.0, 99.0, 99.0];
+        let close = [100.0; 8];
+        let signals = [
+            Signal::Buy,
+            Signal::Hold,
+            Signal::Hold,
+            Signal::Hold,
+            Signal::Buy,
+            Signal::Hold,
+            Signal::Hold,
+            Signal::Hold,
+        ];
+        let exec =
+            ExecConfig::try_from_bps_fill(2, 0.0, 0.0, true).expect("delay=2 / 零费率必须合法");
+        let d = simulate_detailed_ohlc(
+            &[0, 1, 2, 3, 4, 5, 6, 7],
+            &high,
+            &low,
+            &close,
+            &open,
+            &signals,
+            crate::money::Amount::from_i64(1_000),
+            252.0,
+            &exec,
+            &StopConfig {
+                stop_loss_pct: Some(2.0),
+                trailing_stop_pct: None,
+            },
+        )
+        .expect("合法回测必须成功");
+        assert_eq!(d.trades.len(), 2);
+        assert_eq!(
+            d.trades[0].entry_time, 2,
+            "信号 bar0 + delay2 在 bar2 收盘成交"
+        );
+        assert_eq!(d.trades[0].exit_time, 3, "bar3 盘中触发止损");
+        assert_eq!(d.trades[0].exit_reason, "stop_loss");
+        assert_eq!(
+            d.trades[1].entry_time, 6,
+            "止损后新 Buy(bar4) 必须等到 bar6 才成交"
+        );
+        assert_eq!(d.trades[1].exit_reason, "end_of_data");
+    }
+
+    #[test]
+    fn no_stop_is_bit_identical_to_legacy_simulate() {
+        let n = 120;
+        let close = make_prices(n);
+        let open: Vec<f64> = close.iter().map(|p| p * 0.999).collect();
+        let signals: Vec<Signal> = (0..n)
+            .map(|i| {
+                if i % 17 == 0 {
+                    Signal::Buy
+                } else if i % 29 == 0 {
+                    Signal::Sell
+                } else {
+                    Signal::Hold
+                }
+            })
+            .collect();
+        let exec = ExecConfig::default();
+        let a = simulate(
+            &close,
+            &open,
+            &signals,
+            crate::money::Amount::from_i64(10_000),
+            252.0,
+            &exec,
+        )
+        .expect("legacy simulate");
+        let b = simulate_ohlc(
+            &close,
+            &close,
+            &close,
+            &open,
+            &signals,
+            crate::money::Amount::from_i64(10_000),
+            252.0,
+            &exec,
+            &StopConfig::default(),
+        )
+        .expect("no-stop ohlc simulate");
+        assert_eq!(a, b, "未配置止损时 high/low 不得改变任何指标");
+        assert_eq!(a.stop_loss_exits, 0);
+        assert_eq!(a.trailing_stop_exits, 0);
+
+        let da = simulate_detailed(
+            &[],
+            &close,
+            &open,
+            &signals,
+            crate::money::Amount::from_i64(10_000),
+            252.0,
+            &exec,
+        )
+        .expect("legacy detailed");
+        let db = simulate_detailed_ohlc(
+            &[],
+            &close,
+            &close,
+            &close,
+            &open,
+            &signals,
+            crate::money::Amount::from_i64(10_000),
+            252.0,
+            &exec,
+            &StopConfig::default(),
+        )
+        .expect("no-stop ohlc detailed");
+        assert_eq!(da.summary, db.summary);
+        assert_eq!(da.trades.len(), db.trades.len());
+        assert_eq!(da.equity_curve.len(), db.equity_curve.len());
+        assert_eq!(da.fixed_curve, db.fixed_curve);
+    }
+
     /// `exit_reason` 的取值集合必须封闭(落盘层按它做字典序统计)。
     #[test]
     fn exit_reason_values_are_closed_and_wrong() {
         assert_eq!(ExitReason::Signal.as_str(), "signal");
+        assert_eq!(ExitReason::StopLoss.as_str(), "stop_loss");
+        assert_eq!(ExitReason::TrailingStop.as_str(), "trailing_stop");
         assert_eq!(ExitReason::EndOfData.as_str(), "end_of_data");
         let n = 60;
         let close = make_prices(n);

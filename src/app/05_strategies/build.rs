@@ -86,7 +86,8 @@ use super::vwma::VwmaStrategy;
 use super::wilders::WildersStrategy;
 use super::wma::WmaStrategy;
 use super::zlema::ZlemaStrategy;
-use crate::config::StrategyConfig;
+use crate::config::{StrategyConfig, StrategySpec};
+use crate::engine::StopConfig;
 
 /// 构建全部策略, 并对展开后的参数网格做**唯一性自检**。
 ///
@@ -113,6 +114,35 @@ pub fn build_strategies_checked(
     let strategies = build_strategies(configs);
     check_param_uniqueness(&strategies)?;
     Ok(strategies)
+}
+
+/// 一个待回测单元: 策略实例 + 该条 `[[strategy]]` 的止损配置。
+///
+/// 止损是**运行参数**, 不是策略内部状态: 同一策略实例可以配不同 stop 重复运行,
+/// 策略代码无需知道止损存在。
+pub struct StrategyJob {
+    /// 已构建的策略实例。
+    pub strategy: Box<dyn Strategy>,
+    /// 该条策略的持仓期止损。
+    pub stop: StopConfig,
+}
+
+/// 按 `[[strategy]]` 顺序构建策略 + 止损, 并逐条做参数网格唯一性自检。
+///
+/// 与 [`build_strategies_checked`] 的区别: 后者只接收策略配置, 用于不关心
+/// 止损的测试/旧调用; 生产路径必须用本函数, 否则 `stop` 会丢失。
+pub fn build_jobs_checked(specs: &[StrategySpec]) -> crate::error::Result<Vec<StrategyJob>> {
+    let mut jobs = Vec::with_capacity(specs.len());
+    for spec in specs {
+        spec.stop.validate()?;
+        let strategy = build_one(&spec.strategy);
+        check_param_uniqueness(std::slice::from_ref(&strategy))?;
+        jobs.push(StrategyJob {
+            strategy,
+            stop: spec.stop,
+        });
+    }
+    Ok(jobs)
 }
 
 /// 逐策略检查两件事在参数网格内均两两不同:
@@ -263,9 +293,10 @@ fn build_one(sc: &StrategyConfig) -> Box<dyn Strategy> {
     }
 }
 
-/// 按配置顺序构建策略实例。
+/// 按配置顺序构建策略实例(不含 stop)。
 ///
-/// 生产路径请用 [`build_strategies_checked`], 它额外做参数网格唯一性自检。
+/// 生产路径请用 [`build_jobs_checked`], 它保留每条 `[[strategy]]` 的 stop,
+/// 并额外做参数网格唯一性自检; 本函数只供不关心 stop 的测试/旧调用。
 #[must_use]
 pub fn build_strategies(configs: &[StrategyConfig]) -> Vec<Box<dyn Strategy>> {
     configs.iter().map(build_one).collect()

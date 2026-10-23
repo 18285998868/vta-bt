@@ -96,14 +96,14 @@ fn real_configs_build_all_their_strategies() {
     ] {
         let text = std::fs::read_to_string(root.join(name)).expect("配置应可读");
         let cfg: vta::config::Config = toml::from_str(&text).expect("配置应可解析");
-        let sts = vta::strategies::build::build_strategies_checked(&cfg.strategy)
+        let jobs = vta::strategies::build::build_jobs_checked(&cfg.strategy)
             .unwrap_or_else(|e| panic!("{name}: {e}"));
         assert_eq!(
-            sts.len(),
+            jobs.len(),
             cfg.strategy.len(),
             "{name}: 配置了 {} 个策略却只构建出 {} 个 —— 有变体被 build_one 跳过",
             cfg.strategy.len(),
-            sts.len()
+            jobs.len()
         );
     }
 }

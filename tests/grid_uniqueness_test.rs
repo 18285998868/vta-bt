@@ -13,7 +13,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use vta::config::{Config, F64Param, PeriodParam, StrategyConfig};
-use vta::strategies::build::build_strategies_checked;
+use vta::strategies::build::{build_jobs_checked, build_strategies_checked};
 
 /// 解析仓库内的配置文件。路径相对 `CARGO_MANIFEST_DIR`。
 fn load_repo_config(name: &str) -> Config {
@@ -34,7 +34,7 @@ fn real_repository_configs_pass_the_uniqueness_check() {
         let cfg = load_repo_config(name);
         cfg.validate()
             .unwrap_or_else(|e| panic!("{name} 语义校验失败: {e}"));
-        build_strategies_checked(&cfg.strategy).unwrap_or_else(|e| {
+        build_jobs_checked(&cfg.strategy).unwrap_or_else(|e| {
             panic!("{name} 的参数网格被唯一性自检拒绝 —— 这是 false positive, 会阻断真实回测: {e}")
         });
     }

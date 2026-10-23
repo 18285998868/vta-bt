@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
+use crate::engine::StopConfig;
 use crate::error::AppError;
 use crate::strategies::aberration::AberrationConfig;
 use crate::strategies::atma::AtmaConfig;
@@ -66,6 +67,24 @@ use crate::strategies::turtle::TurtleConfig;
 use crate::strategies::vwap::VwapConfig;
 use crate::strategies::vwap_trend::VwapTrendConfig;
 
+/// 一条 `[[strategy]]` 条目: 策略参数 + **该策略专属**的持仓期止损。
+///
+/// 用 `#[serde(flatten)]` 而不是嵌套 `strategy = { ... }`: TOML 里保持
+/// `type = "sma"` 平铺, 同时允许 `stop = { stop_loss_pct = 2.0 }` 或
+/// `[strategy.stop]` 两种写法。`stop` 缺省为“无止损”。
+///
+/// 同一策略可以出现多次, 每次配不同的 `stop`, 从而形成 stop 参数网格;
+/// `params` 会带止损后缀, 缓存指纹与报告行因此保持唯一。
+#[derive(Debug, Clone, Deserialize)]
+pub struct StrategySpec {
+    /// 策略自身的配置(`type` + 参数)。
+    #[serde(flatten)]
+    pub strategy: StrategyConfig,
+    /// 该策略的持仓期止损; 缺省无止损。
+    #[serde(default)]
+    pub stop: StopConfig,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 /// 回测配置根。`deny_unknown_fields`: 拼错的键会直接报错而非被忽略。
@@ -76,8 +95,8 @@ pub struct Config {
     pub backtest: BacktestConfig,
     /// 输出选项; 缺省写到 `./reports/`。
     pub output: Option<OutputConfig>,
-    /// 要跑的策略列表(至少一个)。
-    pub strategy: Vec<StrategyConfig>,
+    /// 要跑的策略列表(至少一个); 每条可带独立止损。
+    pub strategy: Vec<StrategySpec>,
 }
 
 /// 单值或列表, 统一归一化为 `Vec<String>`。
@@ -234,8 +253,9 @@ impl Config {
         // 接入 validate 会在**编译期**失败。旧实现用
         // `_ => period_param().ok_or_else(...)?.validate()` 兜底, 漏改只会**静默**
         // 少校验(只校验 period), 是隐蔽的正确性陷阱。
-        for sc in &self.strategy {
-            match sc {
+        for spec in &self.strategy {
+            spec.stop.validate()?;
+            match &spec.strategy {
                 StrategyConfig::ATRBand(c) => c.validate()?,
                 StrategyConfig::Aberration(c) => c.validate()?,
                 StrategyConfig::Atma(c) => c.validate()?,
@@ -1330,5 +1350,69 @@ mod tests {
         assert_eq!(cfg.backtest.fill_bar_price, FillBarPrice::Close);
         let bad = toml.replace("\"close\"", "\"mid\"");
         assert!(toml::from_str::<Config>(&bad).is_err());
+    }
+
+    fn make_stop_toml(stop_body: &str) -> String {
+        format!(
+            "[data]\ntype = \"binance\"\ndir = \"/tmp\"\nsymbol = \"BTCUSDT\"\ntimeframe = \"1d\"\n\n\
+             [backtest]\ninitial_balance = 10000.0\n\n\
+             [[strategy]]\ntype = \"sma\"\nperiod = 20\n{stop_body}"
+        )
+    }
+
+    #[test]
+    fn strategy_stop_parses_inline_and_subtable_forms() {
+        let inline = make_stop_toml("stop = { stop_loss_pct = 2.0, trailing_stop_pct = 5.0 }\n");
+        let cfg: Config = toml::from_str(&inline).unwrap();
+        assert_eq!(cfg.strategy[0].stop.stop_loss_pct, Some(2.0));
+        assert_eq!(cfg.strategy[0].stop.trailing_stop_pct, Some(5.0));
+        assert!(cfg.validate().is_ok());
+
+        let subtable = make_stop_toml("[strategy.stop]\nstop_loss_pct = 2.0\n");
+        let cfg: Config = toml::from_str(&subtable).unwrap();
+        assert_eq!(cfg.strategy[0].stop.stop_loss_pct, Some(2.0));
+        assert_eq!(cfg.strategy[0].stop.trailing_stop_pct, None);
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn strategy_stop_is_per_entry_and_defaults_to_none() {
+        let toml = format!(
+            "{}\n[[strategy]]\ntype = \"sma\"\nperiod = 20\nstop = {{ stop_loss_pct = 3.0 }}\n",
+            make_stop_toml("")
+        );
+        let cfg: Config = toml::from_str(&toml).unwrap();
+        assert_eq!(cfg.strategy.len(), 2);
+        assert!(cfg.strategy[0].stop.is_none());
+        assert_eq!(cfg.strategy[1].stop.stop_loss_pct, Some(3.0));
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn strategy_stop_rejects_unknown_keys_and_out_of_range_values() {
+        let typo = make_stop_toml("stop = { stop_los_pct = 2.0 }\n");
+        assert!(
+            toml::from_str::<Config>(&typo).is_err(),
+            "stop 键名拼错必须报错"
+        );
+
+        for bad in [
+            "stop = { stop_loss_pct = 0.0 }\n",
+            "stop = { stop_loss_pct = 100.0 }\n",
+            "stop = { trailing_stop_pct = -1.0 }\n",
+            "stop = { trailing_stop_pct = nan }\n",
+        ] {
+            let cfg: Config = toml::from_str(&make_stop_toml(bad)).unwrap();
+            assert!(cfg.validate().is_err(), "非法止损必须被拒绝: {bad}");
+        }
+    }
+
+    #[test]
+    fn strategy_stop_does_not_weaken_unknown_strategy_field_check() {
+        let bad = make_stop_toml("bogus = 1\nstop = { stop_loss_pct = 2.0 }\n");
+        assert!(
+            toml::from_str::<Config>(&bad).is_err(),
+            "flatten 不得让策略拼错字段静默通过"
+        );
     }
 }

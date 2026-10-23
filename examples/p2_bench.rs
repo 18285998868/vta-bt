@@ -4,7 +4,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use std::time::Instant;
 use vta::config::Config;
-use vta::strategies::build::build_strategies_checked;
+use vta::strategies::build::build_jobs_checked;
 
 fn bench() {
     // 仓库根目录: 优先取环境变量, 否则用编译期已知的 `CARGO_MANIFEST_DIR`。
@@ -17,7 +17,9 @@ fn bench() {
     let cfg: Config = toml::from_str(&text).unwrap();
     // 用**带唯一性自检**的构建器: 与生产路径 `app::run` 同源,
     // 免得 benchmark 测的是一个生产永远不会跑的网格。
-    let sts = build_strategies_checked(&cfg.strategy).unwrap();
+    let jobs = build_jobs_checked(&cfg.strategy).unwrap();
+    let sts: Vec<&dyn vta::strategies::Strategy> =
+        jobs.iter().map(|job| job.strategy.as_ref()).collect();
 
     let total_params: usize = sts.iter().map(|s| s.param_count()).sum();
     println!("策略数={} 参数总档数={}", sts.len(), total_params);

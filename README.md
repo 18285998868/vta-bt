@@ -398,7 +398,7 @@ app/04_write_output/parquet.rs # Parquet 读写：write_single_parquet(单组合
 app/05_strategies/      # 策略叶（lib 映射为 strategies，~80+ 子目录）
 app/05_strategies/mod.rs # Strategy trait(name/param_count/param_str/generate_signals_full/generate_signals_batch, Send+Sync) + shared 再导出
 app/05_strategies/shared.rs # Signal 枚举(Hold/Buy/Sell/Close) / price_cross_signal 穿越信号 / bars_per_year
-app/05_strategies/build.rs # 策略构建工厂：build_one 单个穷尽 match(全部 85 变体, 无 `_` 兜底) → Box<dyn Strategy>；build_strategies_checked 再加两层唯一性自检
+app/05_strategies/build.rs # 策略构建工厂：build_one 单个穷尽 match(全部 85 变体, 无 `_` 兜底) → Box<dyn Strategy>；build_jobs_checked 保留每条 stop 并加两层唯一性自检
 app/05_strategies/{alma,dema,...,zlema}/… # 单 MA 策略（周期遍历 → vector_ta 指标 → 价格穿越）
 ```
 
@@ -844,6 +844,12 @@ cargo run --release -- --pbo /path/to/reports_XXX
 
 **代价**：这 7 个策略的**历史结果失效**（数值改变）。这是"统一"的必然代价。
 
+**后续（引擎级 stop）**：新增的 `[[strategy]].stop` 已能在引擎层表达“盘中触及
+即按止损价成交、跳空按开盘价成交”，因此 D4 中“框架无法表达盘中止损”的前提
+不再成立。但**策略内建止损**（包括 `_sl` 变体）仍保留 D4 的收盘价口径，属于
+遗留实现；新策略应使用引擎 `stop`，不要继续复制 `_sl`。引擎 stop 与旧 `_sl`
+的语义差异见「持仓期止损（引擎级 `stop`）」一节。
+
 ### D5. 30+ 个 bar 数参数用 `f64` 承载再 `.round() as usize`
 
 **实施**：全部换成既有的 `PeriodParam(usize)`（新增 `values()` / `validate_range()`
@@ -896,7 +902,7 @@ config.rs           # Config{data/backtest/output/strategy} + DataSection::for_p
 error.rs            # thiserror AppError(Io/Config/Data/Parquet/Arrow/Msg)
 pbo.rs              # CSCV 实算 + 单测
 app/mod.rs          # run/run_combo：validate → build → 双层串行取数 → 策略层 → temps/detail → merge result.parquet → detail 索引
-app/03_run_backtest.rs # engine：simulate/simulate_detailed + CurveAccum(在线统计) + SummaryMetrics
+app/03_run_backtest.rs # engine：simulate/simulate_detailed + simulate_ohlc/simulate_detailed_ohlc + CurveAccum + SummaryMetrics
 app/04_write_output/parquet.rs # temps/detail 写 + ColumnIndex(按列名读) + 单位契约 COLUMNS + merge
 app/05_strategies/  # Strategy trait + shared + build + ~80 策略叶
 ```
@@ -925,10 +931,50 @@ overwrite = false # 可选，默认 false
 [[strategy]] # 必填，至少一个
 type = "sma"
 period = { start = 5, end = 100, step = 5 } # 范围或单值
+# 可选：该条策略专属的持仓期止损（百分比，缺省关闭）。
+# 同一策略可重复写多条 [[strategy]]，每条配不同 stop，即形成止损网格。
+# stop = { stop_loss_pct = 2.0, trailing_stop_pct = 5.0 }
+# 也可写成表：先写 [[strategy]]，再写 [strategy.stop] 与两个键。
 ```
 
 - 未知键拒收；读写/解析失败带文件路径。
 - 全量示例见 `config.example.toml`；`config.ma_all_1h.toml` / `config.sma_100.toml` 为常用组合；`scripts/` 下有定稿配置。
+
+### 持仓期止损（引擎级 `stop`）
+
+`stop` 是**每条 `[[strategy]]` 独立**的运行参数，不是全局开关，也不属于策略代码。
+它只作用于引擎已成交的持仓，策略信号数组本身不变；但止损平仓后引擎会把目标
+方向重置为 `Flat`（见下），因此后续 `Hold` 不会自动重入。
+
+- 固定止损：多头 `entry × (1 - stop_loss_pct/100)`，空头
+  `entry × (1 + stop_loss_pct/100)`。
+- 追踪止损：多头 `extreme × (1 - trailing_stop_pct/100)`，空头
+  `extreme × (1 + trailing_stop_pct/100)`；`extreme` 是入场后的最高 high /
+  最低 low，**在每根 bar 收盘后更新，供下一根 bar 判定**。
+- 两者同时配置时取更紧的一侧（多头取较大值，空头取较小值），平仓原因记为
+  `stop_loss` 或 `trailing_stop`。
+- 两个字段都必须严格位于 `(0, 100)` 内；0、100、负数与 NaN 在配置校验期即被拒绝。
+- 盘中用 `high/low` 判定触发：多头 `low <= stop`、空头 `high >= stop`。
+  正常按止损价成交；若开盘已跳空穿过止损（多头 `open <= stop`、空头
+  `open >= stop`），按 `open` 成交。之后仍按 `ExecConfig` 扣逆向滑点与双边佣金。
+- `fill_bar_price = "open"`（默认）：先执行到期的开盘成交，再在同一根 bar
+  检查止损，因此开盘新仓当根就可能被止损。
+- `fill_bar_price = "close"`：先检查盘中止损，再执行到期的收盘成交，避免用
+  收盘价“跳过”盘中已经发生的止损。
+- 收盘价入场的那根 bar 不回溯使用该 bar 的 high/low；开盘价入场则可以当根触发。
+- 止损平仓后目标方向重置为 `Flat`，并作废止损前已经排队的目标；后续 `Hold`
+  不会自动重入，只有新的 `Buy` / `Sell` 信号才会在 `delay_bars` 后重新入场。
+- 未配置 `stop` 时，引擎完全不读 high/low，结果与旧路径逐位一致；`delay_bars >= 1`
+  的口径也不变。
+
+同一策略配多个止损档位时，重复 `[[strategy]]` 即可。报告 `params` 会追加
+`;stop_loss_pct=...` / `;trailing_stop_pct=...` 后缀，缓存指纹包含 stop，
+报告新增 `stop_loss_exits` / `trailing_stop_exits` 两列（整数计数）。
+
+> **遗留 `_sl` 策略**：`bbrk_hma_v1_sl` … `bbrk_hma_v5_sl` 仍是旧实现 ——
+> 止损只作用于 `pos=2` 的逆势腿，距离用入场根冻结的 `stopk × ATR`，且按收盘价
+> 判定，与这里的“全持仓、百分比、盘中 high/low”口径**不同**，历史结果不可直接
+> 对比。它们暂时保留用于回归；引擎 stop 验证通过后再删除。
 
 ## 完整执行逻辑
 
@@ -945,11 +991,11 @@ period = { start = 5, end = 100, step = 5 } # 范围或单值
 - app/mod.rs
   - `run`：预算目录 → 双层串行 → `load_columns`（失败跳过）→ `run_combo`（缓存/并行/写盘）→ `merge` → `result.parquet` → `detail/manifest.toml`
 - app/03_run_backtest.rs
-  - `simulate`/`simulate_detailed`：信号→持仓→成交→30 项绩效
+  - `simulate`/`simulate_detailed` 与带 high/low 的 `simulate_ohlc`/`simulate_detailed_ohlc`：信号→持仓→成交→30 项绩效
 - app/04_write_output/parquet.rs
   - `temps/` 单组合写 + `detail/` 明细写 + `read` 校验 + `merge`
 - app/05_strategies/
-  - `build.rs` 工厂按 `[[strategy]]` 展开参数实例
+  - `build.rs` 工厂按 `[[strategy]]` 展开参数实例，并把该条的 `stop` 一并带入作业
 - pbo.rs
   - 读 `detail/manifest.toml` 索引 → 筛 `status == ok` / 同时间网格 → 分组 CSCV → 报告
 
