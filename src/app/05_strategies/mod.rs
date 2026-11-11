@@ -2,8 +2,6 @@
 pub mod aberration;
 /// **ALMA** 均线策略: 配置 [`MaGridCfg`](crate::config::MaGridCfg), 实现 [`AlmaStrategy`]。
 pub mod alma;
-/// **ATMA** 策略: 配置 [`AtmaConfig`], 实现 [`AtmaStrategy`]。
-pub mod atma;
 /// **ATRBAND** 策略: 配置 [`ATRBandConfig`], 实现 [`ATRBandStrategy`]。
 pub mod atrband;
 /// **BBMR** 策略: 配置 [`BBMRConfig`], 实现 [`BBMRStrategy`]。
@@ -80,8 +78,6 @@ pub mod dema;
 pub mod dma;
 /// **DUALTHRUST** 策略: 配置 [`DualThrustConfig`], 实现 [`DualThrustStrategy`]。
 pub mod dualthrust;
-/// **EDMA** 策略: 配置 [`EdmaConfig`], 实现 [`EdmaStrategy`]。
-pub mod edma;
 /// **EHMA** 均线策略: 配置 [`MaGridCfg`](crate::config::MaGridCfg), 实现 [`EhmaStrategy`]。
 pub mod ehma;
 /// **EMA** 均线策略: 配置 [`MaGridCfg`](crate::config::MaGridCfg), 实现 [`EmaStrategy`]。

@@ -6,7 +6,6 @@ use serde::Deserialize;
 use crate::engine::StopConfig;
 use crate::error::AppError;
 use crate::strategies::aberration::AberrationConfig;
-use crate::strategies::atma::AtmaConfig;
 use crate::strategies::atrband::ATRBandConfig;
 use crate::strategies::bbmr::BBMRConfig;
 use crate::strategies::bbrk::BBRKConfig;
@@ -42,7 +41,6 @@ use crate::strategies::bbrk_vol_ema::BbrkVolEmaConfig;
 use crate::strategies::bbrk_zlema_ema::BbrkZlemaEmaConfig;
 use crate::strategies::clenow::ClenowConfig;
 use crate::strategies::dualthrust::DualThrustConfig;
-use crate::strategies::edma::EdmaConfig;
 use crate::strategies::ema_cross::EmaCrossConfig;
 use crate::strategies::fiali::FialiConfig;
 use crate::strategies::keltner::KeltnerConfig;
@@ -248,7 +246,6 @@ impl Config {
             match &spec.strategy {
                 StrategyConfig::ATRBand(c) => c.validate()?,
                 StrategyConfig::Aberration(c) => c.validate()?,
-                StrategyConfig::Atma(c) => c.validate()?,
                 StrategyConfig::BBMR(c) => c.validate()?,
                 StrategyConfig::Bbrk(c) => c.validate()?,
                 StrategyConfig::BbrkAdx(c) => c.validate()?,
@@ -282,7 +279,6 @@ impl Config {
                 StrategyConfig::BbrkVolEma(c) => c.validate()?,
                 StrategyConfig::BbrkZlemaEma(c) => c.validate()?,
                 StrategyConfig::DualThrust(c) => c.validate()?,
-                StrategyConfig::Edma(c) => c.validate()?,
                 StrategyConfig::EmaCross(c) => c.validate()?,
                 StrategyConfig::Fiali(c) => c.validate()?,
                 StrategyConfig::Keltner(c) => c.validate()?,
@@ -633,10 +629,6 @@ pub enum StrategyConfig {
     Fiali(FialiConfig),
     /// **Aberration** 策略: 配置 [`AberrationConfig`]。
     Aberration(AberrationConfig),
-    /// **Edma** 策略: 配置 [`EdmaConfig`]。
-    Edma(EdmaConfig),
-    /// **Atma** 策略: 配置 [`AtmaConfig`]。
-    Atma(AtmaConfig),
     /// **Sgma** 策略: 配置 [`SgmaConfig`]。
     Sgma(SgmaConfig),
     #[serde(rename = "atr_band")]
@@ -752,9 +744,9 @@ impl PeriodParam {
     /// 语义校验, **参数名可定制**且允许非 1 的下界。
     ///
     /// 为什么需要它: 策略配置里除 `period` 外还有"步长型"整型参数
-    /// (`sgma.poly_order` 多项式阶数、`edma.offset` 偏移量), 它们的合法下界
-    /// 与字段名都和 `period` 不同。用 `validate()` 一刀切会误拒合法值
-    /// (例如 `offset = 0`), 而**不校验**又会漏掉 `step = 0` ——
+    /// (`sgma.poly_order` 多项式阶数), 它们的合法下界与字段名都和 `period`
+    /// 不同。用 `validate()` 一刀切会误拒合法值
+    /// (例如 `poly_order = 0`), 而**不校验**又会漏掉 `step = 0` ——
     /// 后者会在展开网格时触发 `Range::step_by(0)` 的 panic。
     ///
     /// # Errors

@@ -51,11 +51,11 @@ workspace = true
 serde_json = "1"
 
 [workspace.dependencies]
-# 相对路径: 换机器/进 CI 无需改任何文件(此前 `vector-ta` 写死 `/home/lkf/src/VectorTA`,
-# 导致构建环境不可复现)。
-vector-ta = { path = "../libs/VectorTA" }
-binance-data-reader = { path = "../libs/binance-data-reader" }
-dukascopy-data-reader = { path = "../libs/dukascopy-data-reader" }
+# 指标库用 crates.io 发布版, 版本由 Cargo.lock 锁定; 两个 reader 是 /data 下的
+# 独立仓库, 用相对路径保证同机可复现。
+vector-ta = "0.3.1"
+binance-data-reader = { path = "../binance-data-reader" }
+dukascopy-data-reader = { path = "../dukascopy-data-reader" }
 
 # 统一 lint 门禁: CI 与本地 `cargo clippy -- -D warnings` 行为一致。
 [workspace.lints.rust]

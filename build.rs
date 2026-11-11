@@ -43,18 +43,17 @@ const SALT: &str = "vta-source-hash-v1";
 
 /// 参与哈希的**源码根目录**(相对 `CARGO_MANIFEST_DIR`)。
 ///
-/// 与 `Cargo.toml` 的 `[workspace.dependencies]` 一一对应:
-/// - `vector-ta` / `binance-data-reader` / `dukascopy-data-reader` 是 path
-///   依赖, 它们的 `src/` 里住着指标实现与数据读取逻辑, **直接影响回测数值**。
+/// 与 `Cargo.toml` 的 `[workspace.dependencies]` 对应:
+/// - 两个 reader 是 path 依赖, 它们的 `src/` 里住着数据读取逻辑, **直接影响回测数值**;
+/// - `vector-ta` 是 crates.io 依赖, 其版本经 `Cargo.lock` 参与哈希。
 ///
 /// 目录不存在时**跳过并告警**(不阻断构建): 例如把本 crate 单独 vendored
 /// 出去时 path 依赖可能缺失 —— 此时哈希只覆盖本 crate, 退化为"部分覆盖",
 /// 但仍好过完全没有。
 const HASHED_ROOTS: &[&str] = &[
     "src",
-    "../libs/VectorTA/src",
-    "../libs/binance-data-reader/src",
-    "../libs/dukascopy-data-reader/src",
+    "../binance-data-reader/src",
+    "../dukascopy-data-reader/src",
 ];
 
 fn main() {
@@ -95,6 +94,13 @@ fn main() {
         }
     }
 
+    // crates.io 依赖(尤其 `vector-ta`)没有本地源码可哈希: 用 Cargo.lock
+    // 把精确版本纳入指纹, 依赖升级时旧缓存同样失效。
+    let lock = manifest_dir.join("Cargo.lock");
+    if lock.is_file() {
+        files.insert(lock);
+    }
+
     if files.is_empty() {
         // 绝不能让 `env!` 取不到值(那会编译失败): 给一个明确的哨兵。
         println!("cargo:warning=vta: 未找到任何参与哈希的源文件, 缓存指纹的代码版本维度失效");
@@ -110,7 +116,7 @@ fn main() {
 
     for f in &files {
         // 混入**相对路径**: 两个不同目录下的同名文件(`src/config.rs` 与
-        // `../libs/VectorTA/src/config.rs`)不得产生相同的字节流。
+        // `../binance-data-reader/src/config.rs`)不得产生相同的字节流。
         let rel = f
             .strip_prefix(&manifest_dir)
             .unwrap_or(f.as_path())

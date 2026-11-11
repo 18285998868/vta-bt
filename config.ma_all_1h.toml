@@ -35,11 +35,6 @@ type = "ema"
 period = { start = 1, end = 500, step = 1 }
 
 [[strategy]]
-type = "edma"
-period = { start = 1, end = 500, step = 1 }
-offset = { start = 0, end = 0, step = 1 }
-
-[[strategy]]
 type = "ehma"
 period = { start = 1, end = 500, step = 1 }
 
@@ -130,11 +125,6 @@ period = { start = 1, end = 500, step = 1 }
 [[strategy]]
 type = "zlma"
 period = { start = 1, end = 500, step = 1 }
-
-[[strategy]]
-type = "atma"
-up = { start = 1, end = 500, step = 25 }
-down = { start = 1, end = 500, step = 25 }
 
 [[strategy]]
 type = "sgma"

@@ -1,7 +1,6 @@
 use super::Strategy;
 use super::aberration::AberrationStrategy;
 use super::alma::AlmaStrategy;
-use super::atma::AtmaStrategy;
 use super::atrband::ATRBandStrategy;
 use super::bbmr::BBMRStrategy;
 use super::bbrk::BBRKStrategy;
@@ -39,7 +38,6 @@ use super::clenow::ClenowStrategy;
 use super::dema::DemaStrategy;
 use super::dma::DmaStrategy;
 use super::dualthrust::DualThrustStrategy;
-use super::edma::EdmaStrategy;
 use super::ehma::EhmaStrategy;
 use super::ema::EmaStrategy;
 use super::ema_cross::EmaCrossStrategy;
@@ -240,8 +238,6 @@ fn build_one(sc: &StrategyConfig) -> Box<dyn Strategy> {
         StrategyConfig::DualThrust(c) => Box::new(DualThrustStrategy::new(c.clone())),
         StrategyConfig::RBreaker(c) => Box::new(RBreakerStrategy::new(c.clone())),
         StrategyConfig::Fiali(c) => Box::new(FialiStrategy::new(c.clone())),
-        StrategyConfig::Edma(c) => Box::new(EdmaStrategy::new(c.clone())),
-        StrategyConfig::Atma(c) => Box::new(AtmaStrategy::new(c.clone())),
         StrategyConfig::Sgma(c) => Box::new(SgmaStrategy::new(c.clone())),
         StrategyConfig::Aberration(c) => Box::new(AberrationStrategy::new(c.clone())),
         StrategyConfig::ATRBand(c) => Box::new(ATRBandStrategy::new(c.clone())),
