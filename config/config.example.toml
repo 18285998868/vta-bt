@@ -2,5 +2,5 @@ host = "127.0.0.1"      # 可选参数, 默认值: 127.0.0.1
 port = 3001             # 可选参数, 默认值: 3001
 data_dir = "path/to/data"  # 必填参数, 无默认值, 须指向行情数据根目录（binance zip / dukascopy bi5）
 # db_path = "path/to/data/tradingview.db"  # 可选参数, 默认值: <data_dir>/tradingview.db；只存布局/绘图/偏好
-frontend_dir = "/data/nutilustrader/creats/tradingview/frontend/dist"  # 可选参数, 默认值: <workspace>/frontend/dist
+frontend_dir = "/data/tradingview/frontend/dist"  # 可选参数, 默认值: <workspace>/frontend/dist
 # cors_origins = ["http://localhost:5173"]  # 可选参数, 默认值: []（全放行，仅本地开发）
