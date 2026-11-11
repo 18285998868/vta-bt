@@ -20,6 +20,8 @@ license = "MIT"
 # `description` 是 crates.io 发布的**必填项**; `readme` 让包主页有完整说明。
 description = "向量化的技术指标批量回测框架: (品种 × 周期 × 策略 × 参数网格) → Parquet 报告, 内含 PBO/CSCV 过拟合检验"
 readme = "README.md"
+# `tradingview/` 是独立 cargo workspace, 不随本 crate 打包发布。
+exclude = ["tradingview/**"]
 keywords = ["backtest", "quant", "trading", "technical-indicators", "parquet"]
 categories = ["command-line-utilities", "science"]
 

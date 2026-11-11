@@ -193,7 +193,7 @@ host = "127.0.0.1"           # 可选，默认 127.0.0.1，监听地址
 port = 3001                  # 可选，默认 3001
 data_dir = "path/to/data"   # 必填，无默认，数据根
 db_path = "path/to/data/tradingview.db"  # 可选，默认 <data_dir>/tradingview.db
-frontend_dir = "/data/tradingview/frontend/dist"   # 可选，默认 <workspace>/frontend/dist
+frontend_dir = "/data/vta-bt/tradingview/frontend/dist"   # 可选，默认 <workspace>/frontend/dist
 cors_origins = []           # 可选，默认 [] = 全放行（仅本地开发）
 ```
 

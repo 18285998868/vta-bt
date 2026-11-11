@@ -9,6 +9,15 @@
 > - 去重执行：`overwrite = false` 且 `temps/{sym}_{tf}_{stg}_{参数指纹}.parquet` 可读即跳过（仍并入合并）。
 > - 另有 `--pbo` 模式：按（币，周期，策略）分组实算 CSCV（Bailey et al. 2016）。
 
+## 仓库结构
+
+| 路径 | 内容 |
+|---|---|
+| 根目录 | `vta` 向量化回测（`cargo run --release -- -c <config>.toml`） |
+| `tradingview/` | TradingView 风格本地研究终端（K 线 REST + 布局/绘图持久化），见 `tradingview/README.md` |
+
+`tradingview/` 是独立的 cargo workspace（自带 `Cargo.toml` / `Cargo.lock`），与根 crate 互不参与对方的 workspace；在各自目录内执行 `cargo` 命令。
+
 ## 技术选型
 
 - rust
