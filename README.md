@@ -27,8 +27,8 @@
 # config/config.toml
 host = "127.0.0.1"           # 可选，默认 127.0.0.1
 port = 3001                  # 可选，默认 3001
-data_dir = "/data/nutilustrader/data"   # 必填，无默认，须指向数据根
-# db_path = "/data/nutilustrader/data/tradingview.db"  # 可选，默认 <data_dir>/tradingview.db
+data_dir = "path/to/data"   # 必填，无默认，须指向数据根
+# db_path = "path/to/data/tradingview.db"  # 可选，默认 <data_dir>/tradingview.db
 # frontend_dir = "<workspace>/frontend/dist"  # 可选，默认 CARGO_MANIFEST_DIR/frontend/dist
 # cors_origins = ["http://localhost:5173"]   # 可选，默认 [] = 全放行（仅本地开发）
 ```
@@ -209,8 +209,8 @@ frontend/src/       # api/app/chart/indicators/main/types + style.css + vite-env
 # config/config.toml
 host = "127.0.0.1"           # 可选，默认 127.0.0.1，监听地址
 port = 3001                  # 可选，默认 3001
-data_dir = "/data/nutilustrader/data"   # 必填，无默认，数据根
-db_path = "/data/nutilustrader/data/tradingview.db"  # 可选，默认 <data_dir>/tradingview.db
+data_dir = "path/to/data"   # 必填，无默认，数据根
+db_path = "path/to/data/tradingview.db"  # 可选，默认 <data_dir>/tradingview.db
 frontend_dir = "/data/nutilustrader/creats/tradingview/frontend/dist"   # 可选，默认 <workspace>/frontend/dist
 cors_origins = []           # 可选，默认 [] = 全放行（仅本地开发）
 ```
