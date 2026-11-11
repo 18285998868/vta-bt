@@ -262,13 +262,220 @@ impl StopConfig {
         parts.join(",")
     }
 
-    /// 把止损参数追加到策略参数串; 未配置时**原样返回**, 保证旧结果键不变。
+    /// 把止损/仓位参数追加到策略参数串; 两者都未配置时**原样返回**,
+    /// 保证旧结果键不变。
     #[must_use]
-    pub fn apply_to(&self, base: &str) -> String {
-        if self.is_none() {
-            base.to_string()
-        } else {
-            format!("{base};{}", self.param_str())
+    pub fn apply_to(&self, base: &str, sizing: &SizingConfig) -> String {
+        let stop = self.param_str();
+        let size = sizing.param_str();
+        match (stop.is_empty(), size.is_empty()) {
+            (true, true) => base.to_string(),
+            (false, true) => format!("{base};{stop}"),
+            (true, false) => format!("{base};{size}"),
+            (false, false) => format!("{base};{stop},{size}"),
+        }
+    }
+}
+
+/// 仓位模式(按 `[[strategy]].sizing` 配置)。
+///
+/// 只决定**开仓名义**, 不改变信号; `fixed` 腿始终按 `initial_cash` 计算,
+/// 复利腿按当前 `cash` 计算。所有模式的名义比例都会截断到
+/// `[0, max_position_pct/100]`, 且不超过 1.0 —— 当前引擎没有保证金/杠杆模型。
+#[derive(Debug, Clone, Copy, PartialEq, Default, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SizingConfig {
+    /// 全仓复利(默认): `qty = cash / price`。
+    #[default]
+    AllIn,
+    /// 固定仓位: 当前权益的固定百分比。
+    Fixed {
+        /// 仓位百分比, `20.0` = 20% 权益。
+        fraction_pct: f64,
+    },
+    /// Kelly 仓位: 用最近 `lookback` 笔已平仓交易的 `pnl_pct` 估计胜率/赔率。
+    Kelly {
+        /// 回看交易笔数。
+        lookback: usize,
+        /// 最少已决交易笔数; 不足时用 `fallback_fraction_pct`。
+        min_trades: usize,
+        /// Kelly 折减系数, `0.5` = 半 Kelly。
+        kelly_fraction: f64,
+        /// 单品种最大名义占权益百分比。
+        #[serde(default = "default_max_position_pct")]
+        max_position_pct: f64,
+        /// 样本不足时的固定仓位百分比; 必须 > 0, 否则永远无法积累样本。
+        #[serde(default = "default_kelly_fallback_pct")]
+        fallback_fraction_pct: f64,
+    },
+    /// ATR 风险仓位: `f = risk_pct/100 × price / (mult × ATR)`。
+    Atr {
+        /// 单笔风险占权益百分比。
+        risk_pct: f64,
+        /// ATR 周期。
+        period: usize,
+        /// 风险单位 = `mult × ATR`。
+        mult: f64,
+        /// 单品种最大名义占权益百分比。
+        #[serde(default = "default_max_position_pct")]
+        max_position_pct: f64,
+        /// ATR 未就绪时的固定仓位百分比; `0` = 不进场。
+        #[serde(default)]
+        fallback_fraction_pct: f64,
+    },
+}
+
+fn default_max_position_pct() -> f64 {
+    100.0
+}
+
+fn default_kelly_fallback_pct() -> f64 {
+    10.0
+}
+
+impl SizingConfig {
+    /// 是否为默认全仓模式。
+    #[must_use]
+    pub fn is_all_in(&self) -> bool {
+        matches!(self, Self::AllIn)
+    }
+
+    /// 该模式是否需要 high/low 计算 ATR。
+    #[must_use]
+    pub fn needs_ohlc(&self) -> bool {
+        matches!(self, Self::Atr { .. })
+    }
+
+    /// 校验参数范围。
+    ///
+    /// # Errors
+    /// 百分比越界、周期为 0、Kelly 样本门槛矛盾时返回
+    /// [`crate::error::AppError::Msg`]。
+    pub fn validate(&self) -> crate::error::Result<()> {
+        match *self {
+            Self::AllIn => Ok(()),
+            Self::Fixed { fraction_pct } => {
+                if !(fraction_pct.is_finite() && fraction_pct > 0.0 && fraction_pct <= 100.0) {
+                    return Err(crate::error::AppError::Msg(format!(
+                        "sizing.fixed.fraction_pct 必须是 (0, 100] 内的有限百分比, 当前为 {fraction_pct}"
+                    )));
+                }
+                Ok(())
+            }
+            Self::Kelly {
+                lookback,
+                min_trades,
+                kelly_fraction,
+                max_position_pct,
+                fallback_fraction_pct,
+            } => {
+                if lookback == 0 {
+                    return Err(crate::error::AppError::Msg(
+                        "sizing.kelly.lookback 必须 >= 1".to_string(),
+                    ));
+                }
+                if min_trades < 2 || min_trades > lookback {
+                    return Err(crate::error::AppError::Msg(format!(
+                        "sizing.kelly.min_trades 必须位于 [2, lookback={lookback}], 当前为 {min_trades}"
+                    )));
+                }
+                if !(kelly_fraction.is_finite() && kelly_fraction > 0.0 && kelly_fraction <= 1.0) {
+                    return Err(crate::error::AppError::Msg(format!(
+                        "sizing.kelly.kelly_fraction 必须是 (0, 1] 内的有限值, 当前为 {kelly_fraction}"
+                    )));
+                }
+                if !(max_position_pct.is_finite()
+                    && max_position_pct > 0.0
+                    && max_position_pct <= 100.0)
+                {
+                    return Err(crate::error::AppError::Msg(format!(
+                        "sizing.kelly.max_position_pct 必须是 (0, 100] 内的有限百分比, 当前为 {max_position_pct}"
+                    )));
+                }
+                if !(fallback_fraction_pct.is_finite()
+                    && fallback_fraction_pct > 0.0
+                    && fallback_fraction_pct <= 100.0)
+                {
+                    return Err(crate::error::AppError::Msg(format!(
+                        "sizing.kelly.fallback_fraction_pct 必须是 (0, 100] 内的有限百分比, 当前为 {fallback_fraction_pct}"
+                    )));
+                }
+                Ok(())
+            }
+            Self::Atr {
+                risk_pct,
+                period,
+                mult,
+                max_position_pct,
+                fallback_fraction_pct,
+            } => {
+                if !(risk_pct.is_finite() && risk_pct > 0.0 && risk_pct <= 100.0) {
+                    return Err(crate::error::AppError::Msg(format!(
+                        "sizing.atr.risk_pct 必须是 (0, 100] 内的有限百分比, 当前为 {risk_pct}"
+                    )));
+                }
+                if period == 0 {
+                    return Err(crate::error::AppError::Msg(
+                        "sizing.atr.period 必须 >= 1".to_string(),
+                    ));
+                }
+                if !(mult.is_finite() && mult > 0.0) {
+                    return Err(crate::error::AppError::Msg(format!(
+                        "sizing.atr.mult 必须是 > 0 的有限值, 当前为 {mult}"
+                    )));
+                }
+                if !(max_position_pct.is_finite()
+                    && max_position_pct > 0.0
+                    && max_position_pct <= 100.0)
+                {
+                    return Err(crate::error::AppError::Msg(format!(
+                        "sizing.atr.max_position_pct 必须是 (0, 100] 内的有限百分比, 当前为 {max_position_pct}"
+                    )));
+                }
+                if !(fallback_fraction_pct.is_finite()
+                    && (0.0..=100.0).contains(&fallback_fraction_pct))
+                {
+                    return Err(crate::error::AppError::Msg(format!(
+                        "sizing.atr.fallback_fraction_pct 必须是 [0, 100] 内的有限百分比, 当前为 {fallback_fraction_pct}"
+                    )));
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// 参数串(用于报告 `params` 后缀与缓存指纹)。
+    ///
+    /// `all_in` 返回空串: 与旧配置/旧报告键完全一致, 不制造无意义的缓存失效。
+    #[must_use]
+    pub fn param_str(&self) -> String {
+        match *self {
+            Self::AllIn => String::new(),
+            Self::Fixed { fraction_pct } => {
+                format!("size=fixed,size_fraction_pct={fraction_pct}")
+            }
+            Self::Kelly {
+                lookback,
+                min_trades,
+                kelly_fraction,
+                max_position_pct,
+                fallback_fraction_pct,
+            } => format!(
+                "size=kelly,size_lookback={lookback},size_min_trades={min_trades},\
+                 size_kelly_fraction={kelly_fraction},size_max_position_pct={max_position_pct},\
+                 size_fallback_fraction_pct={fallback_fraction_pct}"
+            ),
+            Self::Atr {
+                risk_pct,
+                period,
+                mult,
+                max_position_pct,
+                fallback_fraction_pct,
+            } => format!(
+                "size=atr,size_risk_pct={risk_pct},size_period={period},size_mult={mult},\
+                 size_max_position_pct={max_position_pct},\
+                 size_fallback_fraction_pct={fallback_fraction_pct}"
+            ),
         }
     }
 }
@@ -613,8 +820,9 @@ struct CloseArgs {
     exit_price: f64,
     exit_time: i64,
     exit_bar: usize,
-    /// 初始资金(定点十进制)。
-    initial_cash: crate::money::Amount,
+    /// 本笔 fixed 腿的持仓数量(定点十进制)。开仓时按仓位模式确定,
+    /// 平仓时必须复用同一数量, 不能按 initial_cash 重算。
+    fixed_qty: crate::money::Amount,
     trade_mfe: f64,
     trade_mae: f64,
     fee_rate: f64,
@@ -737,6 +945,8 @@ struct TradeAccum {
     pnls: Vec<f64>,
     /// 逐笔 `fixed_pnl`: fixed 腿的 win/loss 拆分与 expectancy(统计序列)。
     fixed_pnls: Vec<f64>,
+    /// 逐笔 `pnl_pct`(毛收益率, 与仓位大小无关): Kelly 仓位的估计样本。
+    pnl_pcts: Vec<f64>,
     /// 累计 fixed 腿盈亏(**金额**, 定点十进制)。
     total_fixed_pnl: crate::money::Amount,
     /// 盈利笔累计盈亏(**金额**, 定点十进制)。
@@ -768,7 +978,7 @@ fn close_outcome(args: CloseArgs) -> crate::error::Result<CloseOutcome> {
         pos_entry_bar,
         exit_price,
         exit_bar,
-        initial_cash,
+        fixed_qty,
         trade_mfe,
         trade_mae,
         fee_rate,
@@ -798,7 +1008,6 @@ fn close_outcome(args: CloseArgs) -> crate::error::Result<CloseOutcome> {
                 .minus(exit_fee)?,
         )
     };
-    let fixed_qty = initial_cash.div_price(pos_entry)?;
     let entry_fee_fixed = fixed_qty.mul_price(pos_entry)?.mul_ratio(fee_rate)?;
     let exit_fee_fixed = fixed_qty.mul_price(exit_price)?.mul_ratio(fee_rate)?;
     let fixed_pnl = if cur_pos == Side::Long {
@@ -930,6 +1139,138 @@ fn wilder_atr(high: &[f64], low: &[f64], close: &[f64], period: usize) -> Vec<f6
 fn atr_at_entry(atr: &[f64], bar: usize, fill_close: bool) -> Option<f64> {
     let idx = if fill_close { bar } else { bar.checked_sub(1)? };
     atr.get(idx).copied().filter(|v| v.is_finite() && *v > 0.0)
+}
+
+/// 把名义比例截断到 `[0, max_pct/100]`, 且不超过 1.0(当前引擎无杠杆)。
+fn clamp_fraction(f: f64, max_pct: f64) -> Option<f64> {
+    if !f.is_finite() || f <= 0.0 {
+        return None;
+    }
+    Some(f.min(max_pct / 100.0).min(1.0))
+}
+
+/// 用最近 `lookback` 笔已平仓交易的毛收益率估计 Kelly 比例。
+///
+/// 采用二元胜负近似: `p = 胜率`, `b = 平均盈利 / 平均亏损`,
+/// `f = p - (1-p)/b`。样本不足或只有单边结果时返回 `None`(走 fallback);
+/// 估计出的 `f <= 0` 返回 `Some(0.0)`(有样本但无正期望, 不开仓)。
+fn kelly_fraction_from_trades(
+    returns: &[f64],
+    lookback: usize,
+    min_trades: usize,
+    kelly_fraction: f64,
+) -> Option<f64> {
+    let start = returns.len().saturating_sub(lookback);
+    let recent = &returns[start..];
+    let mut wins = 0usize;
+    let mut losses = 0usize;
+    let mut sum_win = 0.0;
+    let mut sum_loss = 0.0;
+    for &r in recent {
+        if !r.is_finite() {
+            continue;
+        }
+        if r > 0.0 {
+            wins += 1;
+            sum_win += r;
+        } else if r < 0.0 {
+            losses += 1;
+            sum_loss -= r;
+        }
+    }
+    let decided = wins + losses;
+    if decided < min_trades || wins == 0 || losses == 0 {
+        return None;
+    }
+    let p = wins as f64 / decided as f64;
+    let avg_win = sum_win / wins as f64;
+    let avg_loss = sum_loss / losses as f64;
+    if !avg_loss.is_finite() || avg_loss <= 0.0 {
+        return None;
+    }
+    let b = avg_win / avg_loss;
+    let f = p - (1.0 - p) / b;
+    if f.is_finite() && f > 0.0 {
+        Some(f * kelly_fraction)
+    } else {
+        Some(0.0)
+    }
+}
+
+/// 按仓位模式计算本笔开仓占当前权益的比例。
+fn entry_fraction(
+    sizing: &SizingConfig,
+    acc: &TradeAccum,
+    sizing_atr: Option<&[f64]>,
+    bar: usize,
+    fill_close: bool,
+    entry_price: f64,
+) -> Option<f64> {
+    match *sizing {
+        SizingConfig::AllIn => Some(1.0),
+        SizingConfig::Fixed { fraction_pct } => clamp_fraction(fraction_pct / 100.0, 100.0),
+        SizingConfig::Kelly {
+            lookback,
+            min_trades,
+            kelly_fraction,
+            max_position_pct,
+            fallback_fraction_pct,
+        } => {
+            let f = kelly_fraction_from_trades(&acc.pnl_pcts, lookback, min_trades, kelly_fraction)
+                .unwrap_or(fallback_fraction_pct / 100.0);
+            clamp_fraction(f, max_position_pct)
+        }
+        SizingConfig::Atr {
+            risk_pct,
+            period: _,
+            mult,
+            max_position_pct,
+            fallback_fraction_pct,
+        } => {
+            let atr = sizing_atr
+                .and_then(|a| atr_at_entry(a, bar, fill_close))
+                .filter(|v| v.is_finite() && *v > 0.0);
+            let f = atr
+                .map(|atr| (risk_pct / 100.0) * entry_price / (mult * atr))
+                .unwrap_or(fallback_fraction_pct / 100.0);
+            clamp_fraction(f, max_position_pct)
+        }
+    }
+}
+
+/// 开仓数量: 复利腿按当前 `cash`, fixed 腿按 `initial_cash`。
+///
+/// 返回 `None` 表示本 bar 不满足开仓条件(ATR 未就绪 / Kelly 无正期望 /
+/// 比例过小), 调用方应保持空仓并在下一 bar 重试。
+#[allow(clippy::too_many_arguments)]
+fn entry_qty(
+    sizing: &SizingConfig,
+    acc: &TradeAccum,
+    sizing_atr: Option<&[f64]>,
+    bar: usize,
+    fill_close: bool,
+    entry_price: f64,
+    cash: crate::money::Amount,
+    initial_cash: crate::money::Amount,
+) -> crate::error::Result<Option<(crate::money::Amount, crate::money::Amount)>> {
+    let Some(f) = entry_fraction(sizing, acc, sizing_atr, bar, fill_close, entry_price) else {
+        return Ok(None);
+    };
+    // AllIn 走原路径, 保证与旧结果逐位一致。
+    if sizing.is_all_in() {
+        let qty = cash.div_price(entry_price)?;
+        let fixed_qty = initial_cash.div_price(entry_price)?;
+        return Ok(
+            (qty > crate::money::Amount::ZERO && fixed_qty > crate::money::Amount::ZERO)
+                .then_some((qty, fixed_qty)),
+        );
+    }
+    let qty = cash.mul_ratio(f)?.div_price(entry_price)?;
+    let fixed_qty = initial_cash.mul_ratio(f)?.div_price(entry_price)?;
+    Ok(
+        (qty > crate::money::Amount::ZERO && fixed_qty > crate::money::Amount::ZERO)
+            .then_some((qty, fixed_qty)),
+    )
 }
 
 /// 当前持仓的有效止损价与原因。
@@ -1084,14 +1425,20 @@ fn scan_trades(
     initial_cash: crate::money::Amount,
     exec: &ExecConfig,
     risk: &StopConfig,
+    sizing: &SizingConfig,
     collect_curves: bool,
 ) -> crate::error::Result<ScanOut> {
     risk.validate()?;
+    sizing.validate()?;
     let n = close.len().min(signals.len());
     if let Some(lines) = strategy_stops {
         lines.validate_len(n)?;
     }
     let atr_values = risk.atr.map(|cfg| wilder_atr(high, low, close, cfg.period));
+    let sizing_atr = match *sizing {
+        SizingConfig::Atr { period, .. } => Some(wilder_atr(high, low, close, period)),
+        _ => None,
+    };
     let ts = |i: usize| if i < time.len() { time[i] } else { i as i64 };
     // 钱账本: 全部定点十进制(`domain-fintech`: 不用 f64 承载货币)。
     let mut cash = initial_cash;
@@ -1111,6 +1458,7 @@ fn scan_trades(
     let mut acc = TradeAccum {
         pnls: Vec::with_capacity(1024),
         fixed_pnls: Vec::with_capacity(1024),
+        pnl_pcts: Vec::with_capacity(1024),
         ..TradeAccum::default()
     };
     let mut eq_acc = CurveAccum::new(initial_cash.to_f64());
@@ -1196,7 +1544,7 @@ fn scan_trades(
                         exit_price,
                         exit_time: ts($bar),
                         exit_bar: $bar,
-                        initial_cash,
+                        fixed_qty,
                         trade_mfe,
                         trade_mae,
                         fee_rate: exec.fee_rate,
@@ -1265,7 +1613,7 @@ fn scan_trades(
                         exit_price,
                         exit_time: ts(i),
                         exit_bar: i,
-                        initial_cash,
+                        fixed_qty,
                         trade_mfe,
                         trade_mae,
                         fee_rate: exec.fee_rate,
@@ -1309,14 +1657,24 @@ fn scan_trades(
                         );
                         bankrupt_warned = true;
                     }
-                } else if let Some(entry_price) = fill_at(i, due, close, open, exec) {
-                    let qty = cash.div_price(entry_price)?;
+                } else if let Some(entry_price) = fill_at(i, due, close, open, exec)
+                    && let Some((qty, fixed_qty_entry)) = entry_qty(
+                        sizing,
+                        &acc,
+                        sizing_atr.as_deref(),
+                        i,
+                        exec.fill_close,
+                        entry_price,
+                        cash,
+                        initial_cash,
+                    )?
+                {
                     let fee = qty.mul_price(entry_price)?.mul_ratio(exec.fee_rate)?;
                     pos_entry = entry_price;
                     pos_entry_time = ts(i);
                     pos_entry_bar = i;
                     pos_qty = qty;
-                    fixed_qty = initial_cash.div_price(entry_price)?;
+                    fixed_qty = fixed_qty_entry;
                     fixed_entry = entry_price;
                     let notional = qty.mul_price(entry_price)?;
                     if due == Side::Long {
@@ -1517,7 +1875,7 @@ fn scan_trades(
                 exit_price: last_price,
                 exit_time: ts(n - 1),
                 exit_bar: n - 1,
-                initial_cash,
+                fixed_qty,
                 trade_mfe,
                 trade_mae,
                 fee_rate: exec.fee_rate,
@@ -1651,6 +2009,7 @@ impl TradeAccum {
         }
         self.pnls.push(o.pnl.to_f64());
         self.fixed_pnls.push(o.fixed_pnl.to_f64());
+        self.pnl_pcts.push(o.pnl_pct);
         self.total_fixed_pnl = self
             .total_fixed_pnl
             .plus(o.fixed_pnl)
@@ -2287,7 +2646,7 @@ pub fn simulate_ohlc(
 /// 执行费率非法、止损参数越界、策略止损线长度不足, 或配置了任一种盘中
 /// 止损但 `high` / `low` 短于 `close` 时返回错误。
 #[allow(clippy::too_many_arguments)]
-pub fn simulate_ohlc_with_stops(
+pub fn simulate_ohlc_with_stops_and_sizing(
     high: &[f64],
     low: &[f64],
     close: &[f64],
@@ -2298,17 +2657,20 @@ pub fn simulate_ohlc_with_stops(
     bars_per_year: f64,
     exec: &ExecConfig,
     risk: &StopConfig,
+    sizing: &SizingConfig,
 ) -> crate::error::Result<SummaryMetrics> {
     exec.validate_rates()?;
     risk.validate()?;
+    sizing.validate()?;
     let n = close.len().min(signals.len());
     if let Some(lines) = strategy_stops {
         lines.validate_len(n)?;
     }
-    let needs_ohlc = !risk.is_none() || strategy_stops.is_some_and(|s| !s.is_none());
+    let needs_ohlc =
+        !risk.is_none() || strategy_stops.is_some_and(|s| !s.is_none()) || sizing.needs_ohlc();
     if needs_ohlc && (high.len() < n || low.len() < n) {
         return Err(crate::error::AppError::Msg(format!(
-            "配置了止损但 high/low 长度不足: high={}, low={}, close={n}",
+            "配置了止损/ATR 仓位但 high/low 长度不足: high={}, low={}, close={n}",
             high.len(),
             low.len()
         )));
@@ -2336,6 +2698,7 @@ pub fn simulate_ohlc_with_stops(
         initial_cash,
         exec,
         risk,
+        sizing,
         false,
     )?;
     debug_assert!(
@@ -2345,6 +2708,38 @@ pub fn simulate_ohlc_with_stops(
     let mut summary = compute_metrics(&out.metrics, initial_cash, bars_per_year)?;
     summary.apply_exec(exec);
     Ok(summary)
+}
+
+/// 带策略止损线的盘中回测(默认全仓)。
+///
+/// 保留旧签名供既有调用/测试使用; 需要仓位模式时用
+/// [`simulate_ohlc_with_stops_and_sizing`]。
+#[allow(clippy::too_many_arguments)]
+pub fn simulate_ohlc_with_stops(
+    high: &[f64],
+    low: &[f64],
+    close: &[f64],
+    open: &[f64],
+    signals: &[Signal],
+    strategy_stops: Option<&StopLines>,
+    initial_cash: crate::money::Amount,
+    bars_per_year: f64,
+    exec: &ExecConfig,
+    risk: &StopConfig,
+) -> crate::error::Result<SummaryMetrics> {
+    simulate_ohlc_with_stops_and_sizing(
+        high,
+        low,
+        close,
+        open,
+        signals,
+        strategy_stops,
+        initial_cash,
+        bars_per_year,
+        exec,
+        risk,
+        &SizingConfig::AllIn,
+    )
 }
 
 /// 执行一次回测并额外产出逐笔交易与两条曲线。
@@ -2414,7 +2809,7 @@ pub fn simulate_detailed_ohlc(
 /// # Errors
 /// 同 [`simulate_ohlc_with_stops`]。
 #[allow(clippy::too_many_arguments)]
-pub fn simulate_detailed_ohlc_with_stops(
+pub fn simulate_detailed_ohlc_with_stops_and_sizing(
     time: &[i64],
     high: &[f64],
     low: &[f64],
@@ -2426,17 +2821,20 @@ pub fn simulate_detailed_ohlc_with_stops(
     bars_per_year: f64,
     exec: &ExecConfig,
     risk: &StopConfig,
+    sizing: &SizingConfig,
 ) -> crate::error::Result<SimResult> {
     exec.validate_rates()?;
     risk.validate()?;
+    sizing.validate()?;
     let n = close.len().min(signals.len());
     if let Some(lines) = strategy_stops {
         lines.validate_len(n)?;
     }
-    let needs_ohlc = !risk.is_none() || strategy_stops.is_some_and(|s| !s.is_none());
+    let needs_ohlc =
+        !risk.is_none() || strategy_stops.is_some_and(|s| !s.is_none()) || sizing.needs_ohlc();
     if needs_ohlc && (high.len() < n || low.len() < n) {
         return Err(crate::error::AppError::Msg(format!(
-            "配置了止损但 high/low 长度不足: high={}, low={}, close={n}",
+            "配置了止损/ATR 仓位但 high/low 长度不足: high={}, low={}, close={n}",
             high.len(),
             low.len()
         )));
@@ -2467,6 +2865,7 @@ pub fn simulate_detailed_ohlc_with_stops(
         initial_cash,
         exec,
         risk,
+        sizing,
         true,
     )?;
     let mut summary = compute_metrics(&out.metrics, initial_cash, bars_per_year)?;
@@ -2493,6 +2892,40 @@ pub fn simulate_detailed_ohlc_with_stops(
         equity_curve,
         fixed_curve: detail.fixed,
     })
+}
+
+/// 带策略止损线的详细回测(默认全仓)。
+///
+/// 保留旧签名供既有调用/测试使用; 需要仓位模式时用
+/// [`simulate_detailed_ohlc_with_stops_and_sizing`]。
+#[allow(clippy::too_many_arguments)]
+pub fn simulate_detailed_ohlc_with_stops(
+    time: &[i64],
+    high: &[f64],
+    low: &[f64],
+    close: &[f64],
+    open: &[f64],
+    signals: &[Signal],
+    strategy_stops: Option<&StopLines>,
+    initial_cash: crate::money::Amount,
+    bars_per_year: f64,
+    exec: &ExecConfig,
+    risk: &StopConfig,
+) -> crate::error::Result<SimResult> {
+    simulate_detailed_ohlc_with_stops_and_sizing(
+        time,
+        high,
+        low,
+        close,
+        open,
+        signals,
+        strategy_stops,
+        initial_cash,
+        bars_per_year,
+        exec,
+        risk,
+        &SizingConfig::AllIn,
+    )
 }
 
 /// 批量回测(rayon 并行)。返回顺序与 `signal_batch` 一一对应。
@@ -2545,6 +2978,32 @@ mod tests {
         (0..n)
             .map(|i| 100.0 + (i as f64 * 0.1).sin() * 20.0)
             .collect()
+    }
+
+    /// 固定 1 万初始资金、无成本、无止损的详细回测, 仅改变仓位模式。
+    fn sized_detail(
+        high: &[f64],
+        low: &[f64],
+        close: &[f64],
+        open: &[f64],
+        signals: &[Signal],
+        sizing: SizingConfig,
+    ) -> SimResult {
+        simulate_detailed_ohlc_with_stops_and_sizing(
+            &[],
+            high,
+            low,
+            close,
+            open,
+            signals,
+            None,
+            crate::money::Amount::from_i64(10_000),
+            365.0,
+            &ExecConfig::default(),
+            &StopConfig::default(),
+            &sizing,
+        )
+        .expect("合法回测必须成功")
     }
 
     #[test]
@@ -3058,6 +3517,242 @@ mod tests {
         assert!(m.fixed_sharpe_ratio > 0.0);
     }
 
+    /// 固定仓位: 复利腿随当前现金增长, fixed 腿始终按初始资金计价。
+    #[test]
+    fn fixed_sizing_compounds_main_leg_but_not_fixed_leg() {
+        // 两笔各 +10%: AllIn 10000→12100; 50% 仓位 10000→11025;
+        // fixed 腿每笔名义 5000, 两笔各 +500 → 11000。
+        let close = vec![100.0, 100.0, 110.0, 110.0, 110.0, 121.0, 121.0];
+        let open = close.clone();
+        let mut sig = vec![Signal::Hold; close.len()];
+        sig[0] = Signal::Buy;
+        sig[2] = Signal::Close;
+        sig[3] = Signal::Buy;
+        sig[5] = Signal::Close;
+        let out = sized_detail(
+            &close,
+            &close,
+            &close,
+            &open,
+            &sig,
+            SizingConfig::Fixed { fraction_pct: 50.0 },
+        );
+        assert_eq!(out.summary.num_trades, 2);
+        assert!(
+            (out.summary.final_equity.to_f64() - 11_025.0).abs() < 1e-9,
+            "{}",
+            out.summary.final_equity
+        );
+        assert!(
+            (out.summary.total_fixed_pnl.to_f64() - 1_000.0).abs() < 1e-9,
+            "{}",
+            out.summary.total_fixed_pnl
+        );
+        let fixed_last = *out.fixed_curve.last().expect("曲线非空");
+        assert!((fixed_last - 11_000.0).abs() < 1e-9, "{fixed_last}");
+    }
+
+    /// ATR 仓位: 名义 = 风险预算 / (mult × ATR); 无杠杆模型下截断到 1 倍权益。
+    #[test]
+    fn atr_sizing_sizes_by_risk_and_caps_at_no_leverage() {
+        // 恒定 TR=5 ⇒ ATR(2)=5。risk 1%、2×ATR ⇒ 名义 10% ⇒ 10 张。
+        let close = vec![100.0; 8];
+        let high = vec![102.5; 8];
+        let low = vec![97.5; 8];
+        let open = close.clone();
+        let mut sig = vec![Signal::Hold; 8];
+        sig[2] = Signal::Buy;
+        sig[4] = Signal::Close;
+        let out = sized_detail(
+            &high,
+            &low,
+            &close,
+            &open,
+            &sig,
+            SizingConfig::Atr {
+                risk_pct: 1.0,
+                period: 2,
+                mult: 2.0,
+                max_position_pct: 100.0,
+                fallback_fraction_pct: 0.0,
+            },
+        );
+        assert_eq!(out.trades.len(), 1);
+        assert_eq!(out.trades[0].qty, crate::money::Amount::from_i64(10));
+
+        // risk 100%、1×ATR ⇒ 名义 20 倍权益, 但引擎无杠杆, 截断到 1 倍。
+        let out = sized_detail(
+            &high,
+            &low,
+            &close,
+            &open,
+            &sig,
+            SizingConfig::Atr {
+                risk_pct: 100.0,
+                period: 2,
+                mult: 1.0,
+                max_position_pct: 100.0,
+                fallback_fraction_pct: 0.0,
+            },
+        );
+        assert_eq!(out.trades[0].qty, crate::money::Amount::from_i64(100));
+    }
+
+    /// ATR 未就绪时按 fallback 比例开仓; fallback=0 则继续空仓等待。
+    #[test]
+    fn atr_sizing_uses_fallback_until_atr_is_ready() {
+        let close = vec![100.0; 8];
+        let high = vec![102.5; 8];
+        let low = vec![97.5; 8];
+        let open = close.clone();
+        let mut sig = vec![Signal::Hold; 8];
+        sig[1] = Signal::Buy;
+        sig[3] = Signal::Close;
+        let out = sized_detail(
+            &high,
+            &low,
+            &close,
+            &open,
+            &sig,
+            SizingConfig::Atr {
+                risk_pct: 1.0,
+                period: 10,
+                mult: 2.0,
+                max_position_pct: 100.0,
+                fallback_fraction_pct: 20.0,
+            },
+        );
+        assert_eq!(out.trades.len(), 1);
+        assert_eq!(out.trades[0].qty, crate::money::Amount::from_i64(20));
+    }
+
+    /// Kelly: 样本不足走 fallback; 样本足够后按最近 N 笔的胜率/赔率折减。
+    #[test]
+    fn kelly_uses_recent_trade_stats_after_min_trades() {
+        let close = vec![
+            100.0, 100.0, 110.0, 110.0, 110.0, 104.5, 104.5, 104.5, 104.5, 104.5,
+        ];
+        let open = close.clone();
+        let mut sig = vec![Signal::Hold; close.len()];
+        sig[0] = Signal::Buy;
+        sig[2] = Signal::Close;
+        sig[3] = Signal::Buy;
+        sig[5] = Signal::Close;
+        sig[6] = Signal::Buy;
+        sig[8] = Signal::Close;
+        let out = sized_detail(
+            &close,
+            &close,
+            &close,
+            &open,
+            &sig,
+            SizingConfig::Kelly {
+                lookback: 2,
+                min_trades: 2,
+                kelly_fraction: 0.5,
+                max_position_pct: 100.0,
+                fallback_fraction_pct: 100.0,
+            },
+        );
+        assert_eq!(out.trades.len(), 3);
+        // 前两笔 fallback 全仓: 10000→11000→10450; 第三笔半 Kelly:
+        // p=0.5, b=2 ⇒ f=0.25, 半 Kelly=0.125 ⇒ 10450×0.125/104.5 = 12.5 张。
+        assert_eq!(
+            out.trades[2].qty,
+            crate::money::Amount::from_f64(12.5).expect("12.5 合法")
+        );
+    }
+
+    /// Kelly 估计出非正优势时不开仓(而不是回退到 fallback)。
+    #[test]
+    fn kelly_with_non_positive_edge_skips_entry() {
+        let close = vec![
+            100.0, 100.0, 110.0, 110.0, 110.0, 99.0, 99.0, 99.0, 99.0, 99.0,
+        ];
+        let open = close.clone();
+        let mut sig = vec![Signal::Hold; close.len()];
+        sig[0] = Signal::Buy;
+        sig[2] = Signal::Close;
+        sig[3] = Signal::Buy;
+        sig[5] = Signal::Close;
+        sig[6] = Signal::Buy;
+        sig[8] = Signal::Close;
+        let out = sized_detail(
+            &close,
+            &close,
+            &close,
+            &open,
+            &sig,
+            SizingConfig::Kelly {
+                lookback: 2,
+                min_trades: 2,
+                kelly_fraction: 0.5,
+                max_position_pct: 100.0,
+                fallback_fraction_pct: 100.0,
+            },
+        );
+        assert_eq!(out.summary.num_trades, 2, "f<=0 时第三笔不得开仓");
+    }
+
+    /// 平仓必须复用开仓时存的 fixed 腿数量, 不能按 `initial_cash` 重算。
+    #[test]
+    fn close_outcome_uses_stored_fixed_qty() {
+        let out = close_outcome(CloseArgs {
+            cur_pos: Side::Long,
+            pos_qty: crate::money::Amount::from_i64(10),
+            pos_entry: 100.0,
+            pos_entry_time: 0,
+            pos_entry_bar: 0,
+            exit_price: 110.0,
+            exit_time: 1,
+            exit_bar: 1,
+            // 故意与复利腿不同: 若平仓时按 initial_cash 重算, 这里会得到 100 而非 250。
+            fixed_qty: crate::money::Amount::from_i64(25),
+            trade_mfe: 0.0,
+            trade_mae: 0.0,
+            fee_rate: 0.0,
+            reason: ExitReason::Signal,
+        })
+        .expect("合法平仓");
+        assert_eq!(out.pnl, crate::money::Amount::from_i64(100));
+        assert_eq!(out.fixed_pnl, crate::money::Amount::from_i64(250));
+    }
+
+    /// `params` 只能有一个 `;` 分隔符: `params_to_json` 只按首个 `;` 切分。
+    #[test]
+    fn apply_to_appends_stop_and_sizing_after_one_separator() {
+        let base = "period=20";
+        let no_stop = StopConfig::default();
+        assert_eq!(no_stop.apply_to(base, &SizingConfig::AllIn), base);
+        assert_eq!(
+            no_stop.apply_to(base, &SizingConfig::Fixed { fraction_pct: 20.0 }),
+            "period=20;size=fixed,size_fraction_pct=20"
+        );
+
+        let stop = StopConfig {
+            stop_loss_pct: Some(2.0),
+            ..StopConfig::default()
+        };
+        assert_eq!(
+            stop.apply_to(base, &SizingConfig::AllIn),
+            "period=20;stop_loss_pct=2"
+        );
+        assert_eq!(
+            stop.apply_to(base, &SizingConfig::Fixed { fraction_pct: 20.0 }),
+            "period=20;stop_loss_pct=2,size=fixed,size_fraction_pct=20"
+        );
+        for sizing in [
+            SizingConfig::AllIn,
+            SizingConfig::Fixed { fraction_pct: 20.0 },
+        ] {
+            assert_eq!(
+                stop.apply_to(base, &sizing).matches(';').count(),
+                1,
+                "stop+sizing 只能有一个分隔符"
+            );
+        }
+    }
+
     #[test]
     fn test_turnover_per_year_counts_round_trips_annualized() {
         let close = make_prices(200);
@@ -3283,6 +3978,7 @@ mod tests {
             crate::money::Amount::from_i64(10_000),
             &exec,
             &StopConfig::default(),
+            &SizingConfig::default(),
             false,
         )
         .expect("合法回测必须成功");

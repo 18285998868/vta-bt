@@ -35,6 +35,7 @@ use super::bbrk_ttm_fire::BbrkTtmFireStrategy;
 use super::bbrk_vol::BbrkVolStrategy;
 use super::bbrk_vol_ema::BbrkVolEmaStrategy;
 use super::bbrk_zlema_ema::BbrkZlemaEmaStrategy;
+use super::clenow::ClenowStrategy;
 use super::dema::DemaStrategy;
 use super::dma::DmaStrategy;
 use super::dualthrust::DualThrustStrategy;
@@ -111,30 +112,34 @@ pub fn build_strategies_checked(
     Ok(strategies)
 }
 
-/// 一个待回测单元: 策略实例 + 该条 `[[strategy]]` 的止损配置。
+/// 一个待回测单元: 策略实例 + 该条 `[[strategy]]` 的止损/仓位配置。
 ///
-/// 止损是**运行参数**, 不是策略内部状态: 同一策略实例可以配不同 stop 重复运行,
-/// 策略代码无需知道止损存在。
+/// 止损与仓位是**运行参数**, 不是策略内部状态: 同一策略实例可以配不同
+/// stop/sizing 重复运行, 策略代码无需知道它们存在。
 pub struct StrategyJob {
     /// 已构建的策略实例。
     pub strategy: Box<dyn Strategy>,
     /// 该条策略的持仓期止损。
     pub stop: StopConfig,
+    /// 该条策略的仓位模式。
+    pub sizing: crate::engine::SizingConfig,
 }
 
-/// 按 `[[strategy]]` 顺序构建策略 + 止损, 并逐条做参数网格唯一性自检。
+/// 按 `[[strategy]]` 顺序构建策略 + 止损/仓位, 并逐条做参数网格唯一性自检。
 ///
 /// 与 [`build_strategies_checked`] 的区别: 后者只接收策略配置, 用于不关心
-/// 止损的测试/旧调用; 生产路径必须用本函数, 否则 `stop` 会丢失。
+/// 止损/仓位的测试/旧调用; 生产路径必须用本函数, 否则 `stop`/`sizing` 会丢失。
 pub fn build_jobs_checked(specs: &[StrategySpec]) -> crate::error::Result<Vec<StrategyJob>> {
     let mut jobs = Vec::with_capacity(specs.len());
     for spec in specs {
         spec.stop.validate()?;
+        spec.sizing.validate()?;
         let strategy = build_one(&spec.strategy);
         check_param_uniqueness(std::slice::from_ref(&strategy))?;
         jobs.push(StrategyJob {
             strategy,
             stop: spec.stop,
+            sizing: spec.sizing,
         });
     }
     Ok(jobs)
@@ -231,6 +236,7 @@ fn build_one(sc: &StrategyConfig) -> Box<dyn Strategy> {
         StrategyConfig::SwingFractal(c) => Box::new(SwingFractalStrategy::new(c.clone())),
         StrategyConfig::EmaCross(c) => Box::new(EmaCrossStrategy::new(c.clone())),
         StrategyConfig::Turtle(c) => Box::new(TurtleStrategy::new(c.clone())),
+        StrategyConfig::Clenow(c) => Box::new(ClenowStrategy::new(c.clone())),
         StrategyConfig::DualThrust(c) => Box::new(DualThrustStrategy::new(c.clone())),
         StrategyConfig::RBreaker(c) => Box::new(RBreakerStrategy::new(c.clone())),
         StrategyConfig::Fiali(c) => Box::new(FialiStrategy::new(c.clone())),

@@ -4,7 +4,8 @@ use serde::Deserialize;
 use crate::config::PeriodParam;
 
 /// 海龟 Donchian 突破。entry/exit 独立笛卡尔(经典 20/10 与 55/20 皆在其中)。
-/// ATR 仓位管理 vta 固定名义表达不了, 只复现信号层(差异见研究报告)。
+/// 策略本身只产出信号; ATR 风险仓位由 `[[strategy]].sizing` 的 `type = "atr"`
+/// 配置(见 [`crate::engine::SizingConfig`]), 不再需要固定名义近似。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TurtleConfig {

@@ -316,6 +316,7 @@ fn params_fingerprint(
         exec,
         outputs,
         &crate::engine::StopConfig::default(),
+        &crate::engine::SizingConfig::default(),
     )
 }
 
@@ -331,6 +332,7 @@ fn params_fingerprint_with_stop(
     exec: &crate::engine::ExecConfig,
     outputs: OutputSet,
     stop: &crate::engine::StopConfig,
+    sizing: &crate::engine::SizingConfig,
 ) -> u64 {
     params_fingerprint_with_source_and_stop(
         strategy,
@@ -341,6 +343,7 @@ fn params_fingerprint_with_stop(
         exec,
         outputs,
         stop,
+        sizing,
         source_hash(),
     )
 }
@@ -371,6 +374,7 @@ fn params_fingerprint_with_source(
         exec,
         outputs,
         &crate::engine::StopConfig::default(),
+        &crate::engine::SizingConfig::default(),
         source,
     )
 }
@@ -385,6 +389,7 @@ fn params_fingerprint_with_source_and_stop(
     exec: &crate::engine::ExecConfig,
     outputs: OutputSet,
     stop: &crate::engine::StopConfig,
+    sizing: &crate::engine::SizingConfig,
     source: &str,
 ) -> u64 {
     let mut h = fnv_bytes(FNV_OFFSET, &data_fp.to_le_bytes());
@@ -403,18 +408,25 @@ fn params_fingerprint_with_source_and_stop(
     // 实现版本: 代码一变, 指纹必变 ⇒ 旧缓存必然不命中。
     h = fnv_bytes(h, source.as_bytes());
     h = fnv_bytes(h, &[FNV_COL_SEP]);
-    // 止损是运行口径的一部分: 同一策略同一参数换 stop 必须重算。
+    // 止损/仓位是运行口径的一部分: 同一策略同一参数换 stop/sizing 必须重算。
     let stop_params = stop.param_str();
+    let size_params = sizing.param_str();
     h = fnv_bytes(h, stop_params.as_bytes());
     h = fnv_bytes(h, &[FNV_COL_SEP]);
+    h = fnv_bytes(h, size_params.as_bytes());
+    h = fnv_bytes(h, &[FNV_COL_SEP]);
     for i in 0..n {
-        // 与报告行主键 `stop.apply_to(param_str)` 逐字节等价, 但避免每档
-        // 多分配一个 `base;stop` 字符串(FNV 逐字节, 拼接哈希可分段喂入)。
+        // 与报告行主键 `stop.apply_to(param_str, sizing)` 逐字节等价, 但避免
+        // 每档多分配一个 `base;stop,size` 字符串(FNV 逐字节, 拼接哈希可分段喂入)。
         let base = strategy.param_str(i);
         h = fnv_bytes(h, base.as_bytes());
         if !stop_params.is_empty() {
             h = fnv_bytes(h, b";");
             h = fnv_bytes(h, stop_params.as_bytes());
+        }
+        if !size_params.is_empty() {
+            h = fnv_bytes(h, if stop_params.is_empty() { b";" } else { b"," });
+            h = fnv_bytes(h, size_params.as_bytes());
         }
         h = fnv_bytes(h, &[FNV_COL_SEP]);
     }
@@ -646,6 +658,7 @@ fn run_combo(
                 fixed_curves: ctx.fixed_curves,
             },
             stop,
+            &job.sizing,
         ),
     );
 
@@ -750,7 +763,7 @@ fn run_combo(
                 .enumerate()
                 .map(|(k, outcome)| {
                     let i = start + k;
-                    let params = stop.apply_to(&strategy.param_str(i));
+                    let params = stop.apply_to(&strategy.param_str(i), &job.sizing);
                     match outcome {
                         crate::strategies::ParamOutcome::Signals(signals) => {
                             let stop_lines = match strategy.generate_stop_lines(
@@ -775,7 +788,7 @@ fn run_combo(
                             if let Some(lines) = &stop_lines {
                                 lines.validate_len(signals.len())?;
                             }
-                            let sim = crate::engine::simulate_detailed_ohlc_with_stops(
+                            let sim = crate::engine::simulate_detailed_ohlc_with_stops_and_sizing(
                                 cols.time(),
                                 cols.high(),
                                 cols.low(),
@@ -787,6 +800,7 @@ fn run_combo(
                                 bpy,
                                 &ctx.exec,
                                 stop,
+                                &job.sizing,
                             )?;
                             let status = RunStatus::classify(&signals, &sim.summary);
                             Ok((params, Some(sim), status))
@@ -899,7 +913,7 @@ fn run_combo(
                     // `param_str` 会为每次调用分配一个 `String`。本分支需要它三次
                     // (params 列 + 两列派生编码), 故只算一次再复用。止损后缀必须
                     // 拼进 params, 否则同一策略的 stop 网格行主键会碰撞。
-                    let params = stop.apply_to(&strategy.param_str(i));
+                    let params = stop.apply_to(&strategy.param_str(i), &job.sizing);
                     match outcome {
                         crate::strategies::ParamOutcome::Signals(signals) => {
                             let stop_lines = match strategy.generate_stop_lines(
@@ -932,7 +946,7 @@ fn run_combo(
                             if let Some(lines) = &stop_lines {
                                 lines.validate_len(signals.len())?;
                             }
-                            let metrics = crate::engine::simulate_ohlc_with_stops(
+                            let metrics = crate::engine::simulate_ohlc_with_stops_and_sizing(
                                 cols.high(),
                                 cols.low(),
                                 cols.close(),
@@ -943,6 +957,7 @@ fn run_combo(
                                 bpy,
                                 &ctx.exec,
                                 stop,
+                                &job.sizing,
                             )?;
                             let status = RunStatus::classify(&signals, &metrics);
                             Ok(ctx.run_row(
@@ -1544,6 +1559,7 @@ mod tests {
             &exec,
             outputs,
             &crate::engine::StopConfig::default(),
+            &crate::engine::SizingConfig::default(),
         );
         let sl = crate::engine::StopConfig {
             stop_loss_pct: Some(2.0),
@@ -1579,6 +1595,7 @@ mod tests {
             &exec,
             outputs,
             &sl,
+            &crate::engine::SizingConfig::default(),
         );
         let with_trail = params_fingerprint_with_stop(
             &*s,
@@ -1589,6 +1606,7 @@ mod tests {
             &exec,
             outputs,
             &trail,
+            &crate::engine::SizingConfig::default(),
         );
         let with_atr = params_fingerprint_with_stop(
             &*s,
@@ -1599,6 +1617,7 @@ mod tests {
             &exec,
             outputs,
             &atr,
+            &crate::engine::SizingConfig::default(),
         );
         let with_breakeven = params_fingerprint_with_stop(
             &*s,
@@ -1609,6 +1628,7 @@ mod tests {
             &exec,
             outputs,
             &breakeven,
+            &crate::engine::SizingConfig::default(),
         );
         assert_ne!(base, with_sl, "固定止损必须改变缓存指纹");
         assert_ne!(base, with_trail, "追踪止损必须改变缓存指纹");
@@ -1689,6 +1709,7 @@ mod tests {
         let job = StrategyJob {
             strategy: Box::new(StopLineStrategy),
             stop: engine::StopConfig::default(),
+            sizing: engine::SizingConfig::default(),
         };
         let (path, computed) = run_combo(
             &job,

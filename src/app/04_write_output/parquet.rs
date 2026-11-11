@@ -256,6 +256,24 @@ pub fn strategy_params_value(params: &str) -> u64 {
     }
     // 海龟 "entry=E,exit=X" → E*1M+X。
     if let Some(rest) = clean.strip_prefix("entry=") {
+        // Clenow 混合 "entry=E,exit=X,fast=F,slow=S,mode=M" 比海龟多两个维度:
+        // 位打包 E(15b)|X(15b)|F(15b)|S(15b)|M(1b); 超界回退整串 FNV。
+        if clean.contains(",fast=") {
+            let field = |key: &str| -> Option<u64> {
+                clean
+                    .split(',')
+                    .find_map(|kv| kv.strip_prefix(key)?.strip_prefix('='))
+                    .and_then(|v| v.parse().ok())
+            };
+            let (e, x, f, s) = (field("entry"), field("exit"), field("fast"), field("slow"));
+            if let (Some(e), Some(x), Some(f), Some(s)) = (e, x, f, s)
+                && [e, x, f, s].iter().all(|v| *v < (1 << 15))
+            {
+                let mode_bit = u64::from(clean.ends_with("mode=long_short"));
+                return (e << 49) | (x << 33) | (f << 17) | (s << 1) | mode_bit;
+            }
+            return fnv1a_64(&clean);
+        }
         let mut it = rest.split(',');
         let e: u64 = it.next().unwrap_or("0").parse().unwrap_or(0);
         let x: u64 = it
@@ -550,7 +568,7 @@ fn build_parquet(results: &[RunResult], balance: crate::money::Amount) -> Result
         strategy_params_json.append_value(&r.strategy_params_json);
         params_full.append_value(&r.params);
         bal.append_value(money_mantissa(balance)?);
-        trade_size.append_value("100%");
+        trade_size.append_value(trade_size_label(&r.params));
         total_return.append_value(m.total_return);
         final_equity.append_value(money_mantissa(m.final_equity)?);
         max_dd.append_value(m.max_drawdown_pct / 100.0);
@@ -765,6 +783,31 @@ const MONEY_SCALE: u32 = crate::money::MONEY_SCALE;
 
 /// 同上, `i8` 形式(Arrow 的 `DataType::Decimal128` 用 `i8` 表示标度)。
 const MONEY_SCALE_I8: i8 = MONEY_SCALE as i8;
+
+/// 报告 `trade_size` 列: 从 `params` 的仓位后缀提取人类可读的模式。
+///
+/// 该列是展示用摘要, 权威参数在 `params` / `strategy_params_json`。从 `params`
+/// 反推而不是新增结构字段, 使旧缓存文件在 merge 时也能被纠正为真实仓位。
+fn trade_size_label(params: &str) -> String {
+    let Some((_, suffix)) = params.split_once(';') else {
+        return "100%".to_string();
+    };
+    let mut mode = None;
+    let mut fraction = None;
+    for kv in suffix.split(',') {
+        if let Some(v) = kv.strip_prefix("size=") {
+            mode = Some(v);
+        } else if let Some(v) = kv.strip_prefix("size_fraction_pct=") {
+            fraction = Some(v);
+        }
+    }
+    match mode {
+        Some("fixed") => format!("{}%", fraction.unwrap_or("?")),
+        Some("kelly") => "kelly".to_string(),
+        Some("atr") => "atr".to_string(),
+        _ => "100%".to_string(),
+    }
+}
 
 /// 把结果行写成单个 Parquet 文件(父目录自动创建)。
 ///
@@ -2351,6 +2394,22 @@ mod tests {
         assert_eq!(strategy_params_value("ema_10"), 10);
     }
 
+    /// Clenow 混合参数: 四个周期维度 + 方向模式必须两两可区分。
+    #[test]
+    fn test_params_value_clenow_encoding() {
+        let a = strategy_params_value("entry=20,exit=10,fast=50,slow=100,mode=long_short");
+        let b = strategy_params_value("entry=20,exit=10,fast=50,slow=100,mode=long_only");
+        let c = strategy_params_value("entry=55,exit=20,fast=100,slow=200,mode=long_short");
+        assert_ne!(a, b, "方向模式必须进入编码");
+        assert_ne!(a, c);
+        assert_eq!(a & 1, 1);
+        assert_eq!(b & 1, 0);
+        // 超界周期回退整串 FNV, 仍须可区分。
+        let big = "entry=40000,exit=10,fast=50000,slow=60000,mode=long_short";
+        assert_eq!(strategy_params_value(big), fnv1a_64(big));
+        assert_ne!(strategy_params_value(big), a);
+    }
+
     /// 回归: 负参数**不得**编码成 0(那会与真实的 `= 0` 撞值)。
     ///
     /// 可触发场景: `as` 从 f64 到 u64 是饱和的 —— 负数 → 0。于是 `sigma = -1.0`
@@ -2566,6 +2625,62 @@ mod tests {
         assert_eq!(
             params_to_json("period=20;stop_loss_pct=2"),
             r#"{"period":"20","stop_loss_pct":"2"}"#
+        );
+    }
+
+    /// 仓位后缀必须同时进入 JSON 与排序编码, 否则 sizing 网格行无法区分。
+    #[test]
+    fn sizing_suffix_is_reflected_in_json_and_encoding() {
+        let p = "period=20;size=fixed,size_fraction_pct=20";
+        let js = params_to_json(p);
+        assert_eq!(
+            js,
+            r#"{"period":"20","size":"fixed","size_fraction_pct":"20"}"#
+        );
+        assert!(
+            js.parse::<serde_json::Value>().is_ok(),
+            "仓位参数 JSON 非法: {js}"
+        );
+
+        // stop 与 sizing 共存时仍只有一个 `;`, 逗号分隔全部键值。
+        let both = "period=20;stop_loss_pct=2,size=kelly,size_lookback=50";
+        let js = params_to_json(both);
+        assert_eq!(
+            js,
+            r#"{"period":"20","stop_loss_pct":"2","size":"kelly","size_lookback":"50"}"#
+        );
+        assert!(
+            js.parse::<serde_json::Value>().is_ok(),
+            "stop+sizing JSON 非法: {js}"
+        );
+
+        assert_ne!(
+            strategy_params_value("period=20;size=fixed,size_fraction_pct=20"),
+            strategy_params_value("period=20;size=fixed,size_fraction_pct=30"),
+            "不同 sizing 必须有不同 strategy_params"
+        );
+        assert_ne!(
+            strategy_params_value("period=20"),
+            strategy_params_value("period=20;size=fixed,size_fraction_pct=20"),
+            "无 sizing 与有 sizing 必须有不同 strategy_params"
+        );
+    }
+
+    /// `trade_size` 摘要列必须反映 sizing 后缀, 而不是恒为 100%。
+    #[test]
+    fn trade_size_label_reflects_sizing_suffix() {
+        assert_eq!(trade_size_label("entry=20,exit=10"), "100%");
+        assert_eq!(
+            trade_size_label("entry=20,exit=10;size=fixed,size_fraction_pct=20"),
+            "20%"
+        );
+        assert_eq!(
+            trade_size_label("entry=20,exit=10;stop_loss_pct=2,size=kelly,size_lookback=50"),
+            "kelly"
+        );
+        assert_eq!(
+            trade_size_label("entry=20,exit=10;size=atr,size_risk_pct=1"),
+            "atr"
         );
     }
 

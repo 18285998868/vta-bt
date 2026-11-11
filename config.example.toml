@@ -69,6 +69,15 @@ overwrite = false
 # stop = { atr = { period = 14, mult = 2.0, trailing = true } }
 # stop = { breakeven = { trigger_pct = 2.0, offset_pct = 0.0 } }
 # 也可写成表: 先写 [[strategy]], 再写 [strategy.stop] 与对应键。
+#
+# 可选: 仓位模式(缺省 all_in, 全仓复利; 空仓时按当前现金买入)。
+# fixed 按当前权益的固定百分比; kelly 用最近 lookback 笔已平仓交易做半 Kelly;
+# atr 按 risk_pct 的单笔风险反算仓位(0.5 = 单笔风险 0.5% 权益)。
+# kelly 未满 min_trades 前用 fallback_fraction_pct 起步; atr 无杠杆, 上限
+# max_position_pct。仓位只影响下单数量, 不进入策略信号。
+# sizing = { type = "fixed", fraction_pct = 20.0 }
+# sizing = { type = "kelly", lookback = 50, min_trades = 10, kelly_fraction = 0.5, fallback_fraction_pct = 10.0 }
+# sizing = { type = "atr", risk_pct = 1.0, period = 14, mult = 2.0, max_position_pct = 100.0 }
 # ========================================
 
 [[strategy]]
@@ -161,6 +170,16 @@ slow = { start = 20, end = 200, step = 10 }
 type = "turtle"
 entry = { start = 20, end = 55, step = 35 }
 exit = { start = 10, end = 20, step = 10 }
+
+# Clenow 混合趋势: 双均线 regime + 唐奇安突破。
+# mode 只保留 fast<slow 的组合; ATR 追踪止损可选, 研究显示会削弱趋势尾部收益。
+[[strategy]]
+type = "clenow"
+fast = { start = 50, end = 100, step = 50 }
+slow = { start = 100, end = 200, step = 100 }
+entry = { start = 20, end = 55, step = 35 }
+exit = { start = 10, end = 20, step = 10 }
+mode = ["long_short", "long_only"]
 
 [[strategy]]
 type = "dual_thrust"

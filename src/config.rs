@@ -40,6 +40,7 @@ use crate::strategies::bbrk_ttm_fire::BbrkTtmFireConfig;
 use crate::strategies::bbrk_vol::BbrkVolConfig;
 use crate::strategies::bbrk_vol_ema::BbrkVolEmaConfig;
 use crate::strategies::bbrk_zlema_ema::BbrkZlemaEmaConfig;
+use crate::strategies::clenow::ClenowConfig;
 use crate::strategies::dualthrust::DualThrustConfig;
 use crate::strategies::edma::EdmaConfig;
 use crate::strategies::ema_cross::EmaCrossConfig;
@@ -78,6 +79,9 @@ pub struct StrategySpec {
     /// 该策略的持仓期止损; 缺省无止损。
     #[serde(default)]
     pub stop: StopConfig,
+    /// 该策略的仓位模式; 缺省全仓复利。
+    #[serde(default)]
+    pub sizing: crate::engine::SizingConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -240,6 +244,7 @@ impl Config {
         // 少校验(只校验 period), 是隐蔽的正确性陷阱。
         for spec in &self.strategy {
             spec.stop.validate()?;
+            spec.sizing.validate()?;
             match &spec.strategy {
                 StrategyConfig::ATRBand(c) => c.validate()?,
                 StrategyConfig::Aberration(c) => c.validate()?,
@@ -321,6 +326,7 @@ impl Config {
                 StrategyConfig::SsfSt(c) => c.validate()?,
                 StrategyConfig::SwingFractal(c) => c.validate()?,
                 StrategyConfig::Turtle(c) => c.validate()?,
+                StrategyConfig::Clenow(c) => c.validate()?,
                 StrategyConfig::Vwap(c) => c.validate()?,
                 StrategyConfig::VwapTrend(c) => c.validate()?,
             }
@@ -617,6 +623,8 @@ pub enum StrategyConfig {
     SwingFractal(SwingFractalConfig),
     /// **Turtle** 策略: 配置 [`TurtleConfig`]。
     Turtle(TurtleConfig),
+    /// **Clenow** 策略: 配置 [`ClenowConfig`]。 TOML 中写作 `type = "clenow"`。
+    Clenow(ClenowConfig),
     /// **DualThrust** 策略: 配置 [`DualThrustConfig`]。
     DualThrust(DualThrustConfig),
     /// **RBreaker** 策略: 配置 [`RBreakerConfig`]。
@@ -1449,5 +1457,87 @@ mod tests {
             toml::from_str::<Config>(&bad).is_err(),
             "flatten 不得让策略拼错字段静默通过"
         );
+    }
+
+    #[test]
+    fn strategy_sizing_parses_all_modes_and_defaults_to_all_in() {
+        use crate::engine::SizingConfig;
+
+        let cfg: Config = toml::from_str(&make_stop_toml("")).unwrap();
+        assert_eq!(cfg.strategy[0].sizing, SizingConfig::AllIn);
+
+        let cfg: Config = toml::from_str(&make_stop_toml(
+            "sizing = { type = \"fixed\", fraction_pct = 25.0 }\n",
+        ))
+        .unwrap();
+        assert_eq!(
+            cfg.strategy[0].sizing,
+            SizingConfig::Fixed { fraction_pct: 25.0 }
+        );
+        assert!(cfg.validate().is_ok());
+
+        let cfg: Config = toml::from_str(&make_stop_toml(
+            "sizing = { type = \"kelly\", lookback = 50, min_trades = 20, kelly_fraction = 0.5 }\n",
+        ))
+        .unwrap();
+        assert_eq!(
+            cfg.strategy[0].sizing,
+            SizingConfig::Kelly {
+                lookback: 50,
+                min_trades: 20,
+                kelly_fraction: 0.5,
+                max_position_pct: 100.0,
+                fallback_fraction_pct: 10.0,
+            }
+        );
+
+        let cfg: Config = toml::from_str(&make_stop_toml(
+            "[strategy.sizing]\ntype = \"atr\"\nrisk_pct = 1.0\nperiod = 14\nmult = 2.0\n",
+        ))
+        .unwrap();
+        assert_eq!(
+            cfg.strategy[0].sizing,
+            SizingConfig::Atr {
+                risk_pct: 1.0,
+                period: 14,
+                mult: 2.0,
+                max_position_pct: 100.0,
+                fallback_fraction_pct: 0.0,
+            }
+        );
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn strategy_sizing_rejects_bad_values() {
+        for bad in [
+            "sizing = { type = \"fixed\", fraction_pct = 0.0 }\n",
+            "sizing = { type = \"fixed\", fraction_pct = 100.5 }\n",
+            "sizing = { type = \"fixed\", fraction_pct = nan }\n",
+            "sizing = { type = \"kelly\", lookback = 0, min_trades = 2, kelly_fraction = 0.5 }\n",
+            "sizing = { type = \"kelly\", lookback = 10, min_trades = 1, kelly_fraction = 0.5 }\n",
+            "sizing = { type = \"kelly\", lookback = 10, min_trades = 11, kelly_fraction = 0.5 }\n",
+            "sizing = { type = \"kelly\", lookback = 10, min_trades = 2, kelly_fraction = 0.0 }\n",
+            "sizing = { type = \"kelly\", lookback = 10, min_trades = 2, kelly_fraction = 1.5 }\n",
+            "sizing = { type = \"kelly\", lookback = 10, min_trades = 2, kelly_fraction = 0.5, fallback_fraction_pct = 0.0 }\n",
+            "sizing = { type = \"atr\", risk_pct = 0.0, period = 14, mult = 2.0 }\n",
+            "sizing = { type = \"atr\", risk_pct = 1.0, period = 0, mult = 2.0 }\n",
+            "sizing = { type = \"atr\", risk_pct = 1.0, period = 14, mult = 0.0 }\n",
+            "sizing = { type = \"atr\", risk_pct = 1.0, period = 14, mult = 2.0, fallback_fraction_pct = 101.0 }\n",
+        ] {
+            let cfg: Config = toml::from_str(&make_stop_toml(bad)).unwrap();
+            assert!(cfg.validate().is_err(), "非法仓位必须被拒绝: {bad}");
+        }
+
+        for bad in [
+            "sizing = { type = \"fixed\" }\n",
+            "sizing = { type = \"fixed\", fraction_pct = 20.0, bogus = 1 }\n",
+            "sizing = { type = \"bogus\" }\n",
+        ] {
+            assert!(
+                toml::from_str::<Config>(&make_stop_toml(bad)).is_err(),
+                "缺失/未知仓位键必须被拒绝: {bad}"
+            );
+        }
     }
 }

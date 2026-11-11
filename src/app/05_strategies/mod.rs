@@ -72,6 +72,8 @@ pub mod bbrk_vol_ema;
 pub mod bbrk_zlema_ema;
 /// 由 `StrategyConfig` 构建策略实例, 并做参数网格唯一性自检。
 pub mod build;
+/// **CLENOW** 策略: 配置 [`ClenowConfig`], 实现 [`ClenowStrategy`]。
+pub mod clenow;
 /// **DEMA** 均线策略: 配置 [`MaGridCfg`](crate::config::MaGridCfg), 实现 [`DemaStrategy`]。
 pub mod dema;
 /// **DMA** 均线策略: 配置 [`MaGridCfg`](crate::config::MaGridCfg), 实现 [`DmaStrategy`]。
