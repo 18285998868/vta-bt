@@ -1,6 +1,6 @@
 # 永远使用最新 stable。
 #
-# 与仓库既有惯例一致（`creats/vector-ta/rust-toolchain.toml`、
+# 与仓库既有惯例一致（`vta-bt/rust-toolchain.toml`、
 # `creats/run-backtest-node/rust-toolchain.toml`）。stable channel 永远指向
 # 最新发布版，故**无需人工跟进版本号** —— 进到本目录 `cargo build` 即自动用最新 stable。
 #

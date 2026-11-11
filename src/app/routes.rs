@@ -12,25 +12,16 @@ use std::sync::Arc;
 
 use super::data_loader::{DataError, DataLoader, MarketType, ParseMarketTypeError};
 use super::state::{LayoutInput, StateError, StateStore};
-use super::strategy::{BacktestParams, StrategyError};
 use crate::utils::{valid_pair, valid_timeframe};
 
 /// 单次 `/api/klines` 返回的最大 bar 数（防御超大响应体）。
 const MAX_KLINE_LIMIT: usize = 10_000;
-/// 单次 `/api/strategy` 允许的策略 TOML 字节数（防御超大解析输入）。
-const MAX_STRATEGY_TOML_BYTES: usize = 4_096;
 
 /// 服务共享状态。
 #[derive(Clone)]
 pub struct AppState {
     pub(crate) data_loader: Arc<DataLoader>,
     pub(crate) state_store: Arc<StateStore>,
-    pub(crate) strategy_cache: moka::sync::Cache<u64, Arc<super::strategy::StrategyResult>>,
-    /// 回测并发闸门：同时在跑的回测数上限。
-    ///
-    /// 回测是重 CPU 活（59k 根 ≈ 134ms），且每档网格还要再乘一遍。
-    /// 不设闸门时，一个请求能吃满几百 MB 内存。
-    pub(crate) strategy_gate: Arc<tokio::sync::Semaphore>,
 }
 
 impl AppState {
@@ -39,17 +30,9 @@ impl AppState {
         Self {
             data_loader: Arc::new(DataLoader::new(data_dir)),
             state_store,
-            strategy_cache: moka::sync::Cache::builder()
-                .max_capacity(100)
-                .time_to_live(std::time::Duration::from_secs(300))
-                .build(),
-            strategy_gate: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_BACKTESTS)),
         }
     }
 }
-
-/// 同时在跑的回测数上限。
-const MAX_CONCURRENT_BACKTESTS: usize = 4;
 
 /// 统一响应体：成功时 `data` 有值，失败时 `error` 有值。
 #[derive(Serialize)]
@@ -114,29 +97,6 @@ pub struct KlinesQuery {
     pub timeframe: String,
     /// 最多返回的 bar 数（取窗口内最后 N 根）。
     pub limit: Option<usize>,
-    /// 时间窗口上界（不含，毫秒时间戳）。
-    pub before: Option<i64>,
-    /// 时间窗口下界（不含，毫秒时间戳）。
-    pub after: Option<i64>,
-}
-
-/// `/api/strategy` 查询参数。
-#[derive(Debug, Deserialize)]
-pub struct StrategyQuery {
-    /// 市场类型（缺省为 `futures`）。
-    pub market_type: Option<String>,
-    /// 交易对。
-    pub pair: String,
-    /// 周期。
-    pub timeframe: String,
-    /// 策略 TOML 片段。
-    pub strategy_toml: String,
-    /// 初始资金（缺省 10000）。
-    pub initial_balance: Option<f64>,
-    /// 单边手续费（基点，缺省 0）。
-    pub fee_bps: Option<f64>,
-    /// 单边滑点（基点，缺省 0）。
-    pub slippage_bps: Option<f64>,
     /// 时间窗口上界（不含，毫秒时间戳）。
     pub before: Option<i64>,
     /// 时间窗口下界（不含，毫秒时间戳）。
@@ -342,122 +302,6 @@ async fn klines_handler(
         ),
         Ok(Err(e)) => handle_data_error(e),
         Err(e) => handle_data_error(DataError::Task(format!("kline load task: {e}"))),
-    }
-}
-
-/// 策略错误 → HTTP 响应（500 一律脱敏）。
-fn strategy_error(e: StrategyError) -> ErrorResponse {
-    match &e {
-        StrategyError::User(msg) => bad_request(msg.clone()),
-        StrategyError::NotFound(msg) => {
-            (StatusCode::NOT_FOUND, Json(ApiResponse::err(msg.clone())))
-        }
-        StrategyError::Internal(_) => {
-            tracing::error!(error = %e, "strategy failed");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiResponse::err("internal error")),
-            )
-        }
-    }
-}
-
-/// `/api/strategies`：策略下拉列表。
-#[tracing::instrument(skip_all)]
-async fn strategies_handler() -> impl IntoResponse {
-    (
-        StatusCode::OK,
-        Json(ApiResponse::ok(serde_json::json!({
-            "strategies": super::strategy::list_strategies()
-                .into_iter()
-                .map(|s| s.name)
-                .collect::<Vec<_>>()
-        }))),
-    )
-}
-
-/// `/api/strategy`：回测。
-#[tracing::instrument(skip_all, fields(pair = %query.pair, timeframe = %query.timeframe))]
-async fn strategy_handler(
-    State(state): State<AppState>,
-    Query(query): Query<StrategyQuery>,
-) -> impl IntoResponse {
-    let market_type = match require_market_type(query.market_type.as_deref()) {
-        Ok(mt) => mt,
-        Err(resp) => return resp,
-    };
-
-    if !valid_pair(&query.pair) {
-        return bad_request("invalid pair");
-    }
-    if !valid_timeframe(&query.timeframe) {
-        return bad_request("invalid timeframe");
-    }
-    if query.strategy_toml.len() > MAX_STRATEGY_TOML_BYTES {
-        return bad_request(format!(
-            "strategy_toml too large (max {MAX_STRATEGY_TOML_BYTES} bytes)"
-        ));
-    }
-
-    let initial_balance = query.initial_balance.unwrap_or(10_000.0);
-    let fee_bps = query.fee_bps.unwrap_or(0.0);
-    let slippage_bps = query.slippage_bps.unwrap_or(0.0);
-    let before = query.before;
-    let after = query.after;
-
-    // 回测是重 CPU 活（59k 根 ≈ 134ms/档）：放 blocking 线程池，别占住 tokio worker。
-    //
-    // 并发闸门：同时在跑的回测数封顶，否则内存与 CPU 都会被单个请求吃光
-    // （每个回测持有一份 59k×6 的列 + 信号 + 资金曲线）。
-    // `_permit` 活到函数结束 ⇒ 响应构造完才释放名额。
-    let _permit = match state.strategy_gate.clone().acquire_owned().await {
-        Ok(p) => p,
-        Err(_) => return strategy_error(StrategyError::Internal("backtest gate closed".into())),
-    };
-
-    // 闭包必须 'static ⇒ 查询串要先 own 住（`BacktestParams` 借用它们）。
-    let joined = tokio::task::spawn_blocking({
-        let state = state.clone();
-        let pair = query.pair.clone();
-        let timeframe = query.timeframe.clone();
-        let strategy_toml = query.strategy_toml.clone();
-        move || {
-            let params = BacktestParams {
-                market_type,
-                pair: &pair,
-                timeframe: &timeframe,
-                strategy_toml: &strategy_toml,
-                initial_balance,
-                fee_bps,
-                slippage_bps,
-                before,
-                after,
-            };
-            super::strategy::run_backtest(&state, &params)
-        }
-    })
-    .await;
-
-    match joined {
-        Ok(Ok(result)) => (
-            StatusCode::OK,
-            Json(ApiResponse::ok(serde_json::json!({
-                "market_type": market_type.to_string(),
-                "pair": query.pair,
-                "timeframe": query.timeframe,
-                "strategy": result.strategy,
-                "count": result.count,
-                "markers": result.markers,
-                "trades": result.trades,
-                "equity": result.equity,
-                "overlays": result.overlays,
-                "summary": result.summary,
-                "param_grid": result.param_grid,
-                "runs": result.runs
-            }))),
-        ),
-        Ok(Err(e)) => strategy_error(e),
-        Err(e) => strategy_error(StrategyError::Internal(format!("backtest task: {e}"))),
     }
 }
 
@@ -699,8 +543,6 @@ pub fn create_router(app_state: AppState) -> Router {
         .route("/api/pairs", axum::routing::get(pairs_handler))
         .route("/api/timeframes", axum::routing::get(timeframes_handler))
         .route("/api/klines", axum::routing::get(klines_handler))
-        .route("/api/strategies", axum::routing::get(strategies_handler))
-        .route("/api/strategy", axum::routing::get(strategy_handler))
         .route(
             "/api/layouts",
             axum::routing::get(list_layouts_handler).post(create_layout_handler),
@@ -824,20 +666,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_strategy_rejects_oversized_toml() {
-        let app = test_app();
-        let big = "x".repeat(MAX_STRATEGY_TOML_BYTES + 1);
-        let uri = format!(
-            "/api/strategy?market_type=futures&pair=BTCUSDT&timeframe=1h&strategy_toml={big}"
-        );
-        let res = app
-            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-    }
-
-    #[tokio::test]
     async fn test_market_types_lists_supported_variants() {
         let app = test_app();
         let res = app
@@ -873,51 +701,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
-    async fn test_strategies_lists_allowlist() {
-        let app = test_app();
-        let res = app
-            .oneshot(
-                Request::builder()
-                    .uri("/api/strategies")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
-    async fn test_strategy_rejects_bad_toml() {
-        let app = test_app();
-        let res = app
-            .oneshot(
-                Request::builder()
-                    .uri("/api/strategy?market_type=futures&pair=BTCUSDT&timeframe=1h&strategy_toml=type%20%3D%20%22nope%22")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-    }
-
-    #[tokio::test]
-    async fn test_strategy_rejects_traversal_pair() {
-        let app = test_app();
-        let res = app
-            .oneshot(
-                Request::builder()
-                    .uri("/api/strategy?market_type=futures&pair=..%2F..&timeframe=1h&strategy_toml=type%20%3D%20%22bbrk%22")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

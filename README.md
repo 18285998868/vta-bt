@@ -4,7 +4,7 @@
 
 > TradingView 风格本地研究终端：读本地 binance zip（futures）与 dukascopy bi5（外汇/贵金属），经 REST 提供给前端图表，并把布局、绘图、偏好持久化到本地 SQLite。
 >
-> - 后端（`tradingview-backend`）：axum 服务，行情/回测 GET 路由 + `/api/layouts|drawings|preferences` 状态路由，binance/dukascopy reader 读数据 + moka 缓存，前端静态目录同服。
+> - 后端（`tradingview-backend`）：axum 服务，行情 GET 路由 + `/api/layouts|drawings|preferences` 状态路由，binance/dukascopy reader 读数据 + moka 缓存，前端静态目录同服。
 > - 前端（`tradingview-frontend`）：vite + lightweight-charts 5 原生 pane，绘图用 lightweight-charts-drawing，dev 经 proxy 调 `/api`。
 > - 状态库：SQLite（rusqlite bundled），默认 `<data_dir>/tradingview.db`，只存 UI/研究状态，不存行情。
 
@@ -13,8 +13,7 @@
 - rust（后端）/ TypeScript（前端）
 - edition = "2024"，工具链由 `rust-toolchain.toml` 固定为 `channel = "stable"`（永远用最新 stable，与仓库惯例一致；本机默认的 1.88 低于依赖链要求，裸 `cargo build` 会失败）
 - HTTP：axum 0.8 + tower-http 0.7（cors/fs）
-- 数据：binance-data-reader 0.1.0 + dukascopy-data-reader 0.1.0（workspace path 依赖，分别读 binance zip / dukascopy bi5）+ moka 0.12（sync 缓存）+ vector-ta 0.3.2（workspace path 依赖，与 vta 同源，保证 overlay 与信号同一实现，见 Cargo.toml 注释）
-- 回测：vta 0.1.0（workspace path 依赖）——`StrategyConfig` 反序列化 + 参数网格 + `simulate_detailed`；金额为定点 `Amount`
+- 数据：binance-data-reader 0.1.0 + dukascopy-data-reader 0.1.0（workspace path 依赖，分别读 binance zip / dukascopy bi5）+ moka 0.12（sync 缓存）
 - 前端：vite 6 + lightweight-charts 5.2 + lightweight-charts-drawing 0.6 + technicalindicators 3
 - 状态库：rusqlite 0.40（bundled SQLite）+ uuid 1（布局 ID）
 - 配置：`config/config.toml` + serde（derive）
@@ -52,11 +51,11 @@ v
 run(&config):
   1. data_dir 不存在直接 AppError::Config；frontend dist 缺失只 warn（纯 API 模式）
   2. 打开 StateStore（SQLite，WAL）→ AppState::new(data_dir, state_store)
-     （DataLoader + moka cache + 回测并发闸门 + 状态库）
+     （DataLoader + moka cache + 状态库）
   3. create_router() → /api/* 路由 + CORS（cors_origins 为空则全放行 + warn）+ ServeDir(frontend/dist)
   4. TcpListener::bind(host:port) + axum::serve(...).with_graceful_shutdown(SIGINT/SIGTERM)
 v
-请求 -> Router -> Handler(Query+State) -> spawn_blocking{ DataLoader / 回测 / SQLite } -> ApiResponse{success, data, error} Json
+请求 -> Router -> Handler(Query+State) -> spawn_blocking{ DataLoader / SQLite } -> ApiResponse{success, data, error} Json
 ```
 
 ## 架构设计
@@ -65,10 +64,9 @@ v
 src/main.rs         # 入口：dotenv(CWD) → tracing → Config::load() → run(&config)；anyhow 收敛
 src/lib.rs          # 只做导出 + crate 级 lint + README 内联文档
 src/app/mod.rs      # 执行代码：run(config) 编排（data_dir/状态库/AppState/路由+CORS/静态/serve）+ 优雅停机
-src/app/routes.rs   # 执行代码：AppState（DataLoader + 状态库 + 回测缓存 + 并发闸门）+ ApiResponse + 行情/状态路由
+src/app/routes.rs   # 执行代码：AppState（DataLoader + 状态库）+ ApiResponse + 行情/状态路由
 src/app/data_loader.rs # MarketType{Futures,Spot,Dukascopy} + KlineColumns(SoA) + DataLoader：两个 reader + moka
 src/app/state.rs    # 状态库：layouts/drawings/preferences CRUD + 限额校验 + SQLite 连接
-src/app/strategy.rs # 扩展缝：STRATEGIES(同时是白名单)/BacktestParams/参数网格全跑 → markers/trades/equity/overlays/summary
 migrations/         # SQLite 表结构（include_str! 进二进制，启动时幂等建表）
 src/config.rs       # 支撑件：Config{host/port/data_dir/db_path/frontend_dir/cors_origins} + load/load_from + validate
 src/error.rs        # 支撑件：AppError(Io/Config/ConfigRead/ConfigParse/Data/State/InvalidAddr, non_exhaustive)
@@ -97,33 +95,22 @@ frontend/           # 前端工程：src/{api,app,chart,indicators,main,types} +
 - `GET /api/health` 健康检查；`/api/market-types|pairs|timeframes|klines` 按 `market_type` + `pair` + `timeframe` 取数。
 - **`/api/market-types` 只列"本地确有数据源"的类型**：`futures`（binance um）+ `dukascopy`（外汇/贵金属）。`spot` 变体仍可解析但无本地数据，不对外暴露 —— 否则前端会列出"选了就是空图"的选项。
 - 入参做目录穿越防护（`..`/`/etc/passwd` 类输入有单测覆盖），并限长（pair ≤ 32、timeframe ≤ 16）。
-- 请求规模防护：`limit` ≤ 10000、`strategy_toml` ≤ 4096 字节，超限返回 400。
+- 请求规模防护：`limit` ≤ 10000，超限返回 400。
 - **周期合法性由数据源裁定**：binance 支持 `1m..1d`，dukascopy 支持 `M1/H1/D1/1m/1h/1d`。输错返回 400（`DataError::InvalidParam`），并回传该源支持的周期列表。
 - `DataLoader` 按市场类型定位数据文件，读后进 moka 缓存，统一包 `ApiResponse{success, data, error}`。
 - 状态路由：`/api/layouts`（列表/创建）、`/api/layouts/{id}`（读取/更新/删除）、`/api/drawings?market_type=&pair=`（读取/整组替换）、`/api/preferences`（读取/合并写入）。状态错误按输入 400、内部 500 映射，404 只用于不存在的布局。
-- 缓存与回测都用 **SoA 列集** `KlineColumns`（`time/open/high/low/close/volume` 六条 `Vec`）：reader 本身就是列存储，回测引擎要 `&[f64]`，中间层再存 `Vec<Kline>` 会让每次回测多出 6 份结构体拷贝。
+- 缓存用 **SoA 列集** `KlineColumns`（`time/open/high/low/close/volume` 六条 `Vec`）：reader 本身就是列存储，中间层再存 `Vec<Kline>` 会多出 6 份结构体拷贝。
 - 时间过滤用二分（`partition_point`）定位窗口，只拷贝窗口内的 bar；`limit` 取窗口内**最后** N 根。
 
 ### 并发模型（阻塞 IO 不占 worker）
 
-tokio 的 worker 线程只做调度。读 zip（实测 52ms）与跑回测（实测 134ms/档）这类同步重活必须挪到 blocking 线程池，否则并发几个请求就能占满 12 个 worker，轻请求（`/api/health`）也一起卡死。
+tokio 的 worker 线程只做调度。读 zip（实测 52ms）这类同步重活必须挪到 blocking 线程池，否则并发几个请求就能占满 12 个 worker，轻请求（`/api/health`）也一起卡死。
 
 - `/api/pairs`、`/api/timeframes`、`/api/klines`：`spawn_blocking` 包裹数据层调用。
-- `/api/strategy`：`spawn_blocking` 包裹整个回测，并经**并发闸门**（`Semaphore`，默认 4）限流 —— 每个回测持有一份 59k×6 的列 + 信号 + 资金曲线，不限流会被单个请求吃光内存。
 - `/api/layouts|drawings|preferences`：所有 SQLite 操作同样走 `spawn_blocking`；连接由 `Mutex<Connection>` 串行化（本地单用户，写少读多）。
 - blocking 线程里的 panic 会被 tokio 捕获成 `JoinError`，统一收敛成 500，不会变成进程级故障。
 
-### strategy
-
-- 入参：TOML 片段 + 资金/费率 + 时间窗。
-- 两道闸门：**先算术预检**（网格档数 ≤ 16，`step = 0` / 区间反向 / `start < 1` 直接拒），**再语义校验**（复用 vta 的 `period >= 1`、`sigma ∈ [0.1, 10]`）。顺序不能反 —— vta 的 `validate` 内部会展开网格。
-- **参数网格跑满**：用 vta 的 `generate_signals_batch`（rayon 并行）逐档算信号、逐档回测，每档独立；某档不可计算（如数据不足）记入 `param_grid.skipped`，不影响其余档。这与 vta 离线全网格口径一致 —— 早先只跑 `param_idx = 0`（网格首档）且响应里毫无提示。
-- 响应里 `markers/trades/equity/overlays/summary` 仍是**第 0 档**（前端零改动），另加 `param_grid`（请求/实跑/跳过）与 `runs`（各档汇总，便于横向对比）。
-- 网格上限 16 = **单请求计算预算**（每档 59k 根 ≈ 134ms；16 档 ≈ 2s）。
-- 白名单与 `/api/strategies` 下拉列表共用同一份 `STRATEGIES` 常量，避免两份拷贝漂移。
-- **金额是定点数**：vta 侧金额用 `Amount`（定点十进制），回传前端时转回 `f64`。
-- 输出 DTO 的 `side` / `kind` 是枚举（`TradeSide` / `MarkerKind`），序列化结果仍是 `"long"/"short"/"entry"/"exit"`，前端契约不变。
-- **指标可为 `null`**：NaN/Inf 是真实语义（零波动 ⇒ 夏普无定义；无亏损 ⇒ 盈利因子无定义），归零会让"真的是 0"与"算不出来"无法区分。前端显示 `n/a`。
+> 策略回测后端已拆到独立仓库 [`vta-bt`](../../vta-bt)；本服务的 `/api/strategy`、`/api/strategies` 与 `src/app/strategy.rs` 已移除，前端策略面板暂不可用，待后续重构。
 
 ### 回放（Replay）
 
@@ -131,7 +118,6 @@ tokio 的 worker 线程只做调度。读 zip（实测 52ms）与跑回测（实
 - 进入回放时以**当前视口左端**为起点；若该时间落在窗口内，就从对应 bar 开始。重置回到同一游标，退出回放恢复完整窗口和进入前的视口。
 - 控件：播放/暂停、单步、0.5×/1×/2×/4×/8×、重置、退出。播放到最后一根自动暂停。
 - 图表层 `updateData()` 只替换可见前缀，指标/策略在结构不变时复用已有 series 与 pane（仅 `setData`），避免每根 bar 拆重建副图。
-- 策略回放请求带 `before = 下一根 bar 时间`（开区间，等价于“只回测到当前 bar”）；请求按 300ms 节流、只接受最后一次结果，避免高速播放时旧结果覆盖新游标。
 - 回放游标属于临时交互状态，不写入 SQLite；`last_session` 仍只保存交易对/周期/指标/策略/视口。
 
 ### 指标 parity
@@ -176,9 +162,6 @@ tokio 的 worker 线程只做调度。读 zip（实测 52ms）与跑回测（实
 - 当默认工具链过旧导致构建失败时，
   - 解决：`rust-toolchain.toml` 固定 `channel = "stable"`（进目录即自动切到最新 stable）
   - 文件：`rust-toolchain.toml`
-- 当并发回测打满 worker 时，
-  - 解决：重活进 `spawn_blocking` + `Semaphore` 闸门限并发
-  - 文件：`src/app/routes.rs`
 - 当进程被信号杀死截断在途请求时，
   - 解决：`with_graceful_shutdown` 等在途请求跑完
   - 文件：`src/app/mod.rs`
@@ -192,10 +175,9 @@ tokio 的 worker 线程只做调度。读 zip（实测 52ms）与跑回测（实
 src/main.rs         # 入口：dotenv(CWD) → tracing → Config::load → run
 src/lib.rs          # 只做导出 + crate 级 lint + README 内联文档
 src/app/mod.rs      # run(config)：校验/状态/路由/CORS/静态/serve/优雅停机
-src/app/routes.rs   # AppState(DataLoader + 状态库 + 回测缓存 + 并发闸门) + ApiResponse + 行情/状态路由 + 穿越防护
+src/app/routes.rs   # AppState(DataLoader + 状态库) + ApiResponse + 行情/状态路由 + 穿越防护
 src/app/data_loader.rs # MarketType + KlineColumns(SoA) + DataLoader：两个 reader + moka
 src/app/state.rs    # StateStore：layouts/drawings/preferences + 限额校验 + SQLite
-src/app/strategy.rs # TOML-in → vta 回测：白名单 + 网格预检/语义校验 + 全网格逐档回测 → DTO（overlays 与信号同源 vector-ta 函数）
 migrations/001_init.sql # layouts/drawings/preferences 表
 src/config.rs       # Config{host/port/data_dir/db_path/frontend_dir/cors_origins} + load/load_from + validate
 src/error.rs        # AppError(Io/Config/ConfigRead/ConfigParse/Data/State/InvalidAddr, non_exhaustive)
@@ -229,14 +211,12 @@ cors_origins = []           # 可选，默认 [] = 全放行（仅本地开发�
 - src/error.rs
   - `AppError`（thiserror, non_exhaustive）：Io/Config/ConfigRead/ConfigParse/Data/State/InvalidAddr
 - src/app/routes.rs
-  - 行情/回测 GET：health / market-types / pairs / timeframes / klines / strategies / strategy
+  - 行情 GET：health / market-types / pairs / timeframes / klines
   - 状态：`/api/layouts`、`/api/layouts/{id}`、`/api/drawings`、`/api/preferences`
 - src/app/state.rs
   - SQLite CRUD + 输入限额 + `spawn_blocking` 调用边界；布局/绘图/偏好三类状态
 - src/app/data_loader.rs
   - `MarketType` 解析 → 数据文件定位（binance zip / dukascopy bi5）→ reader 读 → 去非有限值/去重 → moka 存 → 返回列集
-- src/app/strategy.rs
-  - TOML-in → vta 回测：策略名注册 + 反序列化 + 白名单/网格预检/语义校验 + 全网格逐档回测 → DTO
 - src/utils/mod.rs
   - 参数白名单校验 + 数据文件判别 + 周期排序
 - frontend/
