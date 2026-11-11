@@ -42,6 +42,8 @@ pub mod app;
 pub mod cli;
 /// TOML 配置: 解析、语义校验与策略参数网格定义。
 pub mod config;
+/// 数据加载适配层: vta 自己的配置/列结构与两个 reader 的统一入口。
+pub mod data;
 /// 回测引擎: 成交模拟(`simulate` 系列)与全部指标。
 #[path = "app/03_run_backtest.rs"]
 pub mod engine;

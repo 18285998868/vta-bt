@@ -4,8 +4,8 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 /// 顶层应用错误。
 ///
-/// 变体 `Io` / `Config` / `Data` / `Parquet` / `Arrow` 均由 `#[from]` 自动
-/// 实现 `From`, 因此底层错误可用 `?` 直接上抛且保留 `source` 链;
+/// 变体 `Io` / `Config` / `BinanceData` / `DukascopyData` / `Parquet` / `Arrow`
+/// 均由 `#[from]` 自动实现 `From`, 因此底层错误可用 `?` 直接上抛且保留 `source` 链;
 /// [`AppError::Msg`] 用于无法归入上述类别的语义错误。
 pub enum AppError {
     #[error("io error: {0}")]
@@ -14,9 +14,12 @@ pub enum AppError {
     #[error("config parse error: {0}")]
     /// TOML 解析失败(自带行列号)。
     Config(#[from] toml::de::Error),
-    #[error("data error: {0}")]
-    /// 行情数据加载失败。
-    Data(#[from] kline_reader::ReaderError),
+    #[error("binance data error: {0}")]
+    /// Binance 行情数据加载失败。
+    BinanceData(#[from] binance_data_reader::ReaderError),
+    #[error("dukascopy data error: {0}")]
+    /// Dukascopy 行情数据加载失败。
+    DukascopyData(#[from] dukascopy_data_reader::ReaderError),
     #[error("parquet error: {0}")]
     /// Parquet 读写失败。
     Parquet(#[from] parquet::errors::ParquetError),

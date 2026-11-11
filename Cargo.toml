@@ -28,7 +28,8 @@ categories = ["command-line-utilities", "science"]
 # 不用 crates.io 版本是为了保证指标实现与回测口径逐位一致 —— 换一个 patch 版本就可能
 # 改变 NaN 前缀长度, 进而改变全部历史回测结果。
 vector-ta = { workspace = true }
-kline-reader = { workspace = true }
+binance-data-reader = { workspace = true }
+dukascopy-data-reader = { workspace = true }
 rayon = "1"
 chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
@@ -53,7 +54,8 @@ serde_json = "1"
 # 相对路径: 换机器/进 CI 无需改任何文件(此前 `vector-ta` 写死 `/home/lkf/src/VectorTA`,
 # 导致构建环境不可复现)。
 vector-ta = { path = "../libs/VectorTA" }
-kline-reader = { path = "../libs/kline-reader" }
+binance-data-reader = { path = "../libs/binance-data-reader" }
+dukascopy-data-reader = { path = "../libs/dukascopy-data-reader" }
 
 # 统一 lint 门禁: CI 与本地 `cargo clippy -- -D warnings` 行为一致。
 [workspace.lints.rust]

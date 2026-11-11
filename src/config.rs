@@ -121,17 +121,17 @@ impl OneOrMany {
     }
 }
 
-/// vta 自己的数据配置: 与 `kline_reader::DataConfig` 字段一致, 但 symbol/timeframe 支持列表。
-/// 加载时通过 [`DataSection::for_pair`] 降为 kline-reader 需要的单值形态。
+/// vta 自己的数据配置: 支持 symbol/timeframe 列表。
+/// 加载时通过 [`DataSection::for_pair`] 降为单值形态。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DataSection {
     /// 数据源类型(如 `binance`)。
     #[serde(rename = "type")]
-    pub source_type: kline_reader::DataSource,
+    pub source_type: crate::data::DataSource,
     /// Binance 市场(spot/futures/um/futures/cm), 缺省 `futures/um`。
     #[serde(default)]
-    pub market: Option<kline_reader::Market>,
+    pub market: Option<crate::data::Market>,
     /// 数据根目录。
     pub dir: PathBuf,
     /// 品种, 单值或列表。
@@ -159,36 +159,26 @@ impl DataSection {
         self.timeframe.items()
     }
 
-    /// 取出一组 (symbol, timeframe) 对应的单值配置, 供 `kline_reader::load_columns` 使用。
+    /// 取出一组 (symbol, timeframe) 对应的单值配置。
     /// 已验证构造：非法 symbol/timeframe 即 `Err`，调用方按跳过处理（不 `unwrap`）。
     ///
     /// # Errors
-    /// `symbol` / `timeframe` 不合法时返回
-    /// [`kline_reader::ReaderError`]; 调用方按"跳过该 (品种, 周期) 对"处理。
+    /// 品种/周期/日期非法，或给 Dukascopy 指定 `market` 时返回错误；
+    /// 调用方按"跳过该 (品种, 周期) 对"处理。
     pub fn for_pair(
         &self,
         symbol: &str,
         timeframe: &str,
-    ) -> Result<kline_reader::DataConfig, kline_reader::ReaderError> {
-        match self.market {
-            Some(market) => kline_reader::DataConfig::new_with_market(
-                self.source_type,
-                market,
-                &self.dir,
-                symbol,
-                timeframe,
-                self.start_date.as_deref(),
-                self.end_date.as_deref(),
-            ),
-            None => kline_reader::DataConfig::new(
-                self.source_type,
-                &self.dir,
-                symbol,
-                timeframe,
-                self.start_date.as_deref(),
-                self.end_date.as_deref(),
-            ),
-        }
+    ) -> Result<crate::data::DataConfig, AppError> {
+        crate::data::DataConfig::new(
+            self.source_type,
+            self.market,
+            &self.dir,
+            symbol,
+            timeframe,
+            self.start_date.as_deref(),
+            self.end_date.as_deref(),
+        )
     }
 }
 
@@ -1274,18 +1264,18 @@ mod tests {
     }
 
     #[test]
-    fn for_pair_produces_single_value_config_for_kline_reader() {
+    fn for_pair_produces_single_value_config() {
         let cfg: Config = toml::from_str(&make_scan_toml(
             "[\"BTCUSDT\", \"ETHUSDT\"]",
             "[\"15m\", \"1h\"]",
         ))
         .unwrap();
         let pair = cfg.data.for_pair("ETHUSDT", "1h").unwrap();
-        assert_eq!(pair.symbol().as_str(), "ETHUSDT");
-        assert_eq!(pair.timeframe().as_str(), "1h");
+        assert_eq!(pair.symbol(), "ETHUSDT");
+        assert_eq!(pair.timeframe(), "1h");
         assert_eq!(pair.dir(), cfg.data.dir);
         assert_eq!(pair.source_type(), cfg.data.source_type);
-        assert_eq!(pair.market(), kline_reader::Market::Um);
+        assert_eq!(pair.market(), crate::data::Market::Um);
     }
 
     #[test]
@@ -1293,7 +1283,7 @@ mod tests {
         let toml = "[data]\ntype = \"binance\"\nmarket = \"spot\"\ndir = \"/tmp\"\nsymbol = \"BTCUSDT\"\ntimeframe = \"1d\"\n\n[backtest]\ninitial_balance = 10000.0\n\n[[strategy]]\ntype = \"sma\"\nperiod = 20\n";
         let cfg: Config = toml::from_str(toml).unwrap();
         let pair = cfg.data.for_pair("BTCUSDT", "1d").unwrap();
-        assert_eq!(pair.market(), kline_reader::Market::Spot);
+        assert_eq!(pair.market(), crate::data::Market::Spot);
     }
 
     #[test]

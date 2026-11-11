@@ -81,7 +81,7 @@ pub fn true_range(high: &[f64], low: &[f64], close: &[f64]) -> Vec<f64> {
 /// **SMA 平滑**的真实波幅均值(简单移动平均)。
 ///
 /// 与 `vector_ta::atr` 的 Wilder RMA 不同: 此处是等权滑动平均, 因子研究侧
-/// (`kline-reader` 配套脚本)用的就是这一口径, 两者必须对齐才能复现研究结论。
+/// (`binance-data-reader` 配套脚本)用的就是这一口径, 两者必须对齐才能复现研究结论。
 /// 简单移动平均的真实波幅均值(SMA 口径)。
 ///
 /// # Errors

@@ -4,7 +4,7 @@
 
 > 对多种技术分析指标 × 参数组合做向量化批量回测，一次遍历 `品种 × 时间帧 × (指标 × 参数范围)` 的笛卡尔积，输出 Parquet 报告（`result.parquet` 合并结果 + 可选 `detail/` 逐笔交易/权益曲线）。
 >
-> - 数据：自研 `kline-reader`（workspace path 依赖，统一读取 binance/dukascopy K 线）；`dir` 为**数据根目录**（程序按数据源自动追加子路径）。
+> - 数据：自研 `binance-data-reader` / `dukascopy-data-reader`（workspace path 依赖，分别读取两源 K 线）；`dir` 为**数据根目录**（程序按数据源自动追加子路径）。
 > - 并行：rayon（单策略的参数索引按 `(0..n).into_par_iter` 并行，信号生成与回测同为一遍）。
 > - 去重执行：`overwrite = false` 且 `temps/{sym}_{tf}_{stg}_{参数指纹}.parquet` 可读即跳过（仍并入合并）。
 > - 另有 `--pbo` 模式：按（币，周期，策略）分组实算 CSCV（Bailey et al. 2016）。
@@ -14,7 +14,7 @@
 - rust
 - edition = "2024"
 - 指标计算：`vector-ta`（**workspace path 依赖**，不是 crates.io —— 换 patch 版本会改变 NaN 前缀长度，进而改变全部历史回测结果）
-- 数据读取：自研 `kline-reader`（workspace path 依赖）
+- 数据读取：自研 `binance-data-reader` / `dukascopy-data-reader`（workspace path 依赖）
 - Rust 版本：**始终使用最新 stable**（`rust-toolchain.toml` 的 `channel = "stable"`，无需人工跟进版本号；刻意不声明 `rust-version` 下限，以免 `clippy::incompatible_msrv` 拦下新 API）
 - 并行：rayon（参数索引 `into_par_iter`）
 - 输出：arrow 60 + parquet 60
@@ -364,7 +364,7 @@ for symbol in symbols                        # 品种层（串行）
 v
   for timeframe in timeframes               # 时间帧层（串行）
 v
-    load_columns(symbol, timeframe)          # kline-reader：dir 为根 → KlineColumns；失败打印[跳过]并 continue
+    pair.load()                              # 按 source 调用对应 reader → vta::data::KlineColumns；失败打印[跳过]并 continue
 v
     for strategy in strategies               # 策略层（串行）
 v
@@ -387,11 +387,11 @@ detail 模式 -> write_detail_index(detail/manifest.toml)                # 只�
 main.rs             # 入口：cli::parse() → -c 走 config::load_config → app::run(&config)，--pbo 走 pbo::run_pbo_report；二选一，错误 anyhow 收敛
 lib.rs              # 只做导出：#[path] 挂载 app/NN_* 保持逻辑模块名(config/data/engine/output/strategies) + pub mod app/cli/error
 cli.rs              # 支撑件：命令行解析 clap 4(derive)，解析 --config/-c + --pbo（二选一），返回 Cli
-config.rs           # 支撑件：Config{data/backtest/output/strategy} + DataSection::for_pair(symbol, tf) 降为 kline-reader 单值 DataConfig
-error.rs            # 支撑件：AppError(thiserror, Io/Config/Data/Parquet/Arrow/Msg)，#[from] 实现 ? 自动转换
+config.rs           # 支撑件：Config{data/backtest/output/strategy} + DataSection::for_pair(symbol, tf) 降为单值 data::DataConfig
+error.rs            # 支撑件：AppError(thiserror, Io/Config/BinanceData/DukascopyData/Parquet/Arrow/Msg)，#[from] 实现 ? 自动转换
 pbo.rs              # 支撑件：CSCV 实算（Bailey et al. 2016），T×N 常驻内存
 app/                            # 执行代码
-app/mod.rs          # 整体编排 run(config)：validate → build_strategies_checked → 预算 out_dir → for symbol × timeframe(串行) → load_columns → data_fp(循环外算一次) → for strategy: run_combo → merge → result.parquet
+app/mod.rs          # 整体编排 run(config)：validate → build_strategies_checked → 预算 out_dir → for symbol × timeframe(串行) → pair.load() → data_fp(循环外算一次) → for strategy: run_combo → merge → result.parquet
 app/03_run_backtest.rs # 回测引擎（lib 映射为 engine）：持仓/成交/绩效 — SummaryMetrics(30 项)/Trade/SimResult；simulate / simulate_detailed 供 run_combo 单参数调用
 app/04_write_output/    # 输出（lib 映射为 output）
 app/04_write_output/parquet.rs # Parquet 读写：write_single_parquet(单组合 temps/) / write_detail_parquet(detail/) / read_parquet(缓存校验) / merge_parquet_files(显式合并)
@@ -423,7 +423,7 @@ app/05_strategies/{alma,dema,...,zlema}/… # 单 MA 策略（周期遍历 → v
 
 #### 数据加载（dir 为根）
 
-`DataSection::for_pair(symbol, tf)` 降为 kline-reader 单值 `DataConfig`（`dir` 原样透传，kline-reader 自动追加数据源子路径）→ `load_columns`；失败打印 `[跳过]` 并 `continue`，供该帧全部策略复用，帧末释放。
+`DataSection::for_pair(symbol, tf)` 降为 `vta::data::DataConfig`（`dir` 原样透传，reader 自动追加数据源子路径）→ `load()`；失败打印 `[跳过]` 并 `continue`，供该帧全部策略复用，帧末释放。
 
 #### run_combo（缓存 + 参数并行 + 写盘）
 
@@ -463,7 +463,7 @@ cargo run --release -- --pbo /path/to/reports_XXX
 ## 问题
 
 - 当 `dir` 写成内层 klines 路径时，报目录不存在，
-  - 解决：`dir` 统一为**数据根**（如 `path/to/data`），kline-reader 自动追加子路径；不要手写 `binance/...` 进去
+  - 解决：`dir` 统一为**数据根**（如 `path/to/data`），reader 自动追加子路径；不要手写 `binance/...` 进去
 - 当读取 spot / CM 数据却未设置 `market` 时，会按默认 `futures/um` 查找目录，
   - 解决：显式设置 `market = "spot"` 或 `market = "futures/cm"`；`futures/um` 可省略
 - 当某组数据加载失败时，整批中断，
@@ -810,8 +810,8 @@ cargo run --release -- --pbo /path/to/reports_XXX
 改完策略代码重跑会**全部命中旧缓存**，报告里是修复前的结果，且**无任何提示**。
 
 **实施（方案 ①+③）**：
-- **①** 新增 `build.rs`：对本 crate 的 `src/` 与两个 path 依赖
-  （`vector-ta` / `kline-reader`）的源码做**内容哈希**（FNV-1a），经
+- **①** 新增 `build.rs`：对本 crate 的 `src/` 与三个 path 依赖
+  （`vector-ta` / `binance-data-reader` / `dukascopy-data-reader`）的源码做**内容哈希**（FNV-1a），经
   `cargo:rustc-env=VTA_SOURCE_HASH` 注入，指纹混入它。
   用**内容哈希**而非 `git rev-parse` 的理由：monorepo 里改一个无关的兄弟 crate
   不该让缓存全量失效；非 git 检出时 `git` 不可用；**工作区有未提交改动时
@@ -900,7 +900,7 @@ cli.rs              # clap 4 derive，--config/-c 与 --pbo 互斥；--no-cache 
 money.rs            # Amount(rust_decimal 定点十进制): 钱的唯一类型
 build.rs            # 构建期源码内容哈希 → VTA_SOURCE_HASH(进缓存指纹)
 config.rs           # Config{data/backtest/output/strategy} + DataSection::for_pair 降单值
-error.rs            # thiserror AppError(Io/Config/Data/Parquet/Arrow/Msg)
+error.rs            # thiserror AppError(Io/Config/BinanceData/DukascopyData/Parquet/Arrow/Msg)
 pbo.rs              # CSCV 实算 + 单测
 app/mod.rs          # run/run_combo：validate → build → 双层串行取数 → 策略层 → temps/detail → merge result.parquet → detail 索引
 app/03_run_backtest.rs # engine：simulate/simulate_detailed + simulate_ohlc/simulate_detailed_ohlc + CurveAccum + SummaryMetrics
@@ -1023,11 +1023,11 @@ period = { start = 5, end = 100, step = 5 } # 范围或单值
   - clap 4 derive 解析，`--config/-c` 与 `--pbo` 二选一
 - config.rs
   - `load_config`：读文件 → `toml` 解析 → `validate`（资金>0/symbol/timeframes/strategy 非空）
-  - `for_pair`：多值降单值，供 `load_columns` 使用
+  - `for_pair`：多值降单值，供 `DataConfig::load` 使用
 - error.rs
-  - `AppError`（thiserror）：Io/Config/Data/Parquet/Arrow/Msg
+  - `AppError`（thiserror）：Io/Config/BinanceData/DukascopyData/Parquet/Arrow/Msg
 - app/mod.rs
-  - `run`：预算目录 → 双层串行 → `load_columns`（失败跳过）→ `run_combo`（缓存/并行/写盘）→ `merge` → `result.parquet` → `detail/manifest.toml`
+  - `run`：预算目录 → 双层串行 → `pair.load()`（失败跳过）→ `run_combo`（缓存/并行/写盘）→ `merge` → `result.parquet` → `detail/manifest.toml`
 - app/03_run_backtest.rs
   - `simulate`/`simulate_detailed` 与带 high/low 的 `simulate_ohlc`/`simulate_detailed_ohlc`：信号→持仓→成交→30 项绩效
 - app/04_write_output/parquet.rs

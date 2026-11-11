@@ -3,8 +3,8 @@
 //! 复用引擎信号: `BbrkBbStrategy`(基线) + `BbrkAdxStrategy`(过滤), 同 len/sigma。
 //! 对每个基线进场 i(方向 d, 离场 e): 在 `[i..e]` 内找首个同向过滤进场 j。
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-use kline_reader::{DataConfig, DataSource, load_columns};
 use vta::config::{F64Param, PeriodParam};
+use vta::data::{DataConfig, DataSource};
 use vta::strategies::Signal;
 use vta::strategies::Strategy;
 use vta::strategies::bbrk_adx::{BbrkAdxConfig, BbrkAdxStrategy};
@@ -42,10 +42,10 @@ fn median_f(mut v: Vec<f64>) -> f64 {
 fn run_pair(symbol: &str, timeframe: &str, len: usize, sigma: f64, adxlen: usize, thr: f64) {
     // 数据根目录: 优先取环境变量, 否则回落到本机的默认数据目录。
     // 硬编码绝对路径会让 example 换台机器就失效。
-    let data_dir =
-        std::env::var("VTA_DATA_DIR").unwrap_or_else(|_| "/data/data".to_string());
+    let data_dir = std::env::var("VTA_DATA_DIR").unwrap_or_else(|_| "/data/data".to_string());
     let cfg = DataConfig::new(
         DataSource::Binance,
+        None,
         &data_dir,
         symbol,
         timeframe,
@@ -53,7 +53,7 @@ fn run_pair(symbol: &str, timeframe: &str, len: usize, sigma: f64, adxlen: usize
         Some("2025-09-30"),
     )
     .expect("valid DataConfig");
-    let cols = load_columns(&cfg).expect("load_columns");
+    let cols = cfg.load().expect("load columns");
     let n = cols.len();
 
     let base = BbrkBbStrategy::new(BbrkBbConfig {

@@ -8,10 +8,10 @@
 //! 这是研究工具里最典型的"结论悄悄过期"失效模式: 修完一个 SMA 策略的 bug
 //! 后重跑, 以为拿到了新结果, 其实拿到的是修复前的。
 //!
-//! 本脚本对**本 crate 的 `src/`** 与**两个 path 依赖的 `src/`**
-//! (`vector-ta` / `kline-reader`) 做内容哈希 —— 后两者同样影响结果
-//! (指标实现住在 `vector-ta` 里, 数据读取住在 `kline-reader` 里),
-//! 只哈希本 crate 是不够的。
+//! 本脚本对**本 crate 的 `src/`** 与**三个 path 依赖的 `src/`**
+//! (`vector-ta` / `binance-data-reader` / `dukascopy-data-reader`) 做内容哈希
+//! —— 后三者同样影响结果 (指标实现住在 `vector-ta` 里, 数据读取住在两个
+//! reader 里), 只哈希本 crate 是不够的。
 //!
 //! # 为什么用内容哈希而非 git commit
 //!
@@ -44,13 +44,18 @@ const SALT: &str = "vta-source-hash-v1";
 /// 参与哈希的**源码根目录**(相对 `CARGO_MANIFEST_DIR`)。
 ///
 /// 与 `Cargo.toml` 的 `[workspace.dependencies]` 一一对应:
-/// - `vector-ta` / `kline-reader` 是 path 依赖, 它们的 `src/` 里住着
-///   指标实现与数据读取逻辑, **直接影响回测数值**。
+/// - `vector-ta` / `binance-data-reader` / `dukascopy-data-reader` 是 path
+///   依赖, 它们的 `src/` 里住着指标实现与数据读取逻辑, **直接影响回测数值**。
 ///
 /// 目录不存在时**跳过并告警**(不阻断构建): 例如把本 crate 单独 vendored
 /// 出去时 path 依赖可能缺失 —— 此时哈希只覆盖本 crate, 退化为"部分覆盖",
 /// 但仍好过完全没有。
-const HASHED_ROOTS: &[&str] = &["src", "../libs/VectorTA/src", "../libs/kline-reader/src"];
+const HASHED_ROOTS: &[&str] = &[
+    "src",
+    "../libs/VectorTA/src",
+    "../libs/binance-data-reader/src",
+    "../libs/dukascopy-data-reader/src",
+];
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");

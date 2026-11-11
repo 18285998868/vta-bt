@@ -208,7 +208,7 @@ const FNV_COL_SEP: u8 = 0xff;
 /// - 目录 mtime 只反映"条目增删", 覆盖不到"同路径文件被原地改写"
 /// - 递归遍历依赖文件系统语义, 换数据源/挂载方式就失效
 /// - 列已全量载入内存, 直接哈希成本 ~20ms/1M bars, 无需再访问文件系统
-fn data_fingerprint(cols: &kline_reader::KlineColumns) -> u64 {
+fn data_fingerprint(cols: &crate::data::KlineColumns) -> u64 {
     let mut h = FNV_OFFSET;
     // 列名混入: 将来增删列时指纹必然改变, 否则两套不同列结构可能撞指纹。
     for name in ["time", "open", "high", "low", "close", "volume"] {
@@ -550,9 +550,9 @@ impl ComboCtx {
 /// 因此在进入回测前一次性拒绝, 让问题在**数据加载边界**暴露。
 ///
 /// 注意(2026-10): `KlineColumns` 私有化字段后, 不等长已**无法构造** ——
-/// `new()` 返回 `Err`, `From<Vec<Record>>` 六列同步 push。价格列则**没有**这层
-/// 保证, 故这条校验是可达的、也是必要的。
-fn validate_columns(cols: &kline_reader::KlineColumns, where_: &str) -> crate::error::Result<()> {
+/// `new()` 对六列长度做一次校验。价格列则**没有**这层保证, 故这条校验
+/// 是可达的、也是必要的。
+fn validate_columns(cols: &crate::data::KlineColumns, where_: &str) -> crate::error::Result<()> {
     let lens = [
         ("time", cols.time().len()),
         ("open", cols.open().len()),
@@ -620,7 +620,7 @@ fn run_combo(
     job: &StrategyJob,
     symbol: &str,
     tf: &str,
-    cols: &kline_reader::KlineColumns,
+    cols: &crate::data::KlineColumns,
     bpy: f64,
     data_fp: u64,
     ctx: &ComboCtx,
@@ -989,7 +989,7 @@ fn run_combo(
 /// 1.  加载配置并校验: config::load_config(path)?; config.validate()?; build_strategies → strategies
 /// 2.  for symbol in data.symbols()                        // 品种层(单值时长度为 1)
 /// 3.    for tf in data.timeframes()                       // 周期层(单值时长度为 1)
-/// 4.      cols ← kline_reader::load_columns(data.for_pair(symbol, tf))   // 逐对加载
+/// 4.      cols ← data.for_pair(symbol, tf).load()                // 逐对加载
 /// 5.      for strategy in strategies                      // 策略层
 /// 6.        run_combo(...) → 单个组合处理, 内部:
 /// 7.          a. 跳过判断: 非 overwrite 且组合缓存文件(含参数指纹)可读 → 跳过(仍并入合并)
@@ -1119,7 +1119,7 @@ pub fn run_with(config_path: &std::path::Path, opts: RunOptions) -> crate::error
                     continue;
                 }
             };
-            let cols = match kline_reader::load_columns(&pair_config) {
+            let cols = match pair_config.load() {
                 Ok(c) => c,
                 Err(e) => {
                     tracing::warn!("[跳过] 数据加载失败: {e}");
@@ -1211,13 +1211,13 @@ mod tests {
         low: Vec<f64>,
         close: Vec<f64>,
         volume: Vec<f64>,
-    ) -> kline_reader::KlineColumns {
-        kline_reader::KlineColumns::new(time, open, high, low, close, volume)
+    ) -> crate::data::KlineColumns {
+        crate::data::KlineColumns::new(time, open, high, low, close, volume)
             .expect("测试列必须等长")
     }
 
     /// `n` 根标准 OHLCV 列 (close 逐根 +0.5, 供 `close_of` 覆盖)。
-    fn cols_with_close(n: usize, close_of: impl Fn(usize) -> f64) -> kline_reader::KlineColumns {
+    fn cols_with_close(n: usize, close_of: impl Fn(usize) -> f64) -> crate::data::KlineColumns {
         cols_raw(
             (0..n as i64).map(|i| 1_700_000_000 + i * 3600).collect(),
             (0..n).map(|i| 100.0 + i as f64).collect(),
@@ -1228,7 +1228,7 @@ mod tests {
         )
     }
 
-    fn cols(n: usize) -> kline_reader::KlineColumns {
+    fn cols(n: usize) -> crate::data::KlineColumns {
         cols_with_close(n, |i| 100.5 + i as f64)
     }
 
@@ -1901,7 +1901,7 @@ mod tests {
     #[test]
     fn non_positive_or_non_finite_prices_are_rejected_at_the_data_boundary() {
         for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
-            let c = kline_reader::KlineColumns::new(
+            let c = crate::data::KlineColumns::new(
                 vec![1, 2, 3],
                 vec![4.0, 5.0, 6.0],
                 vec![7.0, 8.0, 9.0],
@@ -1927,12 +1927,12 @@ mod tests {
     }
 
     /// 列长相等现由 `KlineColumns` 的**构造**保证, 而非本模块事后校验:
-    /// `new()` 直接返回 `Err`, `From<Vec<Record>>` 对每条记录向六列各 push 一个值,
+    /// `new()` 直接返回 `Err`, reader 输出转换也由等长类型承载,
     /// 两条路径都不可能产出不等长实例。故"列长不一致"必须在构造点被拒, 测试随之
     /// 移到这里 —— 本函数(`validate_columns`)的等长分支退化为不可达的兜底。
     #[test]
     fn uneven_columns_are_rejected_at_construction() {
-        let uneven = kline_reader::KlineColumns::new(
+        let uneven = crate::data::KlineColumns::new(
             vec![1, 2, 3],
             vec![4.0, 5.0, 6.0],
             vec![7.0, 8.0, 9.0],
@@ -1945,8 +1945,8 @@ mod tests {
             format!("{e}").contains("equal length"),
             "错误消息应说明长度约束: {e}"
         );
-        // 注: `From<Vec<Record>>` 那条路径无法从外部构造 —— `kline_reader::app::Record`
-        // 是私有类型, 外部只能经 `load_columns` 间接触达。
+        // 注: reader 的输出经 `DataConfig::load` 转换为 vta 的列结构,
+        // 同样只能得到等长实例。
     }
 
     /// O9 回归: `run_combo` 的**两条分支**(detail / 非 detail)必须都经
