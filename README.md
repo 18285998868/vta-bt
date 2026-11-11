@@ -4,7 +4,7 @@
 
 > TradingView 风格本地研究终端：读本地 binance zip（futures）与 dukascopy bi5（外汇/贵金属），经 REST 提供给前端图表，并把布局、绘图、偏好持久化到本地 SQLite。
 >
-> - 后端（`tradingview-backend`）：axum 服务，行情/回测 GET 路由 + `/api/layouts|drawings|preferences` 状态路由，kline-reader 读数据 + moka 缓存，前端静态目录同服。
+> - 后端（`tradingview-backend`）：axum 服务，行情/回测 GET 路由 + `/api/layouts|drawings|preferences` 状态路由，binance/dukascopy reader 读数据 + moka 缓存，前端静态目录同服。
 > - 前端（`tradingview-frontend`）：vite + lightweight-charts 5 原生 pane，绘图用 lightweight-charts-drawing，dev 经 proxy 调 `/api`。
 > - 状态库：SQLite（rusqlite bundled），默认 `<data_dir>/tradingview.db`，只存 UI/研究状态，不存行情。
 
@@ -13,7 +13,7 @@
 - rust（后端）/ TypeScript（前端）
 - edition = "2024"，工具链由 `rust-toolchain.toml` 固定为 `channel = "stable"`（永远用最新 stable，与仓库惯例一致；本机默认的 1.88 低于依赖链要求，裸 `cargo build` 会失败）
 - HTTP：axum 0.8 + tower-http 0.7（cors/fs）
-- 数据：kline-reader 0.1.0（workspace path 依赖，读 binance zip + dukascopy bi5）+ moka 0.12（sync 缓存）+ vector-ta 0.3.2（workspace path 依赖，与 vta 同源，保证 overlay 与信号同一实现，见 Cargo.toml 注释）
+- 数据：binance-data-reader 0.1.0 + dukascopy-data-reader 0.1.0（workspace path 依赖，分别读 binance zip / dukascopy bi5）+ moka 0.12（sync 缓存）+ vector-ta 0.3.2（workspace path 依赖，与 vta 同源，保证 overlay 与信号同一实现，见 Cargo.toml 注释）
 - 回测：vta 0.1.0（workspace path 依赖）——`StrategyConfig` 反序列化 + 参数网格 + `simulate_detailed`；金额为定点 `Amount`
 - 前端：vite 6 + lightweight-charts 5.2 + lightweight-charts-drawing 0.6 + technicalindicators 3
 - 状态库：rusqlite 0.40（bundled SQLite）+ uuid 1（布局 ID）
@@ -66,7 +66,7 @@ src/main.rs         # 入口：dotenv(CWD) → tracing → Config::load() → ru
 src/lib.rs          # 只做导出 + crate 级 lint + README 内联文档
 src/app/mod.rs      # 执行代码：run(config) 编排（data_dir/状态库/AppState/路由+CORS/静态/serve）+ 优雅停机
 src/app/routes.rs   # 执行代码：AppState（DataLoader + 状态库 + 回测缓存 + 并发闸门）+ ApiResponse + 行情/状态路由
-src/app/data_loader.rs # MarketType{Futures,Spot,Dukascopy} + KlineColumns(SoA) + DataLoader：kline-reader + moka
+src/app/data_loader.rs # MarketType{Futures,Spot,Dukascopy} + KlineColumns(SoA) + DataLoader：两个 reader + moka
 src/app/state.rs    # 状态库：layouts/drawings/preferences CRUD + 限额校验 + SQLite 连接
 src/app/strategy.rs # 扩展缝：STRATEGIES(同时是白名单)/BacktestParams/参数网格全跑 → markers/trades/equity/overlays/summary
 migrations/         # SQLite 表结构（include_str! 进二进制，启动时幂等建表）
@@ -101,7 +101,7 @@ frontend/           # 前端工程：src/{api,app,chart,indicators,main,types} +
 - **周期合法性由数据源裁定**：binance 支持 `1m..1d`，dukascopy 支持 `M1/H1/D1/1m/1h/1d`。输错返回 400（`DataError::InvalidParam`），并回传该源支持的周期列表。
 - `DataLoader` 按市场类型定位数据文件，读后进 moka 缓存，统一包 `ApiResponse{success, data, error}`。
 - 状态路由：`/api/layouts`（列表/创建）、`/api/layouts/{id}`（读取/更新/删除）、`/api/drawings?market_type=&pair=`（读取/整组替换）、`/api/preferences`（读取/合并写入）。状态错误按输入 400、内部 500 映射，404 只用于不存在的布局。
-- 缓存与回测都用 **SoA 列集** `KlineColumns`（`time/open/high/low/close/volume` 六条 `Vec`）：kline-reader 本身就是列存储，回测引擎要 `&[f64]`，中间层再存 `Vec<Kline>` 会让每次回测多出 6 份结构体拷贝。
+- 缓存与回测都用 **SoA 列集** `KlineColumns`（`time/open/high/low/close/volume` 六条 `Vec`）：reader 本身就是列存储，回测引擎要 `&[f64]`，中间层再存 `Vec<Kline>` 会让每次回测多出 6 份结构体拷贝。
 - 时间过滤用二分（`partition_point`）定位窗口，只拷贝窗口内的 bar；`limit` 取窗口内**最后** N 根。
 
 ### 并发模型（阻塞 IO 不占 worker）
@@ -193,7 +193,7 @@ src/main.rs         # 入口：dotenv(CWD) → tracing → Config::load → run
 src/lib.rs          # 只做导出 + crate 级 lint + README 内联文档
 src/app/mod.rs      # run(config)：校验/状态/路由/CORS/静态/serve/优雅停机
 src/app/routes.rs   # AppState(DataLoader + 状态库 + 回测缓存 + 并发闸门) + ApiResponse + 行情/状态路由 + 穿越防护
-src/app/data_loader.rs # MarketType + KlineColumns(SoA) + DataLoader：kline-reader + moka
+src/app/data_loader.rs # MarketType + KlineColumns(SoA) + DataLoader：两个 reader + moka
 src/app/state.rs    # StateStore：layouts/drawings/preferences + 限额校验 + SQLite
 src/app/strategy.rs # TOML-in → vta 回测：白名单 + 网格预检/语义校验 + 全网格逐档回测 → DTO（overlays 与信号同源 vector-ta 函数）
 migrations/001_init.sql # layouts/drawings/preferences 表
@@ -234,7 +234,7 @@ cors_origins = []           # 可选，默认 [] = 全放行（仅本地开发�
 - src/app/state.rs
   - SQLite CRUD + 输入限额 + `spawn_blocking` 调用边界；布局/绘图/偏好三类状态
 - src/app/data_loader.rs
-  - `MarketType` 解析 → 数据文件定位（binance zip / dukascopy bi5）→ kline-reader 读 → 去非有限值/去重 → moka 存 → 返回列集
+  - `MarketType` 解析 → 数据文件定位（binance zip / dukascopy bi5）→ reader 读 → 去非有限值/去重 → moka 存 → 返回列集
 - src/app/strategy.rs
   - TOML-in → vta 回测：策略名注册 + 反序列化 + 白名单/网格预检/语义校验 + 全网格逐档回测 → DTO
 - src/utils/mod.rs

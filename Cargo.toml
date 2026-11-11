@@ -20,7 +20,8 @@ tower-http = { version = "0.7", features = ["cors", "fs"] }
 toml = "1.1"
 dotenvy = "0.15"
 moka = { version = "0.12", default-features = false, features = ["sync"] }
-kline-reader = { path = "../libs/kline-reader" }
+binance-data-reader = { path = "../libs/binance-data-reader" }
+dukascopy-data-reader = { path = "../libs/dukascopy-data-reader" }
 vta = { path = "../vector-ta" }
 # vector-ta 与 vta 同源：path 依赖指向 creats/libs/VectorTA（0.3.2，含 atma/edma），
 # 保证 overlay 与 vta 信号同一实现算出。改动任一边前先 diff 已用的 MA / BollingerBands。

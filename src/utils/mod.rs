@@ -8,7 +8,7 @@ const PAIR_ALLOWED: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_";
 ///
 /// 含大写字母：dukascopy 的周期写作 `M1` / `H1` / `D1`。
 /// 本函数只管**安全**（字符集 + 长度，防目录穿越），不管**合法**
-/// （该周期是否被数据源支持）——合法性由 kline-reader 裁定，能给出
+/// （该周期是否被数据源支持）——合法性由对应 reader 裁定，能给出
 /// "该源支持哪些周期"的准确信息。
 const TIMEFRAME_ALLOWED: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_";
 

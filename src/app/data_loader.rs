@@ -34,14 +34,6 @@ impl MarketType {
     /// 否则前端会列出一个"选了就是空图 / 404"的选项。
     pub const SUPPORTED: [MarketType; 2] = [MarketType::Futures, MarketType::Dukascopy];
 
-    /// 对应的 kline-reader 数据源。
-    fn source(self) -> kline_reader::DataSource {
-        match self {
-            MarketType::Futures | MarketType::Spot => kline_reader::DataSource::Binance,
-            MarketType::Dukascopy => kline_reader::DataSource::Dukascopy,
-        }
-    }
-
     /// 数据文件扩展名（binance = zip，dukascopy = bi5）。
     fn data_ext(self) -> &'static str {
         match self {
@@ -101,9 +93,13 @@ pub enum DataError {
     #[error("i/o error: {0}")]
     Io(#[from] std::io::Error),
 
-    /// kline-reader 读取/解析失败。
-    #[error("kline-reader error: {0}")]
-    Reader(#[from] kline_reader::ReaderError),
+    /// binance-data-reader 读取/解析失败。
+    #[error("binance reader error: {0}")]
+    BinanceReader(#[from] binance_data_reader::ReaderError),
+
+    /// dukascopy-data-reader 读取/解析失败。
+    #[error("dukascopy reader error: {0}")]
+    DukascopyReader(#[from] dukascopy_data_reader::ReaderError),
 
     /// 数据目录或数据集不存在。
     #[error("not found: {0}")]
@@ -155,6 +151,9 @@ pub struct KlineColumns {
     pub volume: Vec<f64>,
 }
 
+/// 六列的原始向量，按 `time/open/high/low/close/volume` 排列。
+type ColumnParts = (Vec<i64>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>);
+
 impl KlineColumns {
     /// 按 bar 数预分配。
     fn with_capacity(n: usize) -> Self {
@@ -168,19 +167,12 @@ impl KlineColumns {
         }
     }
 
-    /// 从 kline-reader 的列集构造：丢弃非有限值行、按时间去重（保留首行）。
+    /// 从 reader 的列向量构造：丢弃非有限值行、按时间去重（保留首行）。
     ///
-    /// kline-reader 已保证输出按 `open_time` 升序且已去重，这里再做一次是
+    /// reader 已保证输出按 `open_time` 升序且已去重，这里再做一次是
     /// 防御性兜底（数据源换实现时不至于静默产出重复 bar）。
-    fn from_reader(raw: &kline_reader::KlineColumns) -> Self {
-        let (time, open, high, low, close, volume) = (
-            raw.time(),
-            raw.open(),
-            raw.high(),
-            raw.low(),
-            raw.close(),
-            raw.volume(),
-        );
+    fn from_parts(parts: ColumnParts) -> Self {
+        let (time, open, high, low, close, volume) = parts;
 
         let mut cols = Self::with_capacity(time.len());
         let mut last_time: Option<i64> = None;
@@ -261,9 +253,21 @@ impl KlineColumns {
     }
 }
 
+impl From<binance_data_reader::KlineColumns> for KlineColumns {
+    fn from(raw: binance_data_reader::KlineColumns) -> Self {
+        Self::from_parts(raw.into_parts())
+    }
+}
+
+impl From<dukascopy_data_reader::KlineColumns> for KlineColumns {
+    fn from(raw: dukascopy_data_reader::KlineColumns) -> Self {
+        Self::from_parts(raw.into_parts())
+    }
+}
+
 /// 计算时间过滤 + 限长后的 bar 区间 `[start, end)`。
 ///
-/// `time` 必须升序（kline-reader 保证）。`before`/`after` 是开区间过滤，
+/// `time` 必须升序（reader 保证）。`before`/`after` 是开区间过滤，
 /// `limit` 取窗口内**最后** N 根（与历史行为一致）。
 fn time_window(
     time: &[i64],
@@ -371,7 +375,7 @@ impl DataLoader {
                 if !has_data_files(&pair_dir, market_type.data_ext()) {
                     return Ok(vec![]);
                 }
-                kline_reader::supported_timeframes(market_type.source())
+                dukascopy_data_reader::supported_timeframes()
                     .iter()
                     .map(|s| (*s).to_string())
                     .collect()
@@ -441,19 +445,24 @@ impl DataLoader {
         tracing::debug!(?key, "cache miss — reading kline files");
 
         // 周期合法性由数据源裁定：不同源的可用周期不同（binance 1m..1d，
-        // dukascopy M1/H1/D1/1m/1h/1d），由 kline-reader 判定才能给出
+        // dukascopy M1/H1/D1/1m/1h/1d），由对应 reader 判定才能给出
         // "该源支持哪些"的准确信息；用户输错属于 400 而非 500。
-        if let Err(e) = kline_reader::Timeframe::parse(market_type.source(), timeframe) {
-            return Err(DataError::InvalidParam(e.to_string()));
-        }
+        let parsed = match market_type {
+            MarketType::Dukascopy => dukascopy_data_reader::Timeframe::parse(timeframe)
+                .map(|_| ())
+                .map_err(|e| e.to_string()),
+            _ => binance_data_reader::Timeframe::parse(timeframe)
+                .map(|_| ())
+                .map_err(|e| e.to_string()),
+        };
+        parsed.map_err(DataError::InvalidParam)?;
 
         let Some(base) = self.base_path(market_type) else {
-            tracing::warn!("market not backed by kline-reader yet");
+            tracing::warn!("market not backed by a data reader yet");
             return Err(DataError::NotFound(format!(
                 "market not supported: {pair}/{timeframe}"
             )));
         };
-        let source = market_type.source();
         let ext = market_type.data_ext();
 
         // binance：周期是子目录；dukascopy：品种目录下直接是年/月/日。
@@ -474,22 +483,47 @@ impl DataLoader {
             )));
         }
 
-        let cfg =
-            kline_reader::DataConfig::new(source, &self.data_dir, pair, timeframe, None, None)?;
-        let raw = kline_reader::load_columns(&cfg)?;
-        if raw.is_empty() {
+        let cols = match market_type {
+            MarketType::Dukascopy => {
+                let cfg = dukascopy_data_reader::DataConfig::new(
+                    &self.data_dir,
+                    pair,
+                    timeframe,
+                    None,
+                    None,
+                )?;
+                let raw = dukascopy_data_reader::load_columns(&cfg)?;
+                KlineColumns::from(raw)
+            }
+            _ => {
+                let market = match market_type {
+                    MarketType::Spot => binance_data_reader::Market::Spot,
+                    _ => binance_data_reader::Market::Um,
+                };
+                let cfg = binance_data_reader::KlineConfig::new_with_market(
+                    market,
+                    &self.data_dir,
+                    pair,
+                    timeframe,
+                    None,
+                    None,
+                )?;
+                let raw = binance_data_reader::load_kline_columns(&cfg)?;
+                KlineColumns::from(raw)
+            }
+        };
+        if cols.is_empty() {
             return Err(DataError::NotFound(format!(
                 "no klines loaded for {pair}/{timeframe}"
             )));
         }
-        if raw.len() > LARGE_DATASET_ROWS {
+        if cols.len() > LARGE_DATASET_ROWS {
             tracing::warn!(
-                rows = raw.len(),
+                rows = cols.len(),
                 "large kline dataset loaded — consider using before/after filters to reduce memory"
             );
         }
 
-        let cols = KlineColumns::from_reader(&raw);
         tracing::debug!(count = cols.len(), "klines after clean");
         let result = Arc::new(cols);
         self.klines_cache.insert(key, result.clone());

@@ -23,7 +23,7 @@ pub struct Config {
     pub host: String,
     /// 监听端口。
     pub port: u16,
-    /// 行情数据根目录（kline-reader 按数据源自动追加子路径）。
+    /// 行情数据根目录（reader 按数据源自动追加子路径）。
     pub data_dir: PathBuf,
     /// 本地状态库路径；缺省为 `<data_dir>/tradingview.db`。
     ///

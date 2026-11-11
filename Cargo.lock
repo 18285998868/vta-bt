@@ -447,6 +447,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
 
 [[package]]
+name = "binance-data-reader"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "csv",
+ "pyo3",
+ "rayon",
+ "serde",
+ "thiserror",
+ "tracing",
+ "zip",
+]
+
+[[package]]
 name = "bitflags"
 version = "2.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -854,6 +868,20 @@ name = "dtor-proc-macro"
 version = "0.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7454e41ff9012c00d53cf7f475c5e3afa3b91b7c90568495495e8d9bf47a1055"
+
+[[package]]
+name = "dukascopy-data-reader"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "lzma-rs",
+ "pyo3",
+ "rayon",
+ "serde",
+ "thiserror",
+ "tracing",
+ "walkdir",
+]
 
 [[package]]
 name = "either"
@@ -1265,22 +1293,6 @@ dependencies = [
  "cfg-if",
  "futures-util",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "kline-reader"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "csv",
- "lzma-rs",
- "pyo3",
- "rayon",
- "serde",
- "thiserror",
- "tracing",
- "walkdir",
- "zip",
 ]
 
 [[package]]
@@ -2546,9 +2558,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "binance-data-reader",
  "chrono",
  "dotenvy",
- "kline-reader",
+ "dukascopy-data-reader",
  "moka",
  "rusqlite",
  "serde",
@@ -2663,9 +2676,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "arrow",
+ "binance-data-reader",
  "chrono",
  "clap",
- "kline-reader",
+ "dukascopy-data-reader",
  "parquet",
  "rayon",
  "rust_decimal",
