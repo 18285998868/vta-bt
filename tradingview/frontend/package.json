@@ -1,0 +1,21 @@
+{
+  "name": "tradingview-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "test": "node --test scripts/indicators.parity.test.mjs",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "lightweight-charts": "^5.2.1",
+    "lightweight-charts-drawing": "^0.6.2",
+    "technicalindicators": "^3.1.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "vite": "^6.0.0"
+  }
+}

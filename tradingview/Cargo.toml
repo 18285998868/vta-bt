@@ -1,0 +1,47 @@
+[workspace]
+
+[package]
+name = "tradingview-backend"
+version = "0.1.0"
+edition = "2024"
+# **刻意不声明 `rust-version`**: 本项目目标是"永远用最新 stable"(见
+# `rust-toolchain.toml` 的 `channel = "stable"`)。`rust-version` 是**最低支持
+# 版本**的下限声明, 与该目标直接冲突。下限由 `rust-toolchain.toml` 隐式表达。
+authors = ["NautilusTrader Developer"]
+license = "MIT"
+
+[[bin]]
+name = "tradingview"
+path = "src/main.rs"
+
+[dependencies]
+axum = "0.8"
+tower-http = { version = "0.7", features = ["cors", "fs"] }
+toml = "1.1"
+dotenvy = "0.15"
+moka = { version = "0.12", default-features = false, features = ["sync"] }
+binance-data-reader = { path = "../binance-data-reader" }
+dukascopy-data-reader = { path = "../dukascopy-data-reader" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+# 只开服务端实际用到的能力：多线程 runtime + 宏 + 网络 + 文件 IO + 信号处理（优雅停机）。
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "fs", "io-util", "signal"] }
+anyhow = "1"
+thiserror = "2"
+tracing = { version = "0.1", features = ["log"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+rusqlite = { version = "0.41.1", features = ["bundled"] }
+uuid = { version = "1.28.0", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }
+zip = { version = "9", features = ["deflate"] }
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+opt-level = 3
+incremental = false
+strip = "symbols"
