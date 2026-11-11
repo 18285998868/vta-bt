@@ -8,16 +8,18 @@
 //! 这是研究工具里最典型的"结论悄悄过期"失效模式: 修完一个 SMA 策略的 bug
 //! 后重跑, 以为拿到了新结果, 其实拿到的是修复前的。
 //!
-//! 本脚本对**本 crate 的 `src/`** 与**三个 path 依赖的 `src/`**
-//! (`vector-ta` / `binance-data-reader` / `dukascopy-data-reader`) 做内容哈希
-//! —— 后三者同样影响结果 (指标实现住在 `vector-ta` 里, 数据读取住在两个
-//! reader 里), 只哈希本 crate 是不够的。
+//! 本脚本对**本 crate 的 `src/`**、**两个 path 依赖的 `src/`**
+//! (`binance-data-reader` / `dukascopy-data-reader`) 与 `Cargo.lock`
+//! (锁定 crates.io 的 `vector-ta` 版本) 做内容哈希 —— 它们同样影响结果
+//! (指标实现住在 `vector-ta` 里, 数据读取住在两个 reader 里), 只哈希本 crate
+//! 是不够的。
 //!
 //! # 为什么用内容哈希而非 git commit
 //!
-//! 本仓库是 monorepo, `git rev-parse HEAD` 会把**整个仓库**(含无关的兄弟
-//! crate)的提交算进来 —— 改一个与回测无关的 crate 也会让缓存全量失效。
-//! 非 git 检出(vendored / 打包分发)时 `git` 不可用。
+//! `git rev-parse HEAD` 只覆盖本仓库的**已提交**状态: 两个 reader 是仓库外的
+//! path 依赖, 改其源码而未提交时 commit hash 不变; 非 git 检出
+//! (vendored / 打包分发)时 `git` 也不可用。
+//!
 //! 工作区有未提交改动时 commit hash **不变** ⇒ 恰恰是"刚改完代码"这个
 //! 最需要失效的时刻, 缓存**不会**失效。
 //!

@@ -13,7 +13,7 @@
 
 - rust
 - edition = "2024"
-- 指标计算：`vector-ta`（**workspace path 依赖**，不是 crates.io —— 换 patch 版本会改变 NaN 前缀长度，进而改变全部历史回测结果）
+- 指标计算：`vector-ta`（crates.io **0.3.1**，0.3.2 尚未发布；版本由 `Cargo.lock` 锁定 —— 换 patch 版本会改变 NaN 前缀长度，进而改变全部历史回测结果）
 - 数据读取：自研 `binance-data-reader` / `dukascopy-data-reader`（workspace path 依赖）
 - Rust 版本：**始终使用最新 stable**（`rust-toolchain.toml` 的 `channel = "stable"`，无需人工跟进版本号；刻意不声明 `rust-version` 下限，以免 `clippy::incompatible_msrv` 拦下新 API）
 - 并行：rayon（参数索引 `into_par_iter`）
@@ -810,8 +810,8 @@ cargo run --release -- --pbo /path/to/reports_XXX
 改完策略代码重跑会**全部命中旧缓存**，报告里是修复前的结果，且**无任何提示**。
 
 **实施（方案 ①+③）**：
-- **①** 新增 `build.rs`：对本 crate 的 `src/` 与三个 path 依赖
-  （`vector-ta` / `binance-data-reader` / `dukascopy-data-reader`）的源码做**内容哈希**（FNV-1a），经
+- **①** 新增 `build.rs`：对本 crate 的 `src/`、两个 reader 的 `src/`
+  （`binance-data-reader` / `dukascopy-data-reader`）与 `Cargo.lock`（锁定 `vector-ta` 版本）做**内容哈希**（FNV-1a），经
   `cargo:rustc-env=VTA_SOURCE_HASH` 注入，指纹混入它。
   用**内容哈希**而非 `git rev-parse` 的理由：monorepo 里改一个无关的兄弟 crate
   不该让缓存全量失效；非 git 检出时 `git` 不可用；**工作区有未提交改动时

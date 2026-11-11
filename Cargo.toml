@@ -24,9 +24,9 @@ keywords = ["backtest", "quant", "trading", "technical-indicators", "parquet"]
 categories = ["command-line-utilities", "science"]
 
 [dependencies]
-# 注意: 均为 **workspace path 依赖**(见 [workspace.dependencies])。
-# 不用 crates.io 版本是为了保证指标实现与回测口径逐位一致 —— 换一个 patch 版本就可能
-# 改变 NaN 前缀长度, 进而改变全部历史回测结果。
+# 注意: 版本统一在 [workspace.dependencies] 管理。`vector-ta` 用 crates.io 0.3.1
+# (0.3.2 未发布), 版本由 Cargo.lock 锁定; 两个 reader 用相对 path 依赖。
+# 换一个 patch 版本的指标库就可能改变 NaN 前缀长度, 进而改变全部历史回测结果。
 vector-ta = { workspace = true }
 binance-data-reader = { workspace = true }
 dukascopy-data-reader = { workspace = true }
