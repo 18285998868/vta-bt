@@ -7,7 +7,7 @@ type = "binance"
 # 可选, Binance 市场: "spot" | "futures/um" | "futures/cm", 默认 futures/um
 market = "futures/um"
 # 必须, K线数据根目录(程序按数据源/市场自动追加子路径)
-dir = "/data/nutilustrader/data"
+dir = "path/to/data"
 # 必须, 回测品种
 # 可为单值或数组: symbol = "BTCUSDT" / symbol = ["BTCUSDT", "ETHUSDT"]
 symbol = "BTCUSDT"

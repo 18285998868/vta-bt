@@ -43,7 +43,7 @@ fn run_pair(symbol: &str, timeframe: &str, len: usize, sigma: f64, adxlen: usize
     // 数据根目录: 优先取环境变量, 否则回落到本机的默认数据目录。
     // 硬编码绝对路径会让 example 换台机器就失效。
     let data_dir =
-        std::env::var("VTA_DATA_DIR").unwrap_or_else(|_| "/data/nutilustrader/data".to_string());
+        std::env::var("VTA_DATA_DIR").unwrap_or_else(|_| "/data/data".to_string());
     let cfg = DataConfig::new(
         DataSource::Binance,
         &data_dir,

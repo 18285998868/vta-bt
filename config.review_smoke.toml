@@ -1,7 +1,7 @@
 # 审查用冒烟配置: 规模小、覆盖全部关键路径(多策略 + detail + fixedcurve + pbo)。
 [data]
 type = "binance"
-dir = "/data/nutilustrader/data"
+dir = "/data/data"
 symbol = ["BTCUSDT", "ETHUSDT"]
 timeframe = ["1h", "1d"]
 start_date = "2024-01-01"

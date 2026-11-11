@@ -13,7 +13,7 @@ import pandas as pd
 
 import vectorbt as vbt
 
-KROOT = "/data/nutilustrader/data/binance/data/futures/um/daily/klines"
+KROOT = "/data/data/binance/data/futures/um/daily/klines"
 
 
 def load(symbol, tf, a, b):

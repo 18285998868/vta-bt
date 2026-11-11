@@ -1,6 +1,6 @@
 [data]
 type = "binance"
-dir = "/data/nutilustrader/data"
+dir = "/data/data"
 symbol = ["BTCUSDT"]
 timeframe = ["1d"]
 start_date = "2024-01-01"

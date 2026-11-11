@@ -28,7 +28,7 @@
 [data]
 type = "binance" # 必填，数据源类型："binance" | "dukascopy"
 market = "futures/um" # 可选，Binance 市场："spot" | "futures/um" | "futures/cm"，默认 futures/um
-dir = "/data/nutilustrader/data" # 必填，数据根目录（自动追加数据源子路径）
+dir = "path/to/data" # 必填，数据根目录（自动追加数据源子路径）
 symbol = ["BTCUSDT"] # 必填，回测品种列表
 timeframe = ["1d"] # 必填(单数!), 可选 ["1m","3m","5m","15m","30m","1h","2h","4h","6h","8h","12h","1d","1w"]
 # 也可写单值: timeframe = "1d"
@@ -463,7 +463,7 @@ cargo run --release -- --pbo /path/to/reports_XXX
 ## 问题
 
 - 当 `dir` 写成内层 klines 路径时，报目录不存在，
-  - 解决：`dir` 统一为**数据根**（如 `/data/nutilustrader/data`），kline-reader 自动追加子路径；不要手写 `binance/...` 进去
+  - 解决：`dir` 统一为**数据根**（如 `path/to/data`），kline-reader 自动追加子路径；不要手写 `binance/...` 进去
 - 当读取 spot / CM 数据却未设置 `market` 时，会按默认 `futures/um` 查找目录，
   - 解决：显式设置 `market = "spot"` 或 `market = "futures/cm"`；`futures/um` 可省略
 - 当某组数据加载失败时，整批中断，
@@ -914,7 +914,7 @@ app/05_strategies/  # Strategy trait + shared + build + ~80 策略叶
 [data]
 type = "binance" # 必填，"binance" | "dukascopy"
 market = "futures/um" # 可选，Binance 市场："spot" | "futures/um" | "futures/cm"，默认 futures/um
-dir = "/data/nutilustrader/data" # 必填，数据根目录（自动追加数据源子路径）
+dir = "path/to/data" # 必填，数据根目录（自动追加数据源子路径）
 symbol = "BTCUSDT" # 必填，单值或数组
 timeframe = "1d" # 必填，单值或数组
 # start_date = "2024-01-01" # 可选
@@ -1061,5 +1061,5 @@ cargo run -p vta --release -- --pbo /path/to/reports  # PBO 实算
 | `config.review_invalid.toml` | 验证「参数不可计算」在报告里显式可见（`status = "invalid"`） |
 | `config.review_bblen.toml` | 验证 `bblen` 成为独立网格维度（σ × BB 周期） |
 
-两者都写死了 `/data/nutilustrader/data` 与 `/data/nutilustrader/outputs/...`
+两者都写死了 `path/to/data` 与 `/data/nutilustrader/outputs/...`
 路径，换机器需改 `data.dir` 与 `output.dir`。
