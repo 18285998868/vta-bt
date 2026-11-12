@@ -934,7 +934,7 @@ initial_balance = 10000.0 # 必填，>0
 # fill_bar_price: 可选, "open"(默认) | "close"
 # fee_bps / slippage_bps: 可选, 默认 0, 非负且有限
 [output]
-dir = "/data/nutilustrader/outputs/reports/vta" # 可选，默认 "reports"
+dir = "reports/vta" # 可选，默认 "reports"
 detail = false # 可选，默认 false
 fixed_curves = false # 可选，默认 false；仅当 detail = true 时允许
 overwrite = false # 可选，默认 false
@@ -1070,5 +1070,5 @@ cargo run -p vta --release -- --pbo /path/to/reports  # PBO 实算
 | `config.review_invalid.toml` | 验证「参数不可计算」在报告里显式可见（`status = "invalid"`） |
 | `config.review_bblen.toml` | 验证 `bblen` 成为独立网格维度（σ × BB 周期） |
 
-两者都写死了 `path/to/data` 与 `/data/nutilustrader/outputs/...`
-路径，换机器需改 `data.dir` 与 `output.dir`。
+两者都写死了 `data.dir = "/data/data"`，换机器需改；输出目录使用
+相对路径 `reports/`（已 gitignore），随仓库走。

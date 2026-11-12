@@ -43,7 +43,7 @@ initial_balance = 10000.0
 # ========================================
 [output]
 # 可选, 输出目录, 默认: "reports"
-dir = "/data/nutilustrader/outputs/reports/vta"
+dir = "reports/vta"
 # 可选, 是否导出逐笔交易详细数据, 默认: false
 detail = false
 # 可选, 是否覆盖已存在的回测结果, 默认: false (跳过已完成的组合)

@@ -11,8 +11,8 @@
 # OOS 段跑输中位数 —— 即模型选择本身是否已把样本噪声榨干。
 #
 # 跑法（两步，输出目录必须一致）:
-#   cargo run --release -- -c config.pbo_gate.toml
-#   cargo run --release -- --pbo /data/nutilustrader/outputs/reports/vta_pbo_gate
+#   cargo run --release -- -c config.pbo_gate_1d.toml
+#   cargo run --release -- --pbo reports/vta_pbo_gate_1d
 # ========================================
 [data]
 type = "binance"
@@ -30,7 +30,7 @@ fee_bps = 5.0
 slippage_bps = 0.0
 
 [output]
-dir = "/data/nutilustrader/outputs/reports/vta_pbo_gate_1d"
+dir = "reports/vta_pbo_gate_1d"
 detail = true      # fixed_curves 依赖 detail 才会写出
 overwrite = true
 # --pbo 的 T×N 输入所需(需与 detail=true 同开)

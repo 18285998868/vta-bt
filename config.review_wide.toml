@@ -23,7 +23,7 @@ fee_bps = 2.0
 slippage_bps = 1.0
 
 [output]
-dir = "/data/nutilustrader/outputs/reports/vta_review_wide"
+dir = "reports/vta_review_wide"
 detail = true
 fixed_curves = true
 overwrite = true

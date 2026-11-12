@@ -14,7 +14,7 @@ fee_bps = 0.0
 slippage_bps = 0.0
 
 [output]
-dir = "/data/nutilustrader/outputs/reports/sma_100"
+dir = "reports/sma_100"
 detail = false
 overwrite = false
 

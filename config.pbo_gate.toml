@@ -12,7 +12,7 @@
 #
 # 跑法（两步，输出目录必须一致）:
 #   cargo run --release -- -c config.pbo_gate.toml
-#   cargo run --release -- --pbo /data/nutilustrader/outputs/reports/vta_pbo_gate
+#   cargo run --release -- --pbo reports/vta_pbo_gate
 # ========================================
 [data]
 type = "binance"
@@ -30,7 +30,7 @@ fee_bps = 5.0
 slippage_bps = 0.0
 
 [output]
-dir = "/data/nutilustrader/outputs/reports/vta_pbo_gate"
+dir = "reports/vta_pbo_gate"
 detail = true      # fixed_curves 依赖 detail 才会写出
 overwrite = true
 # --pbo 的 T×N 输入所需(需与 detail=true 同开)

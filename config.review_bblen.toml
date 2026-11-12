@@ -10,7 +10,7 @@ end_date = "2026-09-30"
 initial_balance = 10000.0
 
 [output]
-dir = "/data/nutilustrader/outputs/reports/vta_bblen"
+dir = "reports/vta_bblen"
 detail = false
 overwrite = true
 

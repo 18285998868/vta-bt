@@ -14,7 +14,7 @@ fee_bps = 0.0
 slippage_bps = 0.0
 
 [output]
-dir = "/data/nutilustrader/outputs/reports/ma_extra_tfs"
+dir = "reports/ma_extra_tfs"
 detail = false
 overwrite = false
 
