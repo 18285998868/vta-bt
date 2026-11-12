@@ -8,7 +8,7 @@
 #   z_t     = (f_t - rolling_mean(f, z_win)) / rolling_std(f, z_win)
 #   持多 <=> close_t > ma_t AND z_t > th, 否则空仓
 #
-# 参数取自研究侧已验证的最优组合（因子研究/README.md v4~v6）:
+# 参数取自研究侧已验证的最优组合（quant-research/README.md v4~v6）:
 #   ma=100, slope_k=20, atr_n=120, z_win=60, th=0.5
 # ========================================
 [data]

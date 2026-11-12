@@ -12,7 +12,7 @@ use super::config::SwingFractalConfig;
 /// - `left_max[j-1] = max(high[j-left ..= j-1])`  (窗 `left`, 取到 `j-1`)
 /// - `right_max[i] = max(high[j+1 ..= j+right])`     (窗 `right`, 取到 `i`, `i = j+right`)
 ///
-/// **严格大于**(平台不算摆动点): 与 `../因子研究/pine/indicators/williams_fractals.pine` 一致。
+/// **严格大于**(平台不算摆动点): 与 `../quant-research/pine/indicators/williams_fractals.pine` 一致。
 /// 用非严格 `>=` 会在平顶平台上连续确认多个同价摆动点, 使 nH/nL 在同价位反复触发。
 ///
 /// 任一窗口越界(`left_max[j-1]` 为 NaN)时比较为 false, 即**不产生摆动点**(P7, 不静默)。
