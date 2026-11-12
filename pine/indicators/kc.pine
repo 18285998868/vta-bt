@@ -1,0 +1,402 @@
+//@version=6
+// Keltner Channels 指标, 只画线+带, 不下单
+// 基于TV官方Keltner Channels改造: 基线支持31种MA变体 (同 ma.pine 全量), ATR带样式可切换
+// 移除官方 exp 布尔开关, 改为 "MA Type" 下拉
+// 注: SMMA=RMA=Wilders 同算法; EDMA 用 EMA 实现 (无plot位移)
+// 注: FRAMA / DMA 内部引用 high/low, 不跟随所选价格源 (算法特性)
+
+indicator(title="Keltner Channels MA", shorttitle="KC", overlay=true, timeframe="", timeframe_gaps=true)
+
+// ── Inputs ─────────────────────────────────────────────
+ma_type   = input.string("EMA", "MA Type", options=["SMA", "EMA", "WMA", "DEMA", "TEMA", "SMMA (RMA)", "VWMA", "HMA", "TMA", "TRIMA", "ZLEMA", "Wilders", "ALMA", "LinReg", "DMA", "EDMA", "EHMA", "FWMA", "FRAMA", "JMA", "KAMA", "McGinley", "PWMA", "SGMA", "SinWMA", "SSF", "SSF_ST", "SWMA", "Tilson", "VIDYA", "ATMA"], group="MA Settings")
+ma_length = input.int(20, "MA Length", minval=1, group="MA Settings")
+ma_src    = input.source(close, "MA Price Type", group="MA Settings")
+atr_length = input.int(10, "ATR Length", minval=1, group="Bands")
+atr_mult   = input.float(2.0, "ATR Multiplier", minval=0.1, step=0.1, group="Bands")
+bands_style = input.string("Average True Range", "ATR Bands Style", options=["Average True Range", "True Range", "Range"], group="Bands")
+// ── 扩展参数 (仅对应方法生效) ────────────────────────────
+length2 = input.int(20, "ATMA Down Length", minval=1, group="Advanced")
+phase   = input.float(50.0, "JMA Phase", minval=-100.0, maxval=100.0, group="Advanced")
+power   = input.int(2, "JMA Power", minval=1, group="Advanced")
+vfactor = input.float(0.7, "Tilson Volume Factor", minval=0.0, maxval=1.0, group="Advanced")
+poles   = input.int(2, "SSF_ST Poles (2/3)", minval=2, maxval=3, group="Advanced")
+
+// ── DEMA/TEMA/ZLEMA ──────────────────────────────────────
+f_dema(_src, _len) =>
+    e1 = ta.ema(_src, _len)
+    e2 = ta.ema(e1, _len)
+    2 * e1 - e2
+
+f_tema(_src, _len) =>
+    e1 = ta.ema(_src, _len)
+    e2 = ta.ema(e1, _len)
+    e3 = ta.ema(e2, _len)
+    3 * e1 - 3 * e2 + e3
+
+f_zlema(_src, _len) =>
+    lag = int((_len - 1) / 2)
+    ta.ema(_src + (_src - _src[lag]), _len)
+
+// ── TMA/TRIMA ────────────────────────────────────────────
+f_tma(_src, _len) =>
+    ta.sma(ta.sma(_src, _len), _len)
+
+f_trima(_src, _len) =>
+    ta.sma(ta.sma(ta.sma(_src, _len), _len), _len)
+
+// ── ATMA: SMA(up)/SMA(down)加权 ──────────────────────────
+f_atma(_src, _up, _down) =>
+    su = ta.sma(_src, _up)
+    sd = ta.sma(_src, _down)
+    (su * _up + sd * _down) / (_up + _down)
+
+// ── EHMA: Hann窗加权 ─────────────────────────────────────
+f_ehma(_src, _len) =>
+    num = 0.0
+    for k = 0 to _len - 1
+        w = 1.0 - math.cos(2.0 * math.pi * (k + 1) / (_len + 1))
+        num += nz(_src[_len - 1 - k]) * w
+    num / (_len + 1)
+
+// ── FWMA: Fibonacci权重 ──────────────────────────────────
+f_fwma(_src, _len) =>
+    fa = 1.0
+    fb = 1.0
+    num = 0.0
+    den = 0.0
+    for k = 0 to _len - 1
+        w = k == 0 ? 1.0 : fb
+        num += nz(_src[_len - 1 - k]) * w
+        den += w
+        fn = fa + fb
+        fa := fb
+        fb := fn
+    num / den
+
+// ── PWMA: Pascal(二项式)权重 ─────────────────────────────
+f_pwma(_src, _len) =>
+    c = 1.0
+    num = 0.0
+    den = 0.0
+    n = _len - 1
+    for k = 0 to _len - 1
+        if k > 0
+            c := c * (n - k + 1) / k
+        num += nz(_src[_len - 1 - k]) * c
+        den += c
+    num / den
+
+// ── SinWMA: 正弦权重 ─────────────────────────────────────
+f_sinwma(_src, _len) =>
+    num = 0.0
+    den = 0.0
+    for k = 0 to _len - 1
+        w = math.sin((k + 1) * math.pi / (_len + 1))
+        num += nz(_src[_len - 1 - k]) * w
+        den += w
+    num / den
+
+// ── SWMA: 对称三角权重 ───────────────────────────────────
+f_swma(_src, _len) =>
+    m = int((_len + 1) / 2)
+    num = 0.0
+    den = 0.0
+    for k = 0 to _len - 1
+        w = k < m ? k + 1.0 : (_len - k) * 1.0
+        num += nz(_src[_len - 1 - k]) * w
+        den += w
+    num / den
+
+// ── McGinley ─────────────────────────────────────────────
+f_mcginley(_src, _len) =>
+    var float mg = na
+    mg := na(mg[1]) ? _src : mg[1] + (_src - mg[1]) / (_len * math.pow(_src / mg[1], 4))
+    mg
+
+// ── KAMA ─────────────────────────────────────────────────
+f_kama(_src, _len) =>
+    change = math.abs(_src - _src[_len])
+    vol = math.sum(math.abs(_src - _src[1]), _len)
+    er = vol == 0 ? 0.0 : change / vol
+    fast = 2.0 / 3.0
+    slow = 2.0 / 31.0
+    sc = math.pow(er * (fast - slow) + slow, 2)
+    var float k = na
+    k := sc * _src + (1.0 - sc) * nz(k[1], _src)
+    k
+
+// ── VIDYA (Chande, 与vector-ta一致: CMO窗口=Length) ──────
+f_vidya(_src, _len) =>
+    diff = _src - _src[1]
+    up = math.sum(diff > 0 ? diff : 0.0, _len)
+    dn = math.sum(diff < 0 ? -diff : 0.0, _len)
+    denom = up + dn
+    cmo = denom == 0 ? 0.0 : (up - dn) / denom
+    alpha = 2.0 / (_len + 1) * math.abs(cmo)
+    var float v = na
+    v := alpha * _src + (1.0 - alpha) * nz(v[1], _src)
+    v
+
+// ── FRAMA (标准版, SC/FC过滤省略) ────────────────────────
+f_frama(_src, _len) =>
+    N = _len % 2 == 0 ? _len : _len + 1
+    half = int(N / 2)
+    h1 = ta.highest(high, half)
+    l1 = ta.lowest(low, half)
+    h2 = ta.highest(high[half], half)
+    l2 = ta.lowest(low[half], half)
+    h3 = ta.highest(high, N)
+    l3 = ta.lowest(low, N)
+    n1 = (h1 - l1) / half
+    n2 = (h2 - l2) / half
+    n3 = (h3 - l3) / N
+    alpha = 1.0
+    if n3 > 0 and n1 + n2 > 0
+        D = (math.log(n1 + n2) - math.log(n3)) / math.log(2)
+        a = math.exp(-4.6 * (D - 1.0))
+        alpha := math.max(math.min(a, 1.0), 0.01)
+    var float f = na
+    f := alpha * _src + (1.0 - alpha) * nz(f[1], _src)
+    f
+
+// ── JMA (与vector-ta标量实现一致) ────────────────────────
+f_jma(_src, _len, _phase, _power) =>
+    pr = _phase < -100 ? 0.5 : _phase > 100 ? 2.5 : _phase / 100 + 1.5
+    beta = 0.45 * (_len - 1) / (0.45 * (_len - 1) + 2)
+    alpha = math.pow(beta, _power)
+    oma = 1.0 - alpha
+    omb = 1.0 - beta
+    aa = alpha * alpha
+    oo = oma * oma
+    var float e0 = na
+    var float e1 = na
+    var float e2 = na
+    var float j = na
+    e0 := oma * _src + alpha * nz(e0[1], _src)
+    e1 := omb * (_src - e0) + beta * nz(e1[1])
+    d = e0 + pr * e1 - nz(j[1], _src)
+    e2 := d * oo + aa * nz(e2[1])
+    j := nz(j[1], _src) + e2
+    j
+
+// ── Tilson T3 ────────────────────────────────────────────
+f_t3(_src, _len, _vf) =>
+    e1 = ta.ema(_src, _len)
+    e2 = ta.ema(e1, _len)
+    e3 = ta.ema(e2, _len)
+    e4 = ta.ema(e3, _len)
+    e5 = ta.ema(e4, _len)
+    e6 = ta.ema(e5, _len)
+    c1 = -_vf * _vf * _vf
+    c2 = 3 * _vf * _vf + 3 * _vf * _vf * _vf
+    c3 = -6 * _vf * _vf - 3 * _vf - 3 * _vf * _vf * _vf
+    c4 = 1 + 3 * _vf + _vf * _vf * _vf + 3 * _vf * _vf
+    c1 * e6 + c2 * e5 + c3 * e4 + c4 * e3
+
+// ── SSF: Ehlers SuperSmoother 2极 ────────────────────────
+f_ssf(_src, _len) =>
+    a1 = math.exp(-1.414 * math.pi / _len)
+    b1 = 2.0 * a1 * math.cos(1.414 * math.pi / _len)
+    c2 = b1
+    c3 = -a1 * a1
+    c1 = 1.0 - c2 - c3
+    var float s = na
+    s := c1 * (_src + _src[1]) / 2 + c2 * nz(s[1]) + c3 * nz(s[2])
+    s
+
+// ── SSF_ST: 2/3极 (与ssf_st_indicator.pine一致) ──────────
+f_ssf_st(_src, _len, _poles) =>
+    var float val = na
+    var float p1 = na
+    var float p2 = na
+    var float p3 = na
+    var int cnt = 0
+    var float b1 = na
+    var float a2 = na
+    var float c2 = na
+    var float c3 = na
+    var float c4 = na
+    var float c1c = na
+    first = na(val)
+    if first
+        if _poles == 2
+            x = math.pi * math.sqrt(2.0) / _len
+            b1 := 2.0 * math.exp(-x) * math.cos(x)
+            a2 := -math.exp(-2.0 * x)
+        else
+            inv = 1.0 / _len
+            a = math.exp(-math.pi * inv)
+            b = 2.0 * a * math.cos(1.738 * math.pi * inv)
+            c = a * a
+            c4 := c * c
+            c3 := -c - b * c
+            c2 := c + b
+            c1c := 1.0 - c2 - c3 - c4
+        val := _src
+        p1 := _src
+        p2 := _src
+        p3 := _src
+        cnt := 1
+    else
+        cnt := cnt + 1
+        float out = na
+        if _poles == 2
+            if cnt < 2
+                out := _src
+                p1 := _src
+            else
+                out := (1.0 - b1 - a2) * _src + b1 * p1 + a2 * p2
+                p2 := p1
+                p1 := out
+        else
+            if cnt < 3
+                out := _src
+                p3 := p2
+                p2 := p1
+                p1 := _src
+            else
+                out := c1c * _src + c2 * p1 + c3 * p2 + c4 * p3
+                p3 := p2
+                p2 := p1
+                p1 := out
+        val := out
+    val
+
+// ── DMA (Jurik结构: Hull + 增益受限ECORR, ema=20/gain=50) ─
+f_dma(_src, _hl) =>
+    _el = 20
+    _gl = 50
+    alpha = 2.0 / (_el + 1)
+    oma = 1.0 - alpha
+    half = math.max(1, int(_hl / 2))
+    sq = math.max(1, int(math.round(math.sqrt(_hl))))
+    var float e0 = na
+    var float ec = na
+    e0 := na(e0[1]) ? ta.sma(_src, _el) : alpha * _src + oma * nz(e0[1])
+    e0v = nz(e0, _src)
+    ecPrev = nz(ec[1], e0v)
+    dx = _src - ecPrev
+    t = alpha * dx
+    base = alpha * e0v + oma * ecPrev
+    r = _src - base
+    g = 0.0
+    if t != 0
+        best = 10.0
+        bg = 0.0
+        for gi = 0 to _gl
+            gg = gi * 0.1
+            e = math.abs(r - t * gg)
+            if e < best
+                best := e
+                bg := gg
+        g := bg
+    ec := alpha * (e0v + g * dx) + oma * ecPrev
+    hull = ta.wma(2 * ta.wma(_src, half) - ta.wma(_src, _hl), sq)
+    (hull + ec) / 2
+
+// ── SGMA: Savitzky-Golay端点二次拟合 ─────────────────────
+f_sgma(_src, _len) =>
+    n = _len
+    sx = 0.0
+    sx2 = 0.0
+    sx3 = 0.0
+    sx4 = 0.0
+    sy = 0.0
+    sxy = 0.0
+    sx2y = 0.0
+    for k = 0 to n - 1
+        x = k * 1.0
+        y = nz(_src[n - 1 - k])
+        x2 = x * x
+        sx += x
+        sx2 += x2
+        sx3 += x2 * x
+        sx4 += x2 * x2
+        sy += y
+        sxy += x * y
+        sx2y += x2 * y
+    det = n * (sx2 * sx4 - sx3 * sx3) - sx * (sx * sx4 - sx3 * sx2) + sx2 * (sx * sx3 - sx2 * sx2)
+    xe = (n - 1) * 1.0
+    out = ta.sma(_src, n)
+    if det != 0
+        d0 = sy * (sx2 * sx4 - sx3 * sx3) - sx * (sxy * sx4 - sx3 * sx2y) + sx2 * (sxy * sx3 - sx2 * sx2y)
+        d1 = n * (sxy * sx4 - sx3 * sx2y) - sy * (sx * sx4 - sx3 * sx2) + sx2 * (sx * sx2y - sxy * sx2)
+        d2 = n * (sx2 * sx2y - sxy * sx3) - sx * (sx * sx2y - sxy * sx2) + sy * (sx * sx3 - sx2 * sx2)
+        out := d0 / det + d1 / det * xe + d2 / det * xe * xe
+    out
+
+// ── MA 方法分发 ─────────────────────────────────────────
+float basis = na
+if ma_type == "SMA"
+    basis := ta.sma(ma_src, ma_length)
+else if ma_type == "EMA"
+    basis := ta.ema(ma_src, ma_length)
+else if ma_type == "WMA"
+    basis := ta.wma(ma_src, ma_length)
+else if ma_type == "DEMA"
+    basis := f_dema(ma_src, ma_length)
+else if ma_type == "TEMA"
+    basis := f_tema(ma_src, ma_length)
+else if ma_type == "SMMA (RMA)"
+    basis := ta.rma(ma_src, ma_length)
+else if ma_type == "VWMA"
+    basis := ta.vwma(ma_src, ma_length)
+else if ma_type == "HMA"
+    basis := ta.hma(ma_src, ma_length)
+else if ma_type == "TMA"
+    basis := f_tma(ma_src, ma_length)
+else if ma_type == "TRIMA"
+    basis := f_trima(ma_src, ma_length)
+else if ma_type == "ZLEMA"
+    basis := f_zlema(ma_src, ma_length)
+else if ma_type == "Wilders"
+    basis := ta.rma(ma_src, ma_length)
+else if ma_type == "ALMA"
+    basis := ta.alma(ma_src, ma_length, 0.85, 6)
+else if ma_type == "LinReg"
+    basis := ta.linreg(ma_src, ma_length, 0)
+else if ma_type == "DMA"
+    basis := f_dma(ma_src, ma_length)
+else if ma_type == "EDMA"
+    basis := ta.ema(ma_src, ma_length)
+else if ma_type == "EHMA"
+    basis := f_ehma(ma_src, ma_length)
+else if ma_type == "FWMA"
+    basis := f_fwma(ma_src, ma_length)
+else if ma_type == "FRAMA"
+    basis := f_frama(ma_src, ma_length)
+else if ma_type == "JMA"
+    basis := f_jma(ma_src, ma_length, phase, power)
+else if ma_type == "KAMA"
+    basis := f_kama(ma_src, ma_length)
+else if ma_type == "McGinley"
+    basis := f_mcginley(ma_src, ma_length)
+else if ma_type == "PWMA"
+    basis := f_pwma(ma_src, ma_length)
+else if ma_type == "SGMA"
+    basis := f_sgma(ma_src, ma_length)
+else if ma_type == "SinWMA"
+    basis := f_sinwma(ma_src, ma_length)
+else if ma_type == "SSF"
+    basis := f_ssf(ma_src, ma_length)
+else if ma_type == "SSF_ST"
+    basis := f_ssf_st(ma_src, ma_length, poles)
+else if ma_type == "SWMA"
+    basis := f_swma(ma_src, ma_length)
+else if ma_type == "Tilson"
+    basis := f_t3(ma_src, ma_length, vfactor)
+else if ma_type == "VIDYA"
+    basis := f_vidya(ma_src, ma_length)
+else if ma_type == "ATMA"
+    basis := f_atma(ma_src, ma_length, length2)
+
+// ── Keltner Channels ────────────────────────────────────
+rangema = bands_style == "True Range" ? ta.tr(true) : bands_style == "Average True Range" ? ta.atr(atr_length) : ta.rma(high - low, atr_length)
+upper = basis + rangema * atr_mult
+lower = basis - rangema * atr_mult
+
+// ── Plot ────────────────────────────────────────────────
+u = plot(upper, color=#2962FF, title="Upper")
+plot(basis, color=#2962FF, title="Basis")
+l = plot(lower, color=#2962FF, title="Lower")
+fill(u, l, color=color.rgb(33, 150, 243, 95), title="Background")

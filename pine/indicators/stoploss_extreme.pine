@@ -1,0 +1,18 @@
+//@version=6
+// Stoploss Extreme 指标, 只画线, 不下单
+// 过去N根K线极值点止损
+
+indicator("Stoploss Extreme", overlay=true)
+
+// ── Inputs ─────────────────────────────────────────────
+ext_len = input.int(10, "极值止损周期", minval=1)
+
+// ── 过去N根K线极值止损 ─────────────────────────────────
+ext_high = ta.highest(high, ext_len)
+ext_low  = ta.lowest(low, ext_len)
+
+// ── Plot（方向着色: 下轨上升绿/否则红, 上轨下降绿/否则红）──
+lowerColor = ext_low >= ext_low[1] ? color.red : color.white
+upperColor = ext_high <= ext_high[1] ? color.red : color.white
+plot(ext_high, "Upper Extreme Stop", upperColor, 2)
+plot(ext_low, "Lower Extreme Stop", lowerColor, 2)

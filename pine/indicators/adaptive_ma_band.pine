@@ -1,0 +1,189 @@
+//@version=6
+// Adaptive MA Band: 自适应均线 + 可选带宽, 勾选式(可多选同时显示)
+// 均线: KAMA / VIDYA / McGinley / FRAMA / JMA
+// 带宽: 标准差 / ATR / 百分比, 所有勾选的均线共用同一套带宽参数
+// 均线全部无条件计算, 勾选只控制是否绘制
+
+indicator("Adaptive MA Band", shorttitle="Adaptive MA Band", overlay=true)
+
+// ── Shared ──────────────────────────────────────────────
+src    = input.source(close, "Source", group="General")
+offset = input.int(0, "Offset", minval=-500, maxval=500, group="General")
+
+// ── KAMA ────────────────────────────────────────────────
+show_kama = input.bool(true, "KAMA", group="KAMA")
+kama_len  = input.int(20, "KAMA Length", minval=1, group="KAMA")
+
+// ── VIDYA ───────────────────────────────────────────────
+show_vidya = input.bool(false, "VIDYA", group="VIDYA")
+vidya_len  = input.int(20, "VIDYA Length", minval=1, group="VIDYA")
+
+// ── McGinley ────────────────────────────────────────────
+show_mcg = input.bool(false, "McGinley", group="McGinley")
+mcg_len  = input.int(20, "McGinley Length", minval=1, group="McGinley")
+
+// ── FRAMA ───────────────────────────────────────────────
+show_frama = input.bool(false, "FRAMA", group="FRAMA")
+frama_len  = input.int(20, "FRAMA Length", minval=1, group="FRAMA")
+
+// ── JMA ─────────────────────────────────────────────────
+show_jma  = input.bool(false, "JMA", group="JMA")
+jma_len   = input.int(20, "JMA Length", minval=1, group="JMA")
+jma_phase = input.float(50.0, "JMA Phase", minval=-100.0, maxval=100.0, group="JMA")
+jma_power = input.int(2, "JMA Power", minval=1, group="JMA")
+
+// ── Band Inputs ─────────────────────────────────────────
+show_std  = input.bool(false, "Standard Deviation Band", group="Band Settings")
+std_mult  = input.float(2.0, "StdDev Multiplier", minval=0.1, step=0.1, group="Band Settings")
+std_len   = input.int(20, "StdDev Length", minval=1, group="Band Settings")
+show_atr  = input.bool(false, "ATR Band", group="Band Settings")
+atr_mult  = input.float(2.0, "ATR Multiplier", minval=0.1, step=0.1, group="Band Settings")
+atr_len   = input.int(14, "ATR Length", minval=1, group="Band Settings")
+show_pct  = input.bool(true, "Percent Band", group="Band Settings")
+pct       = input.float(2.0, "Percent (%)", minval=0.01, step=0.1, group="Band Settings")
+fill_band = input.bool(true, "Fill Band", group="Band Settings")
+
+// ── McGinley ────────────────────────────────────────────
+f_mcginley(_src, _len) =>
+    var float mg = na
+    mg := na(mg[1]) ? _src : mg[1] + (_src - mg[1]) / (_len * math.pow(_src / mg[1], 4))
+    mg
+
+// ── KAMA ────────────────────────────────────────────────
+f_kama(_src, _len) =>
+    change = math.abs(_src - _src[_len])
+    vol = math.sum(math.abs(_src - _src[1]), _len)
+    er = vol == 0 ? 0.0 : change / vol
+    fast = 2.0 / 3.0
+    slow = 2.0 / 31.0
+    sc = math.pow(er * (fast - slow) + slow, 2)
+    var float k = na
+    k := sc * _src + (1.0 - sc) * nz(k[1], _src)
+    k
+
+// ── VIDYA (Chande, CMO窗口=Length) ──────────────────────
+f_vidya(_src, _len) =>
+    diff = _src - _src[1]
+    up = math.sum(diff > 0 ? diff : 0.0, _len)
+    dn = math.sum(diff < 0 ? -diff : 0.0, _len)
+    denom = up + dn
+    cmo = denom == 0 ? 0.0 : (up - dn) / denom
+    alpha = 2.0 / (_len + 1) * math.abs(cmo)
+    var float v = na
+    v := alpha * _src + (1.0 - alpha) * nz(v[1], _src)
+    v
+
+// ── FRAMA (标准版, SC/FC过滤省略) ───────────────────────
+f_frama(_src, _len) =>
+    N = _len % 2 == 0 ? _len : _len + 1
+    half = int(N / 2)
+    h1 = ta.highest(high, half)
+    l1 = ta.lowest(low, half)
+    h2 = ta.highest(high[half], half)
+    l2 = ta.lowest(low[half], half)
+    h3 = ta.highest(high, N)
+    l3 = ta.lowest(low, N)
+    n1 = (h1 - l1) / half
+    n2 = (h2 - l2) / half
+    n3 = (h3 - l3) / N
+    alpha = 1.0
+    if n3 > 0 and n1 + n2 > 0
+        D = (math.log(n1 + n2) - math.log(n3)) / math.log(2)
+        a = math.exp(-4.6 * (D - 1.0))
+        alpha := math.max(math.min(a, 1.0), 0.01)
+    var float f = na
+    f := alpha * _src + (1.0 - alpha) * nz(f[1], _src)
+    f
+
+// ── JMA (与vector-ta标量实现一致) ───────────────────────
+f_jma(_src, _len, _phase, _power) =>
+    pr = _phase < -100 ? 0.5 : _phase > 100 ? 2.5 : _phase / 100 + 1.5
+    beta = 0.45 * (_len - 1) / (0.45 * (_len - 1) + 2)
+    alpha = math.pow(beta, _power)
+    oma = 1.0 - alpha
+    omb = 1.0 - beta
+    aa = alpha * alpha
+    oo = oma * oma
+    var float e0 = na
+    var float e1 = na
+    var float e2 = na
+    var float j = na
+    e0 := oma * _src + alpha * nz(e0[1], _src)
+    e1 := omb * (_src - e0) + beta * nz(e1[1])
+    d = e0 + pr * e1 - nz(j[1], _src)
+    e2 := d * oo + aa * nz(e2[1])
+    j := nz(j[1], _src) + e2
+    j
+
+// ── 计算 ────────────────────────────────────────────────
+kama  = f_kama(src, kama_len)
+vidya = f_vidya(src, vidya_len)
+mcg   = f_mcginley(src, mcg_len)
+frama = f_frama(src, frama_len)
+jma   = f_jma(src, jma_len, jma_phase, jma_power)
+
+// 带宽与均线无关的部分只算一次
+std_w = std_mult * ta.stdev(src, std_len)
+atr_w = atr_mult * ta.atr(atr_len)
+
+// ── Plot: MA ────────────────────────────────────────────
+plot(show_kama ? kama : na, title="KAMA", color=color.blue, linewidth=2, offset=offset)
+plot(show_vidya ? vidya : na, title="VIDYA", color=color.orange, linewidth=2, offset=offset)
+plot(show_mcg ? mcg : na, title="McGinley", color=color.green, linewidth=2, offset=offset)
+plot(show_frama ? frama : na, title="FRAMA", color=color.purple, linewidth=2, offset=offset)
+plot(show_jma ? jma : na, title="JMA", color=color.red, linewidth=2, offset=offset)
+
+// ── Plot: KAMA Band ─────────────────────────────────────
+p_kama_std_up = plot((show_kama and show_std) ? kama + std_w : na, title="KAMA StdDev Upper", color=color.new(color.blue, 50), linewidth=1, offset=offset)
+p_kama_std_dn = plot((show_kama and show_std) ? kama - std_w : na, title="KAMA StdDev Lower", color=color.new(color.blue, 50), linewidth=1, offset=offset)
+fill(p_kama_std_up, p_kama_std_dn, color=fill_band ? color.new(color.blue, 92) : na, title="KAMA StdDev Fill")
+p_kama_atr_up = plot((show_kama and show_atr) ? kama + atr_w : na, title="KAMA ATR Upper", color=color.new(color.blue, 50), linewidth=1, offset=offset)
+p_kama_atr_dn = plot((show_kama and show_atr) ? kama - atr_w : na, title="KAMA ATR Lower", color=color.new(color.blue, 50), linewidth=1, offset=offset)
+fill(p_kama_atr_up, p_kama_atr_dn, color=fill_band ? color.new(color.blue, 92) : na, title="KAMA ATR Fill")
+p_kama_pct_up = plot((show_kama and show_pct) ? kama + kama * pct / 100.0 : na, title="KAMA Percent Upper", color=color.new(color.blue, 50), linewidth=1, offset=offset)
+p_kama_pct_dn = plot((show_kama and show_pct) ? kama - kama * pct / 100.0 : na, title="KAMA Percent Lower", color=color.new(color.blue, 50), linewidth=1, offset=offset)
+fill(p_kama_pct_up, p_kama_pct_dn, color=fill_band ? color.new(color.blue, 92) : na, title="KAMA Percent Fill")
+
+// ── Plot: VIDYA Band ────────────────────────────────────
+p_vidya_std_up = plot((show_vidya and show_std) ? vidya + std_w : na, title="VIDYA StdDev Upper", color=color.new(color.orange, 50), linewidth=1, offset=offset)
+p_vidya_std_dn = plot((show_vidya and show_std) ? vidya - std_w : na, title="VIDYA StdDev Lower", color=color.new(color.orange, 50), linewidth=1, offset=offset)
+fill(p_vidya_std_up, p_vidya_std_dn, color=fill_band ? color.new(color.orange, 92) : na, title="VIDYA StdDev Fill")
+p_vidya_atr_up = plot((show_vidya and show_atr) ? vidya + atr_w : na, title="VIDYA ATR Upper", color=color.new(color.orange, 50), linewidth=1, offset=offset)
+p_vidya_atr_dn = plot((show_vidya and show_atr) ? vidya - atr_w : na, title="VIDYA ATR Lower", color=color.new(color.orange, 50), linewidth=1, offset=offset)
+fill(p_vidya_atr_up, p_vidya_atr_dn, color=fill_band ? color.new(color.orange, 92) : na, title="VIDYA ATR Fill")
+p_vidya_pct_up = plot((show_vidya and show_pct) ? vidya + vidya * pct / 100.0 : na, title="VIDYA Percent Upper", color=color.new(color.orange, 50), linewidth=1, offset=offset)
+p_vidya_pct_dn = plot((show_vidya and show_pct) ? vidya - vidya * pct / 100.0 : na, title="VIDYA Percent Lower", color=color.new(color.orange, 50), linewidth=1, offset=offset)
+fill(p_vidya_pct_up, p_vidya_pct_dn, color=fill_band ? color.new(color.orange, 92) : na, title="VIDYA Percent Fill")
+
+// ── Plot: McGinley Band ─────────────────────────────────
+p_mcg_std_up = plot((show_mcg and show_std) ? mcg + std_w : na, title="McGinley StdDev Upper", color=color.new(color.green, 50), linewidth=1, offset=offset)
+p_mcg_std_dn = plot((show_mcg and show_std) ? mcg - std_w : na, title="McGinley StdDev Lower", color=color.new(color.green, 50), linewidth=1, offset=offset)
+fill(p_mcg_std_up, p_mcg_std_dn, color=fill_band ? color.new(color.green, 92) : na, title="McGinley StdDev Fill")
+p_mcg_atr_up = plot((show_mcg and show_atr) ? mcg + atr_w : na, title="McGinley ATR Upper", color=color.new(color.green, 50), linewidth=1, offset=offset)
+p_mcg_atr_dn = plot((show_mcg and show_atr) ? mcg - atr_w : na, title="McGinley ATR Lower", color=color.new(color.green, 50), linewidth=1, offset=offset)
+fill(p_mcg_atr_up, p_mcg_atr_dn, color=fill_band ? color.new(color.green, 92) : na, title="McGinley ATR Fill")
+p_mcg_pct_up = plot((show_mcg and show_pct) ? mcg + mcg * pct / 100.0 : na, title="McGinley Percent Upper", color=color.new(color.green, 50), linewidth=1, offset=offset)
+p_mcg_pct_dn = plot((show_mcg and show_pct) ? mcg - mcg * pct / 100.0 : na, title="McGinley Percent Lower", color=color.new(color.green, 50), linewidth=1, offset=offset)
+fill(p_mcg_pct_up, p_mcg_pct_dn, color=fill_band ? color.new(color.green, 92) : na, title="McGinley Percent Fill")
+
+// ── Plot: FRAMA Band ────────────────────────────────────
+p_frama_std_up = plot((show_frama and show_std) ? frama + std_w : na, title="FRAMA StdDev Upper", color=color.new(color.purple, 50), linewidth=1, offset=offset)
+p_frama_std_dn = plot((show_frama and show_std) ? frama - std_w : na, title="FRAMA StdDev Lower", color=color.new(color.purple, 50), linewidth=1, offset=offset)
+fill(p_frama_std_up, p_frama_std_dn, color=fill_band ? color.new(color.purple, 92) : na, title="FRAMA StdDev Fill")
+p_frama_atr_up = plot((show_frama and show_atr) ? frama + atr_w : na, title="FRAMA ATR Upper", color=color.new(color.purple, 50), linewidth=1, offset=offset)
+p_frama_atr_dn = plot((show_frama and show_atr) ? frama - atr_w : na, title="FRAMA ATR Lower", color=color.new(color.purple, 50), linewidth=1, offset=offset)
+fill(p_frama_atr_up, p_frama_atr_dn, color=fill_band ? color.new(color.purple, 92) : na, title="FRAMA ATR Fill")
+p_frama_pct_up = plot((show_frama and show_pct) ? frama + frama * pct / 100.0 : na, title="FRAMA Percent Upper", color=color.new(color.purple, 50), linewidth=1, offset=offset)
+p_frama_pct_dn = plot((show_frama and show_pct) ? frama - frama * pct / 100.0 : na, title="FRAMA Percent Lower", color=color.new(color.purple, 50), linewidth=1, offset=offset)
+fill(p_frama_pct_up, p_frama_pct_dn, color=fill_band ? color.new(color.purple, 92) : na, title="FRAMA Percent Fill")
+
+// ── Plot: JMA Band ──────────────────────────────────────
+p_jma_std_up = plot((show_jma and show_std) ? jma + std_w : na, title="JMA StdDev Upper", color=color.new(color.red, 50), linewidth=1, offset=offset)
+p_jma_std_dn = plot((show_jma and show_std) ? jma - std_w : na, title="JMA StdDev Lower", color=color.new(color.red, 50), linewidth=1, offset=offset)
+fill(p_jma_std_up, p_jma_std_dn, color=fill_band ? color.new(color.red, 92) : na, title="JMA StdDev Fill")
+p_jma_atr_up = plot((show_jma and show_atr) ? jma + atr_w : na, title="JMA ATR Upper", color=color.new(color.red, 50), linewidth=1, offset=offset)
+p_jma_atr_dn = plot((show_jma and show_atr) ? jma - atr_w : na, title="JMA ATR Lower", color=color.new(color.red, 50), linewidth=1, offset=offset)
+fill(p_jma_atr_up, p_jma_atr_dn, color=fill_band ? color.new(color.red, 92) : na, title="JMA ATR Fill")
+p_jma_pct_up = plot((show_jma and show_pct) ? jma + jma * pct / 100.0 : na, title="JMA Percent Upper", color=color.new(color.red, 50), linewidth=1, offset=offset)
+p_jma_pct_dn = plot((show_jma and show_pct) ? jma - jma * pct / 100.0 : na, title="JMA Percent Lower", color=color.new(color.red, 50), linewidth=1, offset=offset)
+fill(p_jma_pct_up, p_jma_pct_dn, color=fill_band ? color.new(color.red, 92) : na, title="JMA Percent Fill")

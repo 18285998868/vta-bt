@@ -1,0 +1,20 @@
+//@version=6
+// ER 效率比 (Efficiency Ratio, Kaufman)
+// ER = |N期净变动| / N期内绝对变动之和, 范围 0~1
+// 越接近1说明趋势越强, 越接近0说明震荡越明显
+
+indicator("ER Efficiency Ratio", overlay=false)
+
+er_len = input.int(10, "ER Length", minval=1)
+src    = input.source(close, "Source")
+
+change = math.abs(src - src[er_len])
+volatility = math.sum(math.abs(src - src[1]), er_len)
+er_val = volatility == 0 ? 0 : change / volatility
+
+// ── Plot ───────────────────────────────────────────────
+plot(er_val, "ER", color.blue, 2)
+h08 = hline(0.8, "0.8", color.gray)
+h02 = hline(0.2, "0.2", color.gray)
+fill(h08, hline(1, "1", color.gray), color.new(color.green, 85), title="Strong Trend >0.8")
+fill(h02, hline(0, "0", color.gray), color.new(color.red, 85), title="Ranging <0.2")

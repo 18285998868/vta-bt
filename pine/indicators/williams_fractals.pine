@@ -1,0 +1,44 @@
+//@version=6
+// Williams Fractals 分型: 中间K线高点高于左右 = 上分型(阻力), 低点低于左右 = 下分型(支撑)
+// 确认后标记回移到中间K线, 有 rightBars 根延迟
+
+indicator("Williams Fractals", overlay=true)
+
+// ── Inputs ─────────────────────────────────────────────
+leftBars  = input.int(10, "Left Bars", minval=1)
+rightBars = input.int(2, "Right Bars", minval=1)
+showUp    = input.bool(true, "Show Up Fractals")
+showDown  = input.bool(true, "Show Down Fractals")
+
+// ── Fractals ───────────────────────────────────────────
+bool upFractal = bar_index > leftBars + rightBars
+if upFractal
+    for i = 1 to leftBars
+        if high[rightBars] <= high[rightBars + i]
+            upFractal := false
+            break
+    if upFractal
+        for i = 0 to rightBars - 1
+            if high[rightBars] <= high[i]
+                upFractal := false
+                break
+
+bool downFractal = bar_index > leftBars + rightBars
+if downFractal
+    for i = 1 to leftBars
+        if low[rightBars] >= low[rightBars + i]
+            downFractal := false
+            break
+    if downFractal
+        for i = 0 to rightBars - 1
+            if low[rightBars] >= low[i]
+                downFractal := false
+                break
+
+// ── Plot ───────────────────────────────────────────────
+plotshape(showUp and upFractal, "Up Fractal", style=shape.triangledown, location=location.abovebar, color=color.red, offset=-rightBars, size=size.small)
+plotshape(showDown and downFractal, "Down Fractal", style=shape.triangleup, location=location.belowbar, color=color.green, offset=-rightBars, size=size.small)
+
+// ── Alerts ─────────────────────────────────────────────
+alertcondition(upFractal, "Up Fractal", "Up Fractal formed at {{high}}")
+alertcondition(downFractal, "Down Fractal", "Down Fractal formed at {{low}}")

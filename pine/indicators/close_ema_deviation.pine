@@ -1,0 +1,17 @@
+//@version=6
+// close 与 EMA 的偏离度: (close - ema) / ema * 100 (%)
+// 正值: close在EMA上方, 负值: close在EMA下方
+
+indicator("Close-EMA Deviation", overlay=false)
+
+ema_len = input.int(20, "EMA Length", minval=1)
+src     = input.source(close, "Source")
+
+ema_val = ta.ema(src, ema_len)
+dev = (src - ema_val) / ema_val * 100
+
+// ── Plot ───────────────────────────────────────────────
+p_dev = plot(dev, "Deviation %", color.blue, 2)
+p_zero = plot(0, "Zero", display=display.none)
+fill_color = dev > 0 ? color.new(color.green, 80) : color.new(color.red, 80)
+fill(p_zero, p_dev, color=fill_color)

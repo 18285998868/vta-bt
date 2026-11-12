@@ -1,0 +1,84 @@
+//@version=6
+// =============================================================================
+// Donchian 通道突破 · 多空双向
+// -----------------------------------------------------------------------------
+// 入场:
+//   多: close 上穿 入场通道上轨 = highest(high, entryLen)[1]
+//   空: close 下穿 入场通道下轨 = lowest(low, entryLen)[1]
+// 出场:
+//   多: close 下穿 出场通道下轨 = lowest(low, exitLen)[1]
+//   空: close 上穿 出场通道上轨 = highest(high, exitLen)[1]
+//   ATR 止损(可选): 入场收盘价 ∓ k * ATR(stopLen), 固定初始止损
+// 执行:
+//   信号按收盘价判定, 订单下一根开盘成交; ATR 止损为 stop 单, bar 内触发
+// =============================================================================
+
+// ══════════ 成本：只能写常量 ══════════
+const float FEE_PCT = 0.04   // 单边手续费 %
+
+strategy("Donchian Breakout",
+         shorttitle="DC Breakout",
+         overlay=true,
+         pyramiding=0,
+         default_qty_type=strategy.percent_of_equity,
+         default_qty_value=100,
+         initial_capital=10000,
+         commission_type=strategy.commission.percent,
+         commission_value=FEE_PCT)
+
+// ── Inputs ─────────────────────────────────────────────────────────────
+entryLen = input.int(20, "Entry Channel Length", minval=2, group="Channel")
+exitLen  = input.int(10, "Exit Channel Length", minval=2, group="Channel")
+dirMode  = input.string("Both", "Direction", options=["Both", "Long only", "Short only"], group="Channel")
+useStop  = input.bool(true, "Enable ATR Stop", group="ATR Stop")
+stopLen  = input.int(14, "ATR Length", minval=1, group="ATR Stop")
+stopMult = input.float(2.0, "ATR Multiplier", minval=0.1, step=0.1, group="ATR Stop")
+
+// ── Channels (shift 1: 当前K线不参与轨道计算) ───────────────────────────
+entryUpperRaw = ta.highest(high, entryLen)
+entryLowerRaw = ta.lowest(low, entryLen)
+exitUpperRaw  = ta.highest(high, exitLen)
+exitLowerRaw  = ta.lowest(low, exitLen)
+
+entryUpper = entryUpperRaw[1]
+entryLower = entryLowerRaw[1]
+exitUpper  = exitUpperRaw[1]
+exitLower  = exitLowerRaw[1]
+
+// ── ATR ────────────────────────────────────────────────────────────────
+atrStop = ta.atr(stopLen)
+
+// ── Signals ────────────────────────────────────────────────────────────
+canLong   = dirMode != "Short only"
+canShort  = dirMode != "Long only"
+
+longEntry  = canLong  and ta.crossover(close, entryUpper)
+shortEntry = canShort and ta.crossunder(close, entryLower)
+
+longExitCh  = ta.crossunder(close, exitLower)
+shortExitCh = ta.crossover(close, exitUpper)
+
+// ── Orders ─────────────────────────────────────────────────────────────
+// 反向通道出场: 信号收盘确认, 下一根开盘成交
+if strategy.position_size > 0 and longExitCh
+    strategy.close("Long", comment="反向通道")
+
+if strategy.position_size < 0 and shortExitCh
+    strategy.close("Short", comment="反向通道")
+
+// 入场: 空仓才开新仓
+if longEntry and strategy.position_size == 0
+    strategy.entry("Long", strategy.long, comment="通道突破")
+    if useStop
+        strategy.exit("Long Stop", from_entry="Long", stop=close - stopMult * atrStop, comment="ATR止损")
+
+if shortEntry and strategy.position_size == 0
+    strategy.entry("Short", strategy.short, comment="通道突破")
+    if useStop
+        strategy.exit("Short Stop", from_entry="Short", stop=close + stopMult * atrStop, comment="ATR止损")
+
+// ── Visualization ──────────────────────────────────────────────────────
+plot(entryUpper, "Entry Upper", color.teal, 1)
+plot(entryLower, "Entry Lower", color.maroon, 1)
+plot(exitUpper, "Exit Upper", color.new(color.teal, 60), 1)
+plot(exitLower, "Exit Lower", color.new(color.maroon, 60), 1)

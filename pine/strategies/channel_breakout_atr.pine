@@ -1,0 +1,119 @@
+//@version=6
+strategy("通道突破 + ATR波动过滤 + ATR止损", shorttitle="ChBrk-ATR", overlay=true,
+     pyramiding=0, initial_capital=10000,
+     default_qty_type=strategy.percent_of_equity, default_qty_value=100,
+     commission_type=strategy.commission.percent, commission_value=0.05)
+
+// =====================================================================
+// 输入参数
+// =====================================================================
+// --- 轨道 ---
+chType    = input.string("Donchian", "轨道类型", options=["Donchian", "Bollinger", "Keltner"], group="轨道",
+     tooltip="Donchian: N周期最高/最低价;Bollinger: SMA±倍数*标准差;Keltner: EMA±倍数*ATR")
+chLen     = input.int(20, "轨道周期 N", minval=2, group="轨道")
+bandMult  = input.float(2.0, "带宽倍数(仅Bollinger/Keltner)", minval=0.1, step=0.1, group="轨道")
+
+// --- 有效突破过滤: ATR(S1)/ATR(L1) > thr ---
+useFilter = input.bool(true, "启用波动过滤", group="有效突破过滤")
+atrS      = input.int(10, "S1: 短周期ATR", minval=1, group="有效突破过滤")
+atrL      = input.int(50, "L1: 长周期ATR", minval=2, group="有效突破过滤")
+thrAtr    = input.float(1.0, "thr(atr): ATR比值阈值", minval=0.0, step=0.05, group="有效突破过滤",
+     tooltip="短期ATR/长期ATR 大于该值,才认为是有效突破(波动放大)")
+freshOnly = input.bool(true, "仅首次突破触发入场", group="有效突破过滤",
+     tooltip="开启后,只有'上一根未突破、本根突破'才触发入场,避免止损后在持续突破中立即重复入场")
+
+// --- 止损线: close ± K*ATR(T1) ---
+atrT      = input.int(14, "T1: 止损ATR周期", minval=1, group="止损线")
+kStop     = input.float(3.0, "K: 止损ATR倍数", minval=0.1, step=0.1, group="止损线")
+stopMode  = input.string("Trailing", "止损线模式", options=["Trailing", "Fixed"], group="止损线",
+     tooltip="Trailing: 随收盘价只向有利方向移动(棘轮);Fixed: 入场信号收盘价±K*ATR,之后不动")
+
+// --- 其他 ---
+dirMode   = input.string("Both", "交易方向", options=["Both", "Long only", "Short only"], group="其他")
+
+// =====================================================================
+// 轨道计算(先在全局作用域算好三种,再按类型选择)
+// =====================================================================
+dcUp    = ta.highest(high, chLen)
+dcLo    = ta.lowest(low, chLen)
+bbBasis = ta.sma(close, chLen)
+bbDev   = bandMult * ta.stdev(close, chLen)
+kcBasis = ta.ema(close, chLen)
+kcRng   = bandMult * ta.atr(chLen)
+
+upperNow = chType == "Donchian" ? dcUp : chType == "Bollinger" ? bbBasis + bbDev : kcBasis + kcRng
+lowerNow = chType == "Donchian" ? dcLo : chType == "Bollinger" ? bbBasis - bbDev : kcBasis - kcRng
+
+// 使用上一根K线的轨道做突破判断,避免当前K线自己参与计算轨道
+upper = upperNow[1]
+lower = lowerNow[1]
+
+// =====================================================================
+// 突破与波动过滤
+// =====================================================================
+brkUp = close > upper
+brkDn = close < lower
+
+upTrig = brkUp and (not freshOnly or not brkUp[1])
+dnTrig = brkDn and (not freshOnly or not brkDn[1])
+
+atrShort = ta.atr(atrS)
+atrLong  = ta.atr(atrL)
+volRatio = atrLong > 0 ? atrShort / atrLong : na
+volOK    = not useFilter or (not na(volRatio) and volRatio > thrAtr)
+
+atrStop  = ta.atr(atrT)
+
+// =====================================================================
+// 状态与止损线
+// =====================================================================
+var float longStop  = na
+var float shortStop = na
+
+canLong  = dirMode != "Short only"
+canShort = dirMode != "Long only"
+
+// 出场条件(止损线用上一根K线收盘后确定的值)
+longStopHit  = strategy.position_size > 0 and not na(longStop) and close < longStop
+shortStopHit = strategy.position_size < 0 and not na(shortStop) and close > shortStop
+// 反向突破轨道出场,同样需要通过 ATR(S1)/ATR(L1) > thr 的有效性过滤
+longBrkExit  = strategy.position_size > 0 and brkDn and volOK
+shortBrkExit = strategy.position_size < 0 and brkUp and volOK
+
+// 入场条件
+longEntry  = canLong and upTrig and volOK and strategy.position_size <= 0
+shortEntry = canShort and dnTrig and volOK and strategy.position_size >= 0
+
+// =====================================================================
+// 下单(订单在下一根K线开盘成交)
+// =====================================================================
+if longStopHit or longBrkExit
+    strategy.close("Long", comment = longStopHit ? "ATR止损" : "反向突破轨道")
+
+if shortStopHit or shortBrkExit
+    strategy.close("Short", comment = shortStopHit ? "ATR止损" : "反向突破轨道")
+
+if longEntry
+    strategy.entry("Long", strategy.long)
+    longStop := close - kStop * atrStop
+
+if shortEntry
+    strategy.entry("Short", strategy.short)
+    shortStop := close + kStop * atrStop
+
+// 移动止损:只向有利方向收紧
+if stopMode == "Trailing"
+    if strategy.position_size > 0
+        newLongStop = close - kStop * atrStop
+        longStop := na(longStop) ? newLongStop : math.max(longStop, newLongStop)
+    if strategy.position_size < 0
+        newShortStop = close + kStop * atrStop
+        shortStop := na(shortStop) ? newShortStop : math.min(shortStop, newShortStop)
+
+// =====================================================================
+// 绘图
+// =====================================================================
+plot(upperNow, "上轨", color=color.new(color.teal, 0))
+plot(lowerNow, "下轨", color=color.new(color.orange, 0))
+plot(strategy.position_size > 0 ? longStop : na, "多头止损线", color=color.red, style=plot.style_linebr)
+plot(strategy.position_size < 0 ? shortStop : na, "空头止损线", color=color.red, style=plot.style_linebr)

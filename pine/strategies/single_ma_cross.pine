@@ -1,0 +1,376 @@
+//@version=6
+// =============================================================================
+// 单均线穿越策略 · 多空可切换
+// -----------------------------------------------------------------------------
+// 信号:
+//   多: src 上穿 MA → 平空并开多
+//   空: src 下穿 MA → 平多并开空
+//   方向可切换 Both / Long only / Short only
+// 出场:
+//   均线反向穿越平仓; 可选 ATR 固定初始止损(默认关闭)
+// 执行:
+//   收盘确认, 下一根开盘成交; ATR 止损为 stop 单, bar 内触发
+// =============================================================================
+
+// ══════════ 成本：只能写常量 ══════════
+const float FEE_PCT = 0.04   // 单边手续费 %
+
+strategy("Single MA Cross",
+         shorttitle="MA Cross",
+         overlay=true,
+         pyramiding=0,
+         default_qty_type=strategy.percent_of_equity,
+         default_qty_value=100,
+         initial_capital=10000,
+         commission_type=strategy.commission.percent,
+         commission_value=FEE_PCT)
+
+// ── Inputs ─────────────────────────────────────────────
+length  = input.int(20, "Length", minval=1, group="MA Settings")
+src     = input.source(close, "Source", group="MA Settings")
+method  = input.string("EMA", "Method", options=["SMA", "EMA", "WMA", "DEMA", "TEMA", "SMMA (RMA)", "VWMA", "HMA", "TMA", "TRIMA", "ZLEMA", "Wilders", "ALMA", "LinReg", "DMA", "EDMA", "EHMA", "FWMA", "PWMA", "SGMA", "SinWMA", "SSF", "SSF_ST", "SWMA", "Tilson", "ATMA"], group="MA Settings")
+// ── 扩展参数 (仅对应方法生效) ────────────────────────────
+length2 = input.int(20, "ATMA Down Length", minval=1, group="Advanced")
+vfactor = input.float(0.7, "Tilson Volume Factor", minval=0.0, maxval=1.0, group="Advanced")
+poles   = input.int(2, "SSF_ST Poles (2/3)", minval=2, maxval=3, group="Advanced")
+// ── 交易设置 ────────────────────────────────────────────
+dirMode  = input.string("Both", "Direction", options=["Both", "Long only", "Short only"], group="Trade")
+useStop  = input.bool(false, "Enable ATR Stop", group="ATR Stop")
+stopLen  = input.int(14, "ATR Length", minval=1, group="ATR Stop")
+stopMult = input.float(2.0, "ATR Multiplier", minval=0.1, step=0.1, group="ATR Stop")
+
+// ── 基础helper ───────────────────────────────────────────
+f_wma(_src, _len) =>
+    num = 0.0
+    den = 0.0
+    for i = 0 to _len - 1
+        w = _len - i
+        num += nz(_src[i]) * w
+        den += w
+    num / den
+
+f_rma(_src, _len) =>
+    var float r = na
+    if na(r)
+        r := ta.sma(_src, _len)
+    else
+        r := (r * (_len - 1) + _src) / _len
+    r
+
+// ── DEMA/TEMA/ZLEMA ──────────────────────────────────────
+f_dema(_src, _len) =>
+    e1 = ta.ema(_src, _len)
+    e2 = ta.ema(e1, _len)
+    2 * e1 - e2
+
+f_tema(_src, _len) =>
+    e1 = ta.ema(_src, _len)
+    e2 = ta.ema(e1, _len)
+    e3 = ta.ema(e2, _len)
+    3 * e1 - 3 * e2 + e3
+
+f_zlema(_src, _len) =>
+    lag = int((_len - 1) / 2)
+    ta.ema(_src + (_src - _src[lag]), _len)
+
+// ── TMA/TRIMA ────────────────────────────────────────────
+f_tma(_src, _len) =>
+    ta.sma(ta.sma(_src, _len), _len)
+
+f_trima(_src, _len) =>
+    ta.sma(ta.sma(ta.sma(_src, _len), _len), _len)
+
+// ── ATMA: SMA(up)/SMA(down)加权 ──────────────────────────
+f_atma(_src, _up, _down) =>
+    su = ta.sma(_src, _up)
+    sd = ta.sma(_src, _down)
+    (su * _up + sd * _down) / (_up + _down)
+
+// ── EHMA: Hann窗加权 ─────────────────────────────────────
+f_ehma(_src, _len) =>
+    num = 0.0
+    for k = 0 to _len - 1
+        w = 1.0 - math.cos(2.0 * math.pi * (k + 1) / (_len + 1))
+        num += nz(_src[_len - 1 - k]) * w
+    num / (_len + 1)
+
+// ── FWMA: Fibonacci权重 ──────────────────────────────────
+f_fwma(_src, _len) =>
+    fa = 1.0
+    fb = 1.0
+    num = 0.0
+    den = 0.0
+    for k = 0 to _len - 1
+        w = k == 0 ? 1.0 : fb
+        num += nz(_src[_len - 1 - k]) * w
+        den += w
+        fn = fa + fb
+        fa := fb
+        fb := fn
+    num / den
+
+// ── PWMA: Pascal(二项式)权重 ─────────────────────────────
+f_pwma(_src, _len) =>
+    c = 1.0
+    num = 0.0
+    den = 0.0
+    n = _len - 1
+    for k = 0 to _len - 1
+        if k > 0
+            c := c * (n - k + 1) / k
+        num += nz(_src[_len - 1 - k]) * c
+        den += c
+    num / den
+
+// ── SinWMA: 正弦权重 ─────────────────────────────────────
+f_sinwma(_src, _len) =>
+    num = 0.0
+    den = 0.0
+    for k = 0 to _len - 1
+        w = math.sin((k + 1) * math.pi / (_len + 1))
+        num += nz(_src[_len - 1 - k]) * w
+        den += w
+    num / den
+
+// ── SWMA: 对称三角权重 ───────────────────────────────────
+f_swma(_src, _len) =>
+    m = int((_len + 1) / 2)
+    num = 0.0
+    den = 0.0
+    for k = 0 to _len - 1
+        w = k < m ? k + 1.0 : (_len - k) * 1.0
+        num += nz(_src[_len - 1 - k]) * w
+        den += w
+    num / den
+
+// ── Tilson T3 ────────────────────────────────────────────
+f_t3(_src, _len, _vf) =>
+    e1 = ta.ema(_src, _len)
+    e2 = ta.ema(e1, _len)
+    e3 = ta.ema(e2, _len)
+    e4 = ta.ema(e3, _len)
+    e5 = ta.ema(e4, _len)
+    e6 = ta.ema(e5, _len)
+    c1 = -_vf * _vf * _vf
+    c2 = 3 * _vf * _vf + 3 * _vf * _vf * _vf
+    c3 = -6 * _vf * _vf - 3 * _vf - 3 * _vf * _vf * _vf
+    c4 = 1 + 3 * _vf + _vf * _vf * _vf + 3 * _vf * _vf
+    c1 * e6 + c2 * e5 + c3 * e4 + c4 * e3
+
+// ── SSF: Ehlers SuperSmoother 2极 ────────────────────────
+f_ssf(_src, _len) =>
+    a1 = math.exp(-1.414 * math.pi / _len)
+    b1 = 2.0 * a1 * math.cos(1.414 * math.pi / _len)
+    c2 = b1
+    c3 = -a1 * a1
+    c1 = 1.0 - c2 - c3
+    var float s = na
+    s := c1 * (_src + _src[1]) / 2 + c2 * nz(s[1]) + c3 * nz(s[2])
+    s
+
+// ── SSF_ST: 2/3极 (与ssf_st_indicator.pine一致) ──────────
+f_ssf_st(_src, _len, _poles) =>
+    var float val = na
+    var float p1 = na
+    var float p2 = na
+    var float p3 = na
+    var int cnt = 0
+    var float b1 = na
+    var float a2 = na
+    var float c2 = na
+    var float c3 = na
+    var float c4 = na
+    var float c1c = na
+    first = na(val)
+    if first
+        if _poles == 2
+            x = math.pi * math.sqrt(2.0) / _len
+            b1 := 2.0 * math.exp(-x) * math.cos(x)
+            a2 := -math.exp(-2.0 * x)
+        else
+            inv = 1.0 / _len
+            a = math.exp(-math.pi * inv)
+            b = 2.0 * a * math.cos(1.738 * math.pi * inv)
+            c = a * a
+            c4 := c * c
+            c3 := -c - b * c
+            c2 := c + b
+            c1c := 1.0 - c2 - c3 - c4
+        val := _src
+        p1 := _src
+        p2 := _src
+        p3 := _src
+        cnt := 1
+    else
+        cnt := cnt + 1
+        float out = na
+        if _poles == 2
+            if cnt < 2
+                out := _src
+                p1 := _src
+            else
+                out := (1.0 - b1 - a2) * _src + b1 * p1 + a2 * p2
+                p2 := p1
+                p1 := out
+        else
+            if cnt < 3
+                out := _src
+                p3 := p2
+                p2 := p1
+                p1 := _src
+            else
+                out := c1c * _src + c2 * p1 + c3 * p2 + c4 * p3
+                p3 := p2
+                p2 := p1
+                p1 := out
+        val := out
+    val
+
+// ── DMA (Jurik结构: Hull + 增益受限ECORR, ema=20/gain=50) ─
+f_dma(_src, _hl) =>
+    _el = 20
+    _gl = 50
+    alpha = 2.0 / (_el + 1)
+    oma = 1.0 - alpha
+    half = math.max(1, int(_hl / 2))
+    sq = math.max(1, int(math.round(math.sqrt(_hl))))
+    var float e0 = na
+    var float ec = na
+    e0 := na(e0[1]) ? ta.sma(_src, _el) : alpha * _src + oma * nz(e0[1])
+    e0v = nz(e0, _src)
+    ecPrev = nz(ec[1], e0v)
+    dx = _src - ecPrev
+    t = alpha * dx
+    base = alpha * e0v + oma * ecPrev
+    r = _src - base
+    g = 0.0
+    if t != 0
+        best = 10.0
+        bg = 0.0
+        for gi = 0 to _gl
+            gg = gi * 0.1
+            e = math.abs(r - t * gg)
+            if e < best
+                best := e
+                bg := gg
+        g := bg
+    ec := alpha * (e0v + g * dx) + oma * ecPrev
+    hull = ta.wma(2 * ta.wma(_src, half) - ta.wma(_src, _hl), sq)
+    (hull + ec) / 2
+
+// ── SGMA: Savitzky-Golay端点二次拟合 ─────────────────────
+f_sgma(_src, _len) =>
+    n = _len
+    sx = 0.0
+    sx2 = 0.0
+    sx3 = 0.0
+    sx4 = 0.0
+    sy = 0.0
+    sxy = 0.0
+    sx2y = 0.0
+    for k = 0 to n - 1
+        x = k * 1.0
+        y = nz(_src[n - 1 - k])
+        x2 = x * x
+        sx += x
+        sx2 += x2
+        sx3 += x2 * x
+        sx4 += x2 * x2
+        sy += y
+        sxy += x * y
+        sx2y += x2 * y
+    det = n * (sx2 * sx4 - sx3 * sx3) - sx * (sx * sx4 - sx3 * sx2) + sx2 * (sx * sx3 - sx2 * sx2)
+    xe = (n - 1) * 1.0
+    out = ta.sma(_src, n)
+    if det != 0
+        d0 = sy * (sx2 * sx4 - sx3 * sx3) - sx * (sxy * sx4 - sx3 * sx2y) + sx2 * (sxy * sx3 - sx2 * sx2y)
+        d1 = n * (sxy * sx4 - sx3 * sx2y) - sy * (sx * sx4 - sx3 * sx2) + sx2 * (sx * sx2y - sxy * sx2)
+        d2 = n * (sx2 * sx2y - sxy * sx3) - sx * (sx * sx2y - sxy * sx2) + sy * (sx * sx3 - sx2 * sx2)
+        out := d0 / det + d1 / det * xe + d2 / det * xe * xe
+    out
+
+// ── 方法分发 ─────────────────────────────────────────────
+float ma = na
+if method == "SMA"
+    ma := ta.sma(src, length)
+else if method == "EMA"
+    ma := ta.ema(src, length)
+else if method == "WMA"
+    ma := ta.wma(src, length)
+else if method == "DEMA"
+    ma := f_dema(src, length)
+else if method == "TEMA"
+    ma := f_tema(src, length)
+else if method == "SMMA (RMA)"
+    ma := ta.rma(src, length)
+else if method == "VWMA"
+    ma := ta.vwma(src, length)
+else if method == "HMA"
+    ma := ta.hma(src, length)
+else if method == "TMA"
+    ma := f_tma(src, length)
+else if method == "TRIMA"
+    ma := f_trima(src, length)
+else if method == "ZLEMA"
+    ma := f_zlema(src, length)
+else if method == "Wilders"
+    ma := ta.rma(src, length)
+else if method == "ALMA"
+    ma := ta.alma(src, length, 0.85, 6)
+else if method == "LinReg"
+    ma := ta.linreg(src, length, 0)
+else if method == "DMA"
+    ma := f_dma(src, length)
+else if method == "EDMA"
+    ma := ta.ema(src, length)
+else if method == "EHMA"
+    ma := f_ehma(src, length)
+else if method == "FWMA"
+    ma := f_fwma(src, length)
+else if method == "PWMA"
+    ma := f_pwma(src, length)
+else if method == "SGMA"
+    ma := f_sgma(src, length)
+else if method == "SinWMA"
+    ma := f_sinwma(src, length)
+else if method == "SSF"
+    ma := f_ssf(src, length)
+else if method == "SSF_ST"
+    ma := f_ssf_st(src, length, poles)
+else if method == "SWMA"
+    ma := f_swma(src, length)
+else if method == "Tilson"
+    ma := f_t3(src, length, vfactor)
+else if method == "ATMA"
+    ma := f_atma(src, length, length2)
+
+// ── Signals ────────────────────────────────────────────
+atrStop  = ta.atr(stopLen)
+canLong  = dirMode != "Short only"
+canShort = dirMode != "Long only"
+
+buy  = not na(ma) and ta.crossover(src, ma)
+sell = not na(ma) and ta.crossunder(src, ma)
+
+// ── Orders ─────────────────────────────────────────────
+if buy
+    if strategy.position_size < 0
+        strategy.close("Short", comment="Flip→Long")
+    if canLong
+        strategy.entry("Long", strategy.long, comment="Long")
+        if useStop
+            strategy.exit("Long Stop", from_entry="Long", stop=close - stopMult * atrStop, comment="ATR止损")
+
+if sell
+    if strategy.position_size > 0
+        strategy.close("Long", comment="Flip→Short")
+    if canShort
+        strategy.entry("Short", strategy.short, comment="Short")
+        if useStop
+            strategy.exit("Short Stop", from_entry="Short", stop=close + stopMult * atrStop, comment="ATR止损")
+
+// ── Visualization ──────────────────────────────────────
+plot(ma, title="MA", color=color.blue, linewidth=2)
+plot(src, title="Source", color=color.gray, linewidth=1)
+plotshape(buy,  style=shape.triangleup,   location=location.belowbar, color=color.green, size=size.small, title="Long Signal")
+plotshape(sell, style=shape.triangledown, location=location.abovebar, color=color.red,   size=size.small, title="Short Signal")

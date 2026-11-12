@@ -1,0 +1,119 @@
+//@version=6
+// =============================================================================
+// KAMA + ATR 收敛突破 · 多空双向
+// -----------------------------------------------------------------------------
+// 入场:
+//   1) 突破多: close[t] > upband[t], upband = KAMA + 2 * ATR(band_atr_len)
+//   2) 突破空: close[t] < dnband[t], dnband = KAMA - 2 * ATR(band_atr_len)
+//   3) ATR 收敛: ATR(3)[t-1] < ATR(5)[t-1] < ATR(7)[t-1]
+//      用 t-1 判定: 突破当根 ATR 必然扩张, 会破坏收敛条件
+//   4) 涨幅过滤: |close-open|[t] / mean(|close-open|[t-1..t-N]) <= max_gain_ratio
+//      分子为当前 K 线实体大小, 分母为过去 N 根平均实体大小(不含当前根)
+//      排除单根实体相对近期平均水平异常放大的入场 —— 利润空间小但波动风险高
+// 出场:
+//   多: 持仓期间最高典型价 hlc3 - 4 * ATR(10)
+//   空: 持仓期间最低典型价 hlc3 + 4 * ATR(10)
+// 执行:
+//   信号按收盘价判定, 订单下一根开盘成交; 止损为 stop 单, bar 内触发
+// =============================================================================
+
+// ══════════ 成本：只能写常量，改这两行 ══════════
+//   Pine 编译器要求 commission_value 为 const float，input() 不被接受
+const float FEE_PCT = 0.04   // 单边手续费 %
+
+strategy("KAMA + ATR Breakout",
+         shorttitle="KAMA-ATR",
+         overlay=true,
+         pyramiding=0,
+         default_qty_type=strategy.percent_of_equity,
+         default_qty_value=100,
+         initial_capital=10000,
+         commission_type=strategy.commission.percent,
+         commission_value=FEE_PCT)
+
+// ── Inputs ─────────────────────────────────────────────────────────────
+kama_len     = input.int(20, "KAMA Length", minval=1, group="Entry")
+band_atr_len = input.int(10, "Band ATR Length", minval=1, group="Entry")
+band_mult    = input.float(2.0, "Band ATR Multiplier", minval=0.1, step=0.1, group="Entry")
+atr_fast_len = input.int(3, "Contraction ATR Fast", minval=1, group="Entry")
+atr_mid_len  = input.int(5, "Contraction ATR Mid", minval=1, group="Entry")
+atr_slow_len = input.int(7, "Contraction ATR Slow", minval=1, group="Entry")
+use_gain_flt   = input.bool(true, "Enable Gain Filter", group="Entry")
+gain_len       = input.int(20, "Body Avg Lookback (bars)", minval=1, group="Entry")
+max_gain_ratio = input.float(3.0, "Max Body / Avg Body", minval=0.1, step=0.1, group="Entry")
+stop_atr_len   = input.int(10, "Stop ATR Length", minval=1, group="Exit")
+stop_mult      = input.float(4.0, "Stop ATR Multiplier", minval=0.1, step=0.1, group="Exit")
+
+// ── KAMA ───────────────────────────────────────────────────────────────
+f_kama(_src, _len) =>
+    change = math.abs(_src - _src[_len])
+    vol = math.sum(math.abs(_src - _src[1]), _len)
+    er = vol == 0 ? 0.0 : change / vol
+    fast = 2.0 / 3.0
+    slow = 2.0 / 31.0
+    sc = math.pow(er * (fast - slow) + slow, 2)
+    var float k = na
+    k := sc * _src + (1.0 - sc) * nz(k[1], _src)
+    k
+
+kama = f_kama(close, kama_len)
+
+// ── 上/下轨 & ATR 收敛 ─────────────────────────────────────────────────
+band_atr = ta.atr(band_atr_len)
+upband   = kama + band_mult * band_atr
+dnband   = kama - band_mult * band_atr
+
+atr_fast = ta.atr(atr_fast_len)
+atr_mid  = ta.atr(atr_mid_len)
+atr_slow = ta.atr(atr_slow_len)
+atr_stop = ta.atr(stop_atr_len)
+// t-1 时点: ATR(3) < ATR(5) < ATR(7) → 短周期波动低于长周期, 即收敛
+contraction = atr_fast[1] < atr_mid[1] and atr_mid[1] < atr_slow[1]
+
+// ── 涨幅过滤 ───────────────────────────────────────────────────────────
+// 当前 K 线实体 |close-open| / 过去 N 根平均实体, 分母不含当前根
+bar_body      = math.abs(close - open)
+avg_body      = ta.sma(bar_body, gain_len)
+avg_body_prev = avg_body[1]
+gain_ratio    = avg_body_prev > 0 ? bar_body / avg_body_prev : na
+gain_ok       = not use_gain_flt or (not na(gain_ratio) and gain_ratio <= max_gain_ratio)
+
+// ── 入场信号 ───────────────────────────────────────────────────────────
+longCond  = close > upband and contraction and gain_ok
+shortCond = close < dnband and contraction and gain_ok
+
+if longCond and strategy.position_size == 0
+    strategy.entry("Long", strategy.long, comment="KAMA突破")
+    // 入场信号当根先挂初始止损，成交后由下方移动止损逐根接管
+    strategy.exit("Long Exit", from_entry="Long", stop=hlc3 - stop_mult * atr_stop, comment="ATR移动止损")
+
+if shortCond and strategy.position_size == 0
+    strategy.entry("Short", strategy.short, comment="KAMA突破")
+    strategy.exit("Short Exit", from_entry="Short", stop=hlc3 + stop_mult * atr_stop, comment="ATR移动止损")
+
+// ── 移动止损: 多 = 最高 hlc3 - k*ATR, 空 = 最低 hlc3 + k*ATR ────────────
+var float max_tp = na
+var float min_tp = na
+
+if strategy.position_size > 0
+    max_tp := na(max_tp) ? hlc3 : math.max(max_tp, hlc3)
+    stop_price = max_tp - stop_mult * atr_stop
+    strategy.exit("Long Exit", from_entry="Long", stop=stop_price, comment="ATR移动止损")
+else
+    max_tp := na
+
+if strategy.position_size < 0
+    min_tp := na(min_tp) ? hlc3 : math.min(min_tp, hlc3)
+    stop_price_short = min_tp + stop_mult * atr_stop
+    strategy.exit("Short Exit", from_entry="Short", stop=stop_price_short, comment="ATR移动止损")
+else
+    min_tp := na
+
+// ── Visualization ──────────────────────────────────────────────────────
+plot(kama, "KAMA", color.blue, 2)
+plot(upband, "Up Band", color.teal, 1)
+plot(dnband, "Down Band", color.maroon, 1)
+plot(strategy.position_size > 0 and not na(max_tp) ? max_tp - stop_mult * atr_stop : na,
+     "Long Trail Stop", color.red, 1, style=plot.style_linebr)
+plot(strategy.position_size < 0 and not na(min_tp) ? min_tp + stop_mult * atr_stop : na,
+     "Short Trail Stop", color.red, 1, style=plot.style_linebr)

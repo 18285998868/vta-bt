@@ -1,0 +1,186 @@
+//@version=6
+// =============================================================================
+// 摆动点突破策略 · Swing Fractal Breakout (N/K)
+// -----------------------------------------------------------------------------
+// 摆动点定义（无未来函数，确认滞后 K 根）：
+//   存在 bar j, 使 high[j] = max( high[j-N .. j+K] )   → 摆动高点 SH
+//   存在 bar j, 使 low [j] = min( low [j-N .. j+K] )   → 摆动低点 SL
+//   仅在 bar (j+K) 收盘后该点才被确认（右侧 K 根 = 确认延迟）
+//   实现：ta.pivothigh(high, N, K) 在 bar i 返回 high[i-K]，当且仅当
+//         high[i-K] == max(high[i-K-N .. i])
+//
+// 信号规则：
+//   nH / nL            : 最近一次【已确认】的摆动高 / 摆动低点（覆盖式更新）
+//   close > nH         : 做多，初始止损 = 当时的 nL
+//   多头止损           : 跟随 nL 抬高（max 累积，只上移不下移）
+//   close < nL         : 平多并反手开空，初始止损 = 当时的 nH
+//   空头止损           : 跟随 nH 下降（min 累积，只下移不上移）
+//   close > nH (持空时): 平空并反手开多（对称规则，iRev 关闭时仅平仓）
+//
+// 执行说明：
+//   信号用【收盘价】判定，订单在【下一根开盘】成交（不做收盘价理想化成交）。
+//   止损为 stop 订单，在 bar 内按止损价成交。
+//   strategy.exit 每根无条件提交 → 止损单始终有一根挂在挂单簿上，
+//   不会像"条件性提交"那样在反手当根缺失保护。
+// =============================================================================
+
+// ══════════ 成本：只能写常量，改这两行 ══════════
+//   Pine 编译器要求 commission_value 为 const float、slippage 为 const int，
+//   input() 不被接受（CE10123）。若某版本支持运行时覆盖，可加 strategy.slippage()。
+const float FEE_PCT = 0.05   // 单边手续费 %
+const int   SLIP    = 2      // 滑点 tick
+
+strategy(
+     title           = "Swing Fractal Breakout (N/K)",
+     shorttitle      = "SwingN/K",
+     overlay         = true,
+     pyramiding      = 0,
+     initial_capital = 100000,
+     default_qty_type  = strategy.percent_of_equity,
+     default_qty_value = 100,
+     commission_type  = strategy.commission.percent,
+     commission_value = FEE_PCT,
+     slippage         = SLIP,
+     // v6 起 margin_long/short 默认由 0 变为 100（会做保证金检查、可能触发 margin call）。
+     // 显式写死为 100 = 接受 v6 默认语义；若想复现 v5 的"不检查"行为改成 0。
+     margin_long      = 100,
+     margin_short     = 100,
+     max_bars_back    = 5000,
+     calc_on_every_tick     = false,
+     process_orders_on_close = false)
+
+// ─────────────────────────────── 输入参数 ───────────────────────────────
+grpF  = "摆动点定义"
+iN    = input.int(10, "左侧 N 根 (left)", minval = 1, maxval = 200, group = grpF)
+iK    = input.int(5,  "右侧 K 根 (right)", minval = 1, maxval = 200, group = grpF,
+     tooltip = "右侧 K 根 = 摆动点的确认延迟，越大信号越稳但越滞后")
+
+grpR  = "风控"
+iSlip = input.float(0.0, "止损缓冲 (%)", minval = 0, maxval = 10, step = 0.1, group = grpR,
+     tooltip = "在 nL / nH 外侧额外留出的缓冲，0 = 止损严格贴摆动点")
+iRev  = input.bool(true, "突破/跌破摆动点直接反手", group = grpR,
+     tooltip = "关闭后：跌破 nL 只平多，不自动开空")
+iFilt = input.bool(false, "启用趋势过滤 (EMA)", group = grpR,
+     tooltip = "仅在 EMA 方向与开仓方向一致时允许开仓")
+iEmaN = input.int(200, "趋势过滤 EMA 周期", minval = 10, group = grpR)
+
+grpP  = "显示"
+iSw   = input.bool(true, "显示摆动点",     group = grpP)
+iLn   = input.bool(true, "显示 nH / nL 线", group = grpP)
+iTb   = input.bool(true, "显示状态面板",   group = grpP)
+
+// ─────────────────────── 摆动点（滞后 K 根确认，无未来函数） ───────────────────────
+ph = ta.pivothigh(high, iN, iK)   // 最新确认的摆动高点价格
+pl = ta.pivotlow(low,  iN, iK)   // 最新确认的摆动低点价格
+
+// ───────────────────────────────── 状态变量 ─────────────────────────────────
+var float nH     = na   // 最新确认的摆动高点
+var float nL     = na   // 最新确认的摆动低点
+var float stopL  = na   // 多头跟踪止损（只上移）
+var float stopS  = na   // 空头跟踪止损（只下移）
+var int   exitBar = na  // 最近一次"仅平仓"的 bar（iRev=false 时防同根重开）
+
+if not na(ph)
+    nH := ph
+if not na(pl)
+    nL := pl
+
+float eps = syminfo.mintick * 0.5      // 价格比较容差，避免 float 相等的运气成分
+float ema = ta.ema(close, iEmaN)
+
+// ───────────────────────────────── 开平仓逻辑 ─────────────────────────────────
+bool ready    = not na(nH) and not na(nL)
+bool canLong  = strategy.position_size <= 0   // 空仓或持空
+bool canShort = strategy.position_size >= 0   // 空仓或持多
+
+// 平仓条件（无论是否反手都判定）
+bool exitLong  = strategy.position_size >  0 and ready and close < nL - eps
+bool exitShort = strategy.position_size <  0 and ready and close > nH + eps
+
+bool enterLong  = canLong  and ready and close > nH + eps and (iRev or bar_index != exitBar)
+bool enterShort = canShort and ready and close < nL - eps and (iRev or bar_index != exitBar)
+
+// 趋势过滤
+if iFilt
+    enterLong  := enterLong  and close > ema
+    enterShort := enterShort and close < ema
+
+// ── 反手 / 同向进场 ──
+if enterLong
+    stopL := nL                                   // 入场时止损重置为当前摆动低点 (L)
+    strategy.entry("Long", strategy.long,  comment = "突破 nH 做多")
+
+if enterShort
+    stopS := nH                                   // 入场时止损重置为当前摆动高点 (H)
+    strategy.entry("Short", strategy.short, comment = "跌破 nL 做空")
+
+// ── 仅平仓模式 ──
+if not iRev
+    if exitLong
+        strategy.close("Long",  comment = "跌破 nL 平多")
+        exitBar := bar_index
+    if exitShort
+        strategy.close("Short", comment = "突破 nH 平空")
+        exitBar := bar_index
+
+// ── 跟踪止损：跟随 nL 抬高 / 跟随 nH 下降 ──
+if strategy.position_size > 0 and not na(nL)
+    stopL := math.max(stopL, nL)
+if strategy.position_size < 0 and not na(nH)
+    stopS := math.min(stopS, nH)
+
+float bufL = stopL * iSlip / 100.0
+float bufS = stopS * iSlip / 100.0
+
+// 每根无条件提交：挂单簿上始终有一根 stop 单，反手当根不掉保护
+strategy.exit("Exit Long",  "Long",  stop = not na(stopL) ? stopL + bufL : na,
+     comment_loss   = "跟踪止损", comment_profit = "止损离场")
+strategy.exit("Exit Short", "Short", stop = not na(stopS) ? stopS - bufS : na,
+     comment_loss   = "跟踪止损", comment_profit = "止损离场")
+
+// ───────────────────────────────── 绘图 ─────────────────────────────────
+plot(iLn ? nH : na, "nH", color.new(color.red,  30), linewidth = 2)
+plot(iLn ? nL : na, "nL", color.new(color.lime, 30), linewidth = 2)
+plot(iLn ? stopL : na, "多单止损", color.new(color.orange, 40), style = plot.style_stepline)
+plot(iLn ? stopS : na, "空单止损", color.new(color.orange, 40), style = plot.style_stepline_diamond)
+
+// 注意：plotshape(location.absolute) 的锚点是"前一个 plot 语句"
+//       → 必须交错写 pH/SH-pShape/pl/SL-pShape，否则两个点都会锚到同一个 plot
+pH = plot(iSw ? ph : na, "SH", color.new(color.red, 100))
+plotshape(iSw and not na(ph), "SH 点", shape.triangledown, location.absolute,
+     color.new(color.red, 40), size = size.tiny)
+pL = plot(iSw ? pl : na, "SL", color.new(color.lime, 100))
+plotshape(iSw and not na(pl), "SL 点", shape.triangleup, location.absolute,
+     color.new(color.lime, 40), size = size.tiny)
+
+bgcolor(strategy.position_size > 0 ? color.new(color.green, 92) :
+       strategy.position_size < 0 ? color.new(color.red, 92) : na)
+
+// ───────────────────────────────── 状态面板 ─────────────────────────────────
+// 函数必须声明在【全局作用域】，放进 if 块会报 CE10156
+fTf(_v)      => str.tostring(_v, "#.##")
+fRow(_tb, _r, _k, _v) =>
+    table.cell(_tb, 0, _r, _k, text_color = color.gray,  text_size = size.small)
+    table.cell(_tb, 1, _r, _v, text_color = color.white, text_size = size.small)
+
+var table tb = table.new(position.top_right, 2, 7, border_width = 1)
+if iTb and barstate.islast
+    table.cell(tb, 0, 0, "Swing N/K", text_color = color.white, text_size = size.small, bgcolor = color.gray)
+    table.cell(tb, 1, 0, "",          bgcolor = color.gray)
+    // Pine 不做 int + string 的隐式转换，必须显式 str.tostring（否则 CE10123）
+    fRow(tb, 1, "参数 N / K", str.tostring(iN) + " / " + str.tostring(iK))
+    fRow(tb, 2, "nH / nL",    (na(nH) ? "—" : fTf(nH)) + "  /  " + (na(nL) ? "—" : fTf(nL)))
+    fRow(tb, 3, "持仓",       strategy.position_size > 0 ? "多 " + fTf(strategy.position_size) :
+                           strategy.position_size < 0 ? "空 " + fTf(strategy.position_size) : "空仓")
+    fRow(tb, 4, "当前止损",   strategy.position_size > 0 ? (na(stopL) ? "—" : fTf(stopL)) :
+                           strategy.position_size < 0 ? (na(stopS) ? "—" : fTf(stopS)) : "—")
+    // strategy.closedtrades.profit(trade_num) 必须传索引，没有无参重载；
+    // 累计净盈亏用裸变量 strategy.netprofit，笔数用 strategy.closedtrades。
+    fRow(tb, 5, "净收益",     str.format("{0, number, #.##}  ({1} 笔)", strategy.netprofit, strategy.closedtrades))
+    fRow(tb, 6, "回撤",       str.format("{0, number, #.##}%", strategy.max_drawdown))
+
+// ───────────────────────────────── 预警 ─────────────────────────────────
+alertcondition(enterLong,  "做多",     "SwingN/K：收盘突破 nH 做多，止损 {0,nL}")
+alertcondition(enterShort, "做空",     "SwingN/K：收盘跌破 nL 做空，止损 {0,nH}")
+alertcondition(exitLong,   "多单离场", "SwingN/K：收盘跌破 nL，多单离场")
+alertcondition(exitShort,  "空单离场", "SwingN/K：收盘突破 nH，空单离场")

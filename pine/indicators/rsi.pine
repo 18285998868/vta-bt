@@ -1,0 +1,21 @@
+//@version=6
+// RSI 指标: 0-30 绿色区域, 70-100 红色区域
+
+indicator("RSI", overlay=false)
+
+rsi_len = input.int(14, "RSI Length", minval=1)
+src     = input.source(close, "Source")
+
+rsi_val = ta.rsi(src, rsi_len)
+
+// ── Plot ───────────────────────────────────────────────
+plot(rsi_val, "RSI", color.purple, 2)
+
+// ── 超买区 70-100 红色, 超卖区 0-30 绿色 ──────────────
+h70 = hline(70, "70", color.gray)
+h30 = hline(30, "30", color.gray)
+h100 = hline(100, "100", color.gray)
+h0 = hline(0, "0", color.gray)
+fill(h70, h100, color.new(color.red, 80), title="Overbought 70-100")
+fill(h0, h30, color.new(color.green, 80), title="Oversold 0-30")
+fill(h30, h70, color.new(color.blue, 95), title="Neutral 30-70")
