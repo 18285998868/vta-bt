@@ -115,7 +115,7 @@ pub(super) fn fill_at(
 /// 与 [`Trade`] 分离的原因: `simulate()`(非 detailed 路径)只需要标量来算统计量,
 /// 根本不需要 `Trade`。原先两者被绑在一起, 导致每个参数求值都要为每笔交易
 /// 构造一个 `Trade` —— 其中 `exit_reason: String` 是**堆分配**。参数网格是串行
-/// 外循环(策略层并行会 OOM, 见 README), 这笔开销直接乘以总交易笔数。
+/// 外循环(策略层并行会 OOM, 见 `docs/invariants.md`), 这笔开销直接乘以总交易笔数。
 #[derive(Debug, Clone, Copy)]
 pub(super) struct CloseOutcome {
     /// 现金变动(定点十进制)。

@@ -131,7 +131,7 @@ impl SummaryMetrics {
 /// 平滑, 入场时取**上一根已收盘 bar** 的 ATR(收盘成交取入场 bar 的 ATR),
 /// 避免用入场后才走完的行情计算初始止损。
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 /// 一笔已平仓交易。仅 `--detail` 路径产出(非详细路径只累计标量统计)。
 pub struct Trade {
     /// 开仓 bar 的时间戳(ms)。
@@ -196,7 +196,7 @@ impl ExitReason {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 /// `--detail` 路径的一次求值结果。
 pub struct SimResult {
     /// 全部指标(与 [`simulate`](super::simulate) 逐位一致)。

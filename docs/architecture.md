@@ -21,7 +21,7 @@ src/
     strategy.rs        # StrategyConfig 与参数网格
     data.rs / backtest.rs / output.rs
   engine/              # 回测引擎
-    mod.rs             # simulate 系列公开入口
+    mod.rs             # simulate_ohlcv / simulate_ohlcv_detailed + 兼容包装
     exec.rs            # ExecConfig / Side
     stops.rs           # StopConfig / ATR / 保本止损
     sizing.rs          # SizingConfig / 开仓数量
@@ -102,6 +102,17 @@ detail 模式 -> write_detail_index(detail/manifest.toml)                # 只�
 - `overwrite = false` 且可读即跳过；`detail` 模式还要求侧车 `{stem}.detail.toml` 及全部产物存在、大小/combo 元数据一致，否则重算该组合。
 - 未命中则按 `DETAIL_MEM_BUDGET` 估算分批，批内 `(0..n).into_par_iter` 生成信号 + 模拟一波完成。
 - 产出集开关进指纹的理由见 `./invariants.md` 第 7 条。
+
+### 引擎入口
+
+主入口只有两个：
+
+- `simulate_ohlcv(Ohlcv, signals, &SimOptions) -> SummaryMetrics`
+- `simulate_ohlcv_detailed(time, Ohlcv, signals, &SimOptions) -> SimResult`
+
+`Ohlcv` 统一为 `open/high/low/close` 顺序（`Ohlcv::close_only` 用于纯收盘价策略），
+`SimOptions` 打包资金、年化、执行口径、止损、仓位与策略止损线。旧 `simulate_*`
+签名保留为薄包装，由等价测试锁定逐位一致。
 
 ### 合并
 

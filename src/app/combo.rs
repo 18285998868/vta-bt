@@ -71,8 +71,8 @@ impl ComboCtx {
 
     /// 构造一个**不可计算**档位的报告行。
     ///
-    /// 与正常行共用 [`Self::run_row`] 这**唯一**构造点(见 README「关键设计
-    /// 约束」第 11 条)—— 区别只在 `status` 与 `metrics`:
+    /// 与正常行共用 [`Self::run_row`] 这**唯一**构造点(见 `docs/invariants.md`
+    /// 第 11 条)—— 区别只在 `status` 与 `metrics`:
     /// - `status = RunStatus::Invalid`: 明确告知"这一档**没算出来**",
     ///   而不是"跑了但没信号";
     /// - `metrics` 除 `final_equity` 与执行口径三列外全零, 但 `final_equity = balance`
@@ -355,19 +355,23 @@ pub(super) fn run_combo(
                             if let Some(lines) = &stop_lines {
                                 lines.validate_len(signals.len())?;
                             }
-                            let sim = crate::engine::simulate_detailed_ohlc_with_stops_and_sizing(
+                            let sim = crate::engine::simulate_ohlcv_detailed(
                                 cols.time(),
-                                cols.high(),
-                                cols.low(),
-                                cols.close(),
-                                cols.open(),
+                                crate::engine::Ohlcv::new(
+                                    cols.open(),
+                                    cols.high(),
+                                    cols.low(),
+                                    cols.close(),
+                                ),
                                 &signals,
-                                stop_lines.as_ref(),
-                                ctx.balance,
-                                bpy,
-                                &ctx.exec,
-                                stop,
-                                &job.sizing,
+                                &crate::engine::SimOptions {
+                                    initial_cash: ctx.balance,
+                                    bars_per_year: bpy,
+                                    exec: &ctx.exec,
+                                    risk: stop,
+                                    sizing: &job.sizing,
+                                    strategy_stops: stop_lines.as_ref(),
+                                },
                             )?;
                             let status = RunStatus::classify(&signals, &sim.summary);
                             Ok((params, Some(sim), status))
@@ -513,18 +517,22 @@ pub(super) fn run_combo(
                             if let Some(lines) = &stop_lines {
                                 lines.validate_len(signals.len())?;
                             }
-                            let metrics = crate::engine::simulate_ohlc_with_stops_and_sizing(
-                                cols.high(),
-                                cols.low(),
-                                cols.close(),
-                                cols.open(),
+                            let metrics = crate::engine::simulate_ohlcv(
+                                crate::engine::Ohlcv::new(
+                                    cols.open(),
+                                    cols.high(),
+                                    cols.low(),
+                                    cols.close(),
+                                ),
                                 &signals,
-                                stop_lines.as_ref(),
-                                ctx.balance,
-                                bpy,
-                                &ctx.exec,
-                                stop,
-                                &job.sizing,
+                                &crate::engine::SimOptions {
+                                    initial_cash: ctx.balance,
+                                    bars_per_year: bpy,
+                                    exec: &ctx.exec,
+                                    risk: stop,
+                                    sizing: &job.sizing,
+                                    strategy_stops: stop_lines.as_ref(),
+                                },
                             )?;
                             let status = RunStatus::classify(&signals, &metrics);
                             Ok(ctx.run_row(

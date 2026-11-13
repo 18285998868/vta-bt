@@ -2450,3 +2450,109 @@ fn exit_reason_values_are_closed_and_wrong() {
         );
     }
 }
+
+/// 新 `Ohlcv` / `SimOptions` 入口与旧签名逐位等价。
+///
+/// 旧签名保留为兼容包装层; 本测试钉住两者在「止损 + ATR 仓位 + 策略止损线」
+/// 组合下产出完全相同的指标、交易与曲线。
+#[test]
+fn ohlcv_api_matches_legacy_signatures() {
+    let n = 120;
+    let close = make_prices(n);
+    let open: Vec<f64> = close.iter().map(|c| c - 0.4).collect();
+    let high: Vec<f64> = close.iter().map(|c| c + 1.2).collect();
+    let low: Vec<f64> = close.iter().map(|c| c - 1.2).collect();
+    let time: Vec<i64> = (0..n as i64).map(|i| i * 60_000).collect();
+
+    let mut signals = vec![Signal::Hold; n];
+    signals[4] = Signal::Buy;
+    signals[40] = Signal::Close;
+    signals[55] = Signal::Sell;
+    signals[95] = Signal::ExitShort;
+
+    let exec = ExecConfig::try_from_bps_fill(2, 3.0, 1.5, false).expect("费率/滑点合法");
+    let risk = StopConfig {
+        stop_loss_pct: Some(2.5),
+        trailing_stop_pct: Some(4.0),
+        ..StopConfig::default()
+    };
+    let sizing = SizingConfig::Atr {
+        risk_pct: 1.0,
+        period: 14,
+        mult: 2.0,
+        max_position_pct: 50.0,
+        fallback_fraction_pct: 10.0,
+    };
+    let mut long_line = vec![f64::NAN; n];
+    long_line[33] = low[33];
+    let lines = StopLines {
+        long: Some(long_line),
+        short: None,
+    };
+    let cash = crate::money::Amount::from_i64(10_000);
+    let opts = SimOptions {
+        initial_cash: cash,
+        bars_per_year: 252.0,
+        exec: &exec,
+        risk: &risk,
+        sizing: &sizing,
+        strategy_stops: Some(&lines),
+    };
+
+    let new = simulate_ohlcv(Ohlcv::new(&open, &high, &low, &close), &signals, &opts)
+        .expect("新入口必须成功");
+    let old = simulate_ohlc_with_stops_and_sizing(
+        &high,
+        &low,
+        &close,
+        &open,
+        &signals,
+        Some(&lines),
+        cash,
+        252.0,
+        &exec,
+        &risk,
+        &sizing,
+    )
+    .expect("旧入口必须成功");
+    assert_eq!(new, old);
+
+    let new_detailed = simulate_ohlcv_detailed(
+        &time,
+        Ohlcv::new(&open, &high, &low, &close),
+        &signals,
+        &opts,
+    )
+    .expect("新入口必须成功");
+    let old_detailed = simulate_detailed_ohlc_with_stops_and_sizing(
+        &time,
+        &high,
+        &low,
+        &close,
+        &open,
+        &signals,
+        Some(&lines),
+        cash,
+        252.0,
+        &exec,
+        &risk,
+        &sizing,
+    )
+    .expect("旧入口必须成功");
+    assert_eq!(new_detailed, old_detailed);
+    assert!(
+        !new_detailed.trades.is_empty(),
+        "等价测试必须真的产生交易, 否则没有覆盖成交路径"
+    );
+
+    // close-only 入口: high/low 退化后不得改变任何数值。
+    let new_close_only = simulate_ohlcv(
+        Ohlcv::close_only(&close, &open),
+        &signals,
+        &SimOptions::new(cash, 252.0, &exec),
+    )
+    .expect("新入口必须成功");
+    let old_close_only =
+        simulate(&close, &open, &signals, cash, 252.0, &exec).expect("旧入口必须成功");
+    assert_eq!(new_close_only, old_close_only);
+}

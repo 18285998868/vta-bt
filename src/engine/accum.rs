@@ -71,8 +71,8 @@ pub fn bar_log_returns(curve: &[f64]) -> impl ExactSizeIterator<Item = f64> + Cl
 ///
 /// 动机: `simulate()` 只需要统计量, 不需要曲线本身。物化整条曲线
 /// (`Vec<f64>`, 每 bar 8 B; 复利腿 + fixed 腿 → T×16 B) 后再单遍扫描,
-/// 在 T = 1M 时每参数多占 16 MB。参数网格是**串行**外循环(见 README
-/// 「关键设计约束」第 1 条, 策略层并行会 OOM), 故峰值内存直接决定 OOM 边界。
+/// 在 T = 1M 时每参数多占 16 MB。参数网格是**串行**外循环(见
+/// `docs/invariants.md` 第 1 条, 策略层并行会 OOM), 故峰值内存直接决定 OOM 边界。
 ///
 /// 正确性: 在线累计与「物化曲线后单遍遍历」**逐位一致**, 由
 /// `test_curve_accum_is_bit_identical_to_materialized_reference` 对 5 类曲线

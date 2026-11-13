@@ -60,6 +60,17 @@ pub struct StopConfig {
 }
 
 impl StopConfig {
+    /// 未配置任何止损的常量默认值。
+    ///
+    /// 供 [`SimOptions::new`](super::SimOptions::new) 作为默认引用使用,
+    /// 避免调用方为"不设止损"构造临时变量。
+    pub const NONE: Self = Self {
+        stop_loss_pct: None,
+        trailing_stop_pct: None,
+        atr: None,
+        breakeven: None,
+    };
+
     /// 是否未配置任何止损。
     #[must_use]
     pub fn is_none(&self) -> bool {
