@@ -324,7 +324,7 @@ fn test_json_str_escapes_control_characters() {
     assert_eq!(json_str("a\u{1}b"), "\"a\\u0001b\"");
 }
 
-/// README 承诺 `detail/` 导出"逐笔交易/**权益曲线**", 但历史上只写了 trades
+/// `docs/configuration.md` 承诺 `detail/` 导出"逐笔交易/**权益曲线**", 但历史上只写了 trades
 /// —— 权益曲线从未落盘, 复算必须重跑整轮回测。detail 必须**无条件**产出它
 /// (不像 fixedcurve 只在 PBO 时写)。
 #[test]

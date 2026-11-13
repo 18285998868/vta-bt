@@ -179,7 +179,7 @@ pub fn write_detail_parquet(
 
         let stem = format!("{}_{}_{}_{}", symbol, tf, strategy, clean_params);
 
-        // 复利腿逐 bar 权益。README 承诺 `detail/` 导出"逐笔交易/权益曲线",
+        // 复利腿逐 bar 权益。`docs/configuration.md` 承诺 `detail/` 导出"逐笔交易/权益曲线",
         // 但历史上**只写了 trades**: 权益曲线从未落盘, 复算需重跑整轮回测。
         let mut bar_time = Int64Builder::new();
         let mut equity = Float64Builder::new();
