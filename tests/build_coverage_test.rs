@@ -36,7 +36,7 @@ fn build_one_has_no_catch_all_arm() {
 /// 每个变体都接上了构造: `StrategyConfig` 变体数 == `build_one` 的匹配臂数。
 #[test]
 fn every_variant_has_a_construction_arm() {
-    let cfg_src = include_str!("../src/config.rs");
+    let cfg_src = include_str!("../src/config/strategy.rs");
     let enum_body = cfg_src
         .split("pub enum StrategyConfig {")
         .nth(1)
