@@ -143,12 +143,12 @@ fn sharpe_of_curve(curve: &[f64], bpy: f64) -> f64 {
     }
 }
 
-/// curves[j] = 第 j 条策略的 fixed 权益曲线(等长)。bpy = 该 TF 年化 bar 数。
+/// curves\[j\] = 第 j 条策略的 fixed 权益曲线(等长)。bpy = 该 TF 年化 bar 数。
 /// S 必须为偶数且 T 可被 S 整除(尾部余 bar 丢弃, 与原文按行等切一致)。
 ///
 /// # Errors
 /// `s` 不是 `2..=16` 的偶数、策略数 N < 2、或可用 bar 数 T < S 时返回
-/// [`AppError`](crate::error::AppError) —— 这三种都是**调用方的口径错误**,
+/// `AppError`(crate::error::AppError) —— 这三种都是**调用方的口径错误**,
 /// 不该让整轮 PBO 实算崩在一条 assert 上。
 pub fn cscv(curves: &[impl AsRef<[f64]>], s: usize, bpy: f64) -> crate::error::Result<PboResult> {
     if !(2..=16).contains(&s) || !s.is_multiple_of(2) {
@@ -394,7 +394,7 @@ fn select_curves(members: &[crate::output::FixedCurve]) -> (Vec<(&str, &[f64])>,
 ///
 /// # Errors
 /// 索引缺失/读取失败、某组的 CSCV 口径非法(`S` 非偶数 / N 不足 / T 不足)时
-/// 返回 [`AppError`](crate::error::AppError)。
+/// 返回 `AppError`(crate::error::AppError)。
 pub fn run_pbo_report(dir: &std::path::Path) -> crate::error::Result<()> {
     use std::collections::BTreeMap;
 

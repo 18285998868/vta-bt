@@ -1,7 +1,7 @@
 //! 数据加载适配层：vta 自己的配置类型与两个 reader 的统一入口。
 //!
 //! reader 只负责加载、读取、清洗数据；本模块把两套 reader 的输出转换为 vta
-//! 自己的 [`KlineColumns`]，并保留按数据源分派所需的 [`DataSource`]/[`Market`]。
+//! 自己的 `KlineColumns`，并保留按数据源分派所需的 `DataSource`/`Market`。
 
 use std::fmt;
 use std::path::Path;

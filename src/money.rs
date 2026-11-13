@@ -62,7 +62,7 @@ impl Amount {
     /// 读进来的钱"这正是想要的: **用户写的十进制**被原样保留。
     ///
     /// # Errors
-    /// `v` 非有限(`NaN` / `Inf`)时返回 [`AppError`](crate::error::AppError) ——
+    /// `v` 非有限(`NaN` / `Inf`)时返回 `AppError`(crate::error::AppError) ——
     /// 金额为 `NaN` 是**不可接受**的, 必须显式拒绝。
     pub fn from_f64(v: f64) -> crate::error::Result<Amount> {
         if !v.is_finite() {
@@ -104,7 +104,7 @@ impl Amount {
     /// 加法。
     ///
     /// # Errors
-    /// 溢出(超出 `Decimal` 的 28 位有效数字)时返回 [`AppError`](crate::error::AppError)。
+    /// 溢出(超出 `Decimal` 的 28 位有效数字)时返回 `AppError`(crate::error::AppError)。
     pub fn plus(self, other: Amount) -> crate::error::Result<Amount> {
         self.0.checked_add(other.0).map(Amount).ok_or_else(|| {
             crate::error::AppError::Msg(format!("金额加法溢出: {} + {}", self.0, other.0))
@@ -114,7 +114,7 @@ impl Amount {
     /// 减法。
     ///
     /// # Errors
-    /// 溢出时返回 [`AppError`](crate::error::AppError)。
+    /// 溢出时返回 `AppError`(crate::error::AppError)。
     pub fn minus(self, other: Amount) -> crate::error::Result<Amount> {
         self.0.checked_sub(other.0).map(Amount).ok_or_else(|| {
             crate::error::AppError::Msg(format!("金额减法溢出: {} - {}", self.0, other.0))
@@ -124,7 +124,7 @@ impl Amount {
     /// 乘以一个**无量纲**比率(费率、滑点率)。
     ///
     /// # Errors
-    /// 比率非有限或结果溢出时返回 [`AppError`](crate::error::AppError)。
+    /// 比率非有限或结果溢出时返回 `AppError`(crate::error::AppError)。
     pub fn mul_ratio(self, ratio: f64) -> crate::error::Result<Amount> {
         if !ratio.is_finite() {
             return Err(crate::error::AppError::Msg(format!(
@@ -142,7 +142,7 @@ impl Amount {
     /// 乘以一个**价格**(得到名义金额)。
     ///
     /// # Errors
-    /// 价格非有限或结果溢出时返回 [`AppError`](crate::error::AppError)。
+    /// 价格非有限或结果溢出时返回 `AppError`(crate::error::AppError)。
     pub fn mul_price(self, price: f64) -> crate::error::Result<Amount> {
         if !price.is_finite() {
             return Err(crate::error::AppError::Msg(format!(
@@ -160,7 +160,7 @@ impl Amount {
     /// 除以一个**价格**(得到持仓数量 —— 也是金额量纲)。
     ///
     /// # Errors
-    /// 价格为 0 / 非有限, 或结果溢出时返回 [`AppError`](crate::error::AppError)。
+    /// 价格为 0 / 非有限, 或结果溢出时返回 `AppError`(crate::error::AppError)。
     pub fn div_price(self, price: f64) -> crate::error::Result<Amount> {
         if !price.is_finite() || price == 0.0 {
             return Err(crate::error::AppError::Msg(format!(
@@ -178,7 +178,7 @@ impl Amount {
     /// 除以一个**无量纲**比率。
     ///
     /// # Errors
-    /// 比率为 0 / 非有限, 或结果溢出时返回 [`AppError`](crate::error::AppError)。
+    /// 比率为 0 / 非有限, 或结果溢出时返回 `AppError`(crate::error::AppError)。
     pub fn div_ratio(self, ratio: f64) -> crate::error::Result<Amount> {
         if !ratio.is_finite() || ratio == 0.0 {
             return Err(crate::error::AppError::Msg(format!(
@@ -202,7 +202,7 @@ impl Amount {
     /// 除以一个**笔数**(得到平均金额)。
     ///
     /// # Errors
-    /// 笔数为 0, 或结果溢出时返回 [`AppError`](crate::error::AppError)。
+    /// 笔数为 0, 或结果溢出时返回 `AppError`(crate::error::AppError)。
     pub fn div_count(self, count: i64) -> crate::error::Result<Amount> {
         if count == 0 {
             return Err(crate::error::AppError::Msg(

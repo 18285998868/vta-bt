@@ -15,7 +15,7 @@
 /// 分支"而加回 `None` 兜底时, 测试会立刻失败并说明后果。
 #[test]
 fn build_one_has_no_catch_all_arm() {
-    let src = include_str!("../src/app/05_strategies/build.rs");
+    let src = include_str!("../src/strategies/build.rs");
     let body = src.split("fn build_one(").nth(1).expect("build_one 应存在");
     let body = body.split("\n}\n").next().expect("build_one 体应可截取");
 
@@ -53,7 +53,7 @@ fn every_variant_has_a_construction_arm() {
         .filter(|v| !v.is_empty() && v.chars().next().is_some_and(char::is_uppercase))
         .collect();
 
-    let build_src = include_str!("../src/app/05_strategies/build.rs");
+    let build_src = include_str!("../src/strategies/build.rs");
     let body = build_src
         .split("fn build_one(")
         .nth(1)

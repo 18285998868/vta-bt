@@ -191,7 +191,7 @@ impl Config {
     ///
     /// # Errors
     /// 品种/周期为空、**品种/周期含路径穿越字符**、周期未知或策略参数非法时
-    /// 返回 [`AppError`]。
+    /// 返回 `AppError`。
     pub fn validate(&self) -> crate::error::Result<()> {
         let syms = self.data.symbols();
         if syms.is_empty() || syms.iter().any(String::is_empty) {
@@ -508,7 +508,7 @@ pub struct OutputConfig {
 /// (`BTCUSDT` / `1000SHIBUSDT` / `1INCHUSDT` / `BRK-B`) 与周期名(`1m` / `1d`)。
 ///
 /// # Errors
-/// 不安全时返回 [`AppError`]。
+/// 不安全时返回 `AppError`。
 fn check_path_safe_component(what: &str, value: &str) -> crate::error::Result<()> {
     if value.is_empty() {
         return Err(AppError::Msg(format!("{what} 不能为空")));
@@ -543,7 +543,7 @@ impl MaGridCfg {
     /// 语义校验: 只需校验 `period` 的区间与方向。
     ///
     /// # Errors
-    /// `period` 越界时返回 [`AppError`]。
+    /// `period` 越界时返回 `AppError`。
     pub fn validate(&self) -> crate::error::Result<()> {
         self.period.validate()
     }
@@ -607,118 +607,118 @@ pub enum StrategyConfig {
     Vidya(MaGridCfg),
     /// **McGinley** 均线策略: 配置 [`MaGridCfg`]。
     McGinley(MaGridCfg),
-    /// **Ssf** 策略: 配置 [`SsfConfig`]。
+    /// **Ssf** 策略: 配置 `SsfConfig`。
     Ssf(SsfConfig),
-    /// **SsfCd** 策略: 配置 [`SsfCdConfig`]。
+    /// **SsfCd** 策略: 配置 `SsfCdConfig`。
     SsfCd(SsfCdConfig),
-    /// **SsfSt** 策略: 配置 [`SsfStConfig`]。
+    /// **SsfSt** 策略: 配置 `SsfStConfig`。
     SsfSt(SsfStConfig),
-    /// **SsfStCd** 策略: 配置 [`SsfStCdConfig`]。
+    /// **SsfStCd** 策略: 配置 `SsfStCdConfig`。
     SsfStCd(SsfStCdConfig),
-    /// **SwingFractal** 策略: 配置 [`SwingFractalConfig`]。 TOML 中写作 `type = "swing_fractal"`。
+    /// **SwingFractal** 策略: 配置 `SwingFractalConfig`。 TOML 中写作 `type = "swing_fractal"`。
     SwingFractal(SwingFractalConfig),
-    /// **Turtle** 策略: 配置 [`TurtleConfig`]。
+    /// **Turtle** 策略: 配置 `TurtleConfig`。
     Turtle(TurtleConfig),
-    /// **Clenow** 策略: 配置 [`ClenowConfig`]。 TOML 中写作 `type = "clenow"`。
+    /// **Clenow** 策略: 配置 `ClenowConfig`。 TOML 中写作 `type = "clenow"`。
     Clenow(ClenowConfig),
-    /// **DualThrust** 策略: 配置 [`DualThrustConfig`]。
+    /// **DualThrust** 策略: 配置 `DualThrustConfig`。
     DualThrust(DualThrustConfig),
-    /// **RBreaker** 策略: 配置 [`RBreakerConfig`]。
+    /// **RBreaker** 策略: 配置 `RBreakerConfig`。
     RBreaker(RBreakerConfig),
-    /// **Fiali** 策略: 配置 [`FialiConfig`]。
+    /// **Fiali** 策略: 配置 `FialiConfig`。
     Fiali(FialiConfig),
-    /// **Aberration** 策略: 配置 [`AberrationConfig`]。
+    /// **Aberration** 策略: 配置 `AberrationConfig`。
     Aberration(AberrationConfig),
-    /// **Sgma** 策略: 配置 [`SgmaConfig`]。
+    /// **Sgma** 策略: 配置 `SgmaConfig`。
     Sgma(SgmaConfig),
     #[serde(rename = "atr_band")]
-    /// **ATRBand** 策略: 配置 [`ATRBandConfig`]。 TOML 中写作 `type = "atr_band"`。
+    /// **ATRBand** 策略: 配置 `ATRBandConfig`。 TOML 中写作 `type = "atr_band"`。
     ATRBand(ATRBandConfig),
-    /// **Keltner** 策略: 配置 [`KeltnerConfig`]。
+    /// **Keltner** 策略: 配置 `KeltnerConfig`。
     Keltner(KeltnerConfig),
     #[serde(rename = "bbmr")]
-    /// **BBMR** 策略: 配置 [`BBMRConfig`]。 TOML 中写作 `type = "bbmr"`。
+    /// **BBMR** 策略: 配置 `BBMRConfig`。 TOML 中写作 `type = "bbmr"`。
     BBMR(BBMRConfig),
-    /// **Bbrk** 策略: 配置 [`BBRKConfig`]。
+    /// **Bbrk** 策略: 配置 `BBRKConfig`。
     Bbrk(BBRKConfig),
-    /// **BbrkAdx** 策略: 配置 [`BbrkAdxConfig`]。
+    /// **BbrkAdx** 策略: 配置 `BbrkAdxConfig`。
     BbrkAdx(BbrkAdxConfig),
-    /// **BbrkTrail** 策略: 配置 [`BbrkTrailConfig`]。
+    /// **BbrkTrail** 策略: 配置 `BbrkTrailConfig`。
     BbrkTrail(BbrkTrailConfig),
-    /// **BbrkDon** 策略: 配置 [`BbrkDonConfig`]。
+    /// **BbrkDon** 策略: 配置 `BbrkDonConfig`。
     BbrkDon(BbrkDonConfig),
-    /// **BbrkEma** 策略: 配置 [`BbrkEmaConfig`]。
+    /// **BbrkEma** 策略: 配置 `BbrkEmaConfig`。
     BbrkEma(BbrkEmaConfig),
-    /// **BbrkPctb** 策略: 配置 [`BbrkPctbConfig`]。
+    /// **BbrkPctb** 策略: 配置 `BbrkPctbConfig`。
     BbrkPctb(BbrkPctbConfig),
-    /// **BbrkAtr** 策略: 配置 [`BbrkAtrConfig`]。
+    /// **BbrkAtr** 策略: 配置 `BbrkAtrConfig`。
     BbrkAtr(BbrkAtrConfig),
-    /// **BbrkStr** 策略: 配置 [`BbrkStrConfig`]。
+    /// **BbrkStr** 策略: 配置 `BbrkStrConfig`。
     BbrkStr(BbrkStrConfig),
-    /// **BbrkSma** 策略: 配置 [`BbrkSmaConfig`]。
+    /// **BbrkSma** 策略: 配置 `BbrkSmaConfig`。
     BbrkSma(BbrkSmaConfig),
-    /// **BbrkHma** 策略: 配置 [`BbrkHmaConfig`]。
+    /// **BbrkHma** 策略: 配置 `BbrkHmaConfig`。
     BbrkHma(BbrkHmaConfig),
-    /// **BbrkMax** 策略: 配置 [`BbrkMaxConfig`]。
+    /// **BbrkMax** 策略: 配置 `BbrkMaxConfig`。
     BbrkMax(BbrkMaxConfig),
-    /// **BbrkBb** 策略: 配置 [`BbrkBbConfig`]。
+    /// **BbrkBb** 策略: 配置 `BbrkBbConfig`。
     BbrkBb(BbrkBbConfig),
-    /// **BbrkVolEma** 策略: 配置 [`BbrkVolEmaConfig`]。
+    /// **BbrkVolEma** 策略: 配置 `BbrkVolEmaConfig`。
     BbrkVolEma(BbrkVolEmaConfig),
-    /// **BbrkAtrEma** 策略: 配置 [`BbrkAtrEmaConfig`]。
+    /// **BbrkAtrEma** 策略: 配置 `BbrkAtrEmaConfig`。
     BbrkAtrEma(BbrkAtrEmaConfig),
-    /// **BbrkSmaEma** 策略: 配置 [`BbrkSmaEmaConfig`]。
+    /// **BbrkSmaEma** 策略: 配置 `BbrkSmaEmaConfig`。
     BbrkSmaEma(BbrkSmaEmaConfig),
-    /// **BbrkHmaEma** 策略: 配置 [`BbrkHmaEmaConfig`]。
+    /// **BbrkHmaEma** 策略: 配置 `BbrkHmaEmaConfig`。
     BbrkHmaEma(BbrkHmaEmaConfig),
-    /// **BbrkHmaV1** 策略: 配置 [`BbrkHmaV1Config`]。
+    /// **BbrkHmaV1** 策略: 配置 `BbrkHmaV1Config`。
     BbrkHmaV1(BbrkHmaV1Config),
-    /// **BbrkHmaV2** 策略: 配置 [`BbrkHmaV2Config`]。
+    /// **BbrkHmaV2** 策略: 配置 `BbrkHmaV2Config`。
     BbrkHmaV2(BbrkHmaV2Config),
-    /// **BbrkHmaV3** 策略: 配置 [`BbrkHmaV3Config`]。
+    /// **BbrkHmaV3** 策略: 配置 `BbrkHmaV3Config`。
     BbrkHmaV3(BbrkHmaV3Config),
-    /// **BbrkHmaV4** 策略: 配置 [`BbrkHmaV4Config`]。
+    /// **BbrkHmaV4** 策略: 配置 `BbrkHmaV4Config`。
     BbrkHmaV4(BbrkHmaV4Config),
-    /// **BbrkHmaV5** 策略: 配置 [`BbrkHmaV5Config`]。
+    /// **BbrkHmaV5** 策略: 配置 `BbrkHmaV5Config`。
     BbrkHmaV5(BbrkHmaV5Config),
-    /// **BbrkZlemaEma** 策略: 配置 [`BbrkZlemaEmaConfig`]。
+    /// **BbrkZlemaEma** 策略: 配置 `BbrkZlemaEmaConfig`。
     BbrkZlemaEma(BbrkZlemaEmaConfig),
-    /// **BbrkRex** 策略: 配置 [`BbrkRexConfig`]。
+    /// **BbrkRex** 策略: 配置 `BbrkRexConfig`。
     BbrkRex(BbrkRexConfig),
-    /// **BbrkVol** 策略: 配置 [`BbrkVolConfig`]。
+    /// **BbrkVol** 策略: 配置 `BbrkVolConfig`。
     BbrkVol(BbrkVolConfig),
-    /// **BbrkTtm** 策略: 配置 [`BbrkTtmConfig`]。
+    /// **BbrkTtm** 策略: 配置 `BbrkTtmConfig`。
     BbrkTtm(BbrkTtmConfig),
-    /// **BbrkTtmFire** 策略: 配置 [`BbrkTtmFireConfig`]。
+    /// **BbrkTtmFire** 策略: 配置 `BbrkTtmFireConfig`。
     BbrkTtmFire(BbrkTtmFireConfig),
-    /// **BbrkCross** 策略: 配置 [`BbrkCrossConfig`]。
+    /// **BbrkCross** 策略: 配置 `BbrkCrossConfig`。
     BbrkCross(BbrkCrossConfig),
-    /// **BbrkKdj** 策略: 配置 [`BbrkKdjConfig`]。
+    /// **BbrkKdj** 策略: 配置 `BbrkKdjConfig`。
     BbrkKdj(BbrkKdjConfig),
-    /// **BbrkM2** 策略: 配置 [`BbrkM2Config`]。
+    /// **BbrkM2** 策略: 配置 `BbrkM2Config`。
     BbrkM2(BbrkM2Config),
-    /// **BbrkM3** 策略: 配置 [`BbrkM3Config`]。
+    /// **BbrkM3** 策略: 配置 `BbrkM3Config`。
     BbrkM3(BbrkM3Config),
-    /// **BbrkOrth** 策略: 配置 [`BbrkOrthConfig`]。
+    /// **BbrkOrth** 策略: 配置 `BbrkOrthConfig`。
     BbrkOrth(BbrkOrthConfig),
-    /// **VwapTrend** 策略: 配置 [`VwapTrendConfig`]。
+    /// **VwapTrend** 策略: 配置 `VwapTrendConfig`。
     VwapTrend(VwapTrendConfig),
     #[serde(rename = "rsi2")]
-    /// **RSI2** 策略: 配置 [`RSI2Config`]。 TOML 中写作 `type = "rsi2"`。
+    /// **RSI2** 策略: 配置 `RSI2Config`。 TOML 中写作 `type = "rsi2"`。
     RSI2(RSI2Config),
-    /// **Vwap** 策略: 配置 [`VwapConfig`]。
+    /// **Vwap** 策略: 配置 `VwapConfig`。
     Vwap(VwapConfig),
-    /// **MabbLong** 策略: 配置 [`MabbLongConfig`]。
+    /// **MabbLong** 策略: 配置 `MabbLongConfig`。
     MabbLong(MabbLongConfig),
-    /// **MabbShort** 策略: 配置 [`MabbShortConfig`]。
+    /// **MabbShort** 策略: 配置 `MabbShortConfig`。
     MabbShort(MabbShortConfig),
-    /// **MaAtr** 策略: 配置 [`MaAtrConfig`]。
+    /// **MaAtr** 策略: 配置 `MaAtrConfig`。
     MaAtr(MaAtrConfig),
-    /// **MaSlopeAtrGate** 策略: 配置 [`MaSlopeAtrGateConfig`]。
+    /// **MaSlopeAtrGate** 策略: 配置 `MaSlopeAtrGateConfig`。
     MaSlopeAtrGate(MaSlopeAtrGateConfig),
-    /// **Macd** 策略: 配置 [`MacdConfig`]。
+    /// **Macd** 策略: 配置 `MacdConfig`。
     Macd(MacdConfig),
-    /// **EmaCross** 策略: 配置 [`EmaCrossConfig`]。
+    /// **EmaCross** 策略: 配置 `EmaCrossConfig`。
     EmaCross(EmaCrossConfig),
 }
 
@@ -736,7 +736,7 @@ impl PeriodParam {
     /// 语义校验: 范围必须 `start >= 1`、`start <= end`、`step > 0`。
     ///
     /// # Errors
-    /// 任一约束不满足时返回 [`AppError`]。
+    /// 任一约束不满足时返回 `AppError`。
     pub fn validate(&self) -> crate::error::Result<()> {
         self.validate_named("period", 1)
     }
@@ -750,7 +750,7 @@ impl PeriodParam {
     /// 后者会在展开网格时触发 `Range::step_by(0)` 的 panic。
     ///
     /// # Errors
-    /// 任一约束不满足时返回 [`AppError`], 消息里带 `label` 便于定位。
+    /// 任一约束不满足时返回 `AppError`, 消息里带 `label` 便于定位。
     pub fn validate_named(&self, label: &str, min: usize) -> crate::error::Result<()> {
         match self {
             PeriodParam::Single(v) => {
@@ -810,7 +810,7 @@ impl PeriodParam {
 
     /// 展开为具体取值列表。
     ///
-    /// 上限 [`MAX_PERIOD_RANGE`] 档防爆(与 f64 展开的 [`MAX_F64_RANGE`] 同思路):
+    /// 上限 [`MAX_PERIOD_RANGE`] 档防爆(与 f64 展开的 `MAX_F64_RANGE` 同思路):
     /// 范围型参数的规模**无上限**(`start = 1, end = 10^9` ⇒ 10 亿档),
     /// 不封顶会把内存吃光。触顶时**告警**而非静默截断。
     #[must_use]
@@ -849,7 +849,7 @@ impl PeriodParam {
     /// 与 [`F64Param::validate_range`] 同形, 但边界是**整数**。
     ///
     /// # Errors
-    /// 展开为空或存在越界值时返回 [`AppError`]。
+    /// 展开为空或存在越界值时返回 `AppError`。
     pub fn validate_range(&self, name: &str, lo: usize, hi: usize) -> crate::error::Result<()> {
         let vs = self.values();
         if vs.is_empty() {
@@ -864,7 +864,7 @@ impl PeriodParam {
 
 /// 整型参数展开的**档数上限**(防爆)。
 ///
-/// 与 [`crate::strategies::MAX_F64_RANGE`] 同思路: 范围型参数的规模无上限,
+/// 与 `crate::strategies::MAX_F64_RANGE` 同思路: 范围型参数的规模无上限,
 /// 不封顶会把内存吃光。
 pub const MAX_PERIOD_RANGE: usize = 100_000;
 
@@ -905,7 +905,7 @@ impl F64Param {
     /// 校验展开结果落在 `[lo, hi]` 且非空。
     ///
     /// # Errors
-    /// 展开为空或存在越界/非有限值时返回 [`AppError`]。
+    /// 展开为空或存在越界/非有限值时返回 `AppError`。
     pub fn validate_range(&self, name: &str, lo: f64, hi: f64) -> crate::error::Result<()> {
         let vs = self.values();
         if vs.is_empty() {
@@ -922,7 +922,7 @@ impl F64Param {
 ///
 /// # Errors
 /// 文件读取失败, 或 TOML 结构非法(含未知字段 / 类型不匹配)时返回
-/// [`AppError`]。
+/// `AppError`。
 ///
 /// 收 [`Path`](std::path::Path) 而非 `&str`: 配置路径来自 CLI, 非 UTF-8 路径在 `&str` 边界上
 /// 会被迫 `to_str().expect(..)` —— 那是把用户输入的问题变成一次 panic。

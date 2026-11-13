@@ -45,17 +45,14 @@ pub mod config;
 /// 数据加载适配层: vta 自己的配置/列结构与两个 reader 的统一入口。
 pub mod data;
 /// 回测引擎: 成交模拟(`simulate` 系列)与全部指标。
-#[path = "app/03_run_backtest.rs"]
 pub mod engine;
 /// 统一错误类型([`error::AppError`])。
 pub mod error;
 /// 货币金额: 定点十进制([`money::Amount`]), 不用 `f64` 承载货币。
 pub mod money;
 /// Parquet 读写层。
-#[path = "app/04_write_output/mod.rs"]
 pub mod output;
 /// PBO via CSCV: 由已落盘的权益曲线实算过拟合概率。
 pub mod pbo;
 /// 策略实现与参数网格展开。
-#[path = "app/05_strategies/mod.rs"]
 pub mod strategies;

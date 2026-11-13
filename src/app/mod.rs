@@ -1042,7 +1042,7 @@ pub struct RunOptions {
 /// 带选项执行一轮回测。生产入口见 [`run`]。
 ///
 /// # Errors
-/// 配置加载/校验失败、数据加载失败、或回测写盘失败时返回 [`AppError`]。
+/// 配置加载/校验失败、数据加载失败、或回测写盘失败时返回 `AppError`。
 pub fn run_with(config_path: &std::path::Path, opts: RunOptions) -> crate::error::Result<()> {
     let config = config::load_config(config_path)?;
     config.validate()?;
@@ -2066,7 +2066,7 @@ mod tests {
     /// 而不是报错。现签名直接收 `&Path`, 该转换连同 panic 一起消失。
     #[test]
     fn parquet_io_apis_take_path_and_never_panic_on_non_utf8() {
-        let src = include_str!("04_write_output/parquet.rs");
+        let src = include_str!("../output/parquet.rs");
         let io_fns = [
             "pub fn write_parquet(",
             "pub fn read_parquet(path: &Path",
