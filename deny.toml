@@ -1,0 +1,42 @@
+# cargo-deny 配置: 许可证白名单 + 来源限制。
+#
+# 只放行本项目依赖树实际使用的宽松许可证; 新增依赖若引入白名单外的许可证,
+# `scripts/check.sh` 会在 CI/本地门禁直接失败, 而不是默默合并。
+
+[graph]
+# 检查全部目标平台, 避免只检查 Linux 时漏掉 windows/wasm 传递依赖的许可证。
+all-features = true
+
+[advisories]
+version = 2
+# 不忽略任何安全公告。确需忽略时, 必须在下方写明编号、原因与复查日期。
+ignore = []
+
+[licenses]
+version = 2
+# 允许 SPDX 表达式中的任一分支满足即可(如 `MIT OR Apache-2.0`)。
+confidence-threshold = 0.8
+allow = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+    "bzip2-1.0.6",
+]
+
+[bans]
+# 本项目依赖 Arrow/Parquet 生态, 多版本共存无法避免; 只禁止通配符依赖。
+multiple-versions = "allow"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

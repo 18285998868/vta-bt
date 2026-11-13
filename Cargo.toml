@@ -56,8 +56,8 @@ serde_json = "1"
 # 指标库用 crates.io 发布版, 版本由 Cargo.lock 锁定; 两个 reader 是 /data 下的
 # 独立仓库, 用相对路径保证同机可复现。
 vector-ta = "0.3.1"
-binance-data-reader = { path = "../binance-data-reader" }
-dukascopy-data-reader = { path = "../dukascopy-data-reader" }
+binance-data-reader = { version = "0.1.0", path = "../binance-data-reader" }
+dukascopy-data-reader = { version = "0.1.0", path = "../dukascopy-data-reader" }
 
 # 统一 lint 门禁: CI 与本地 `cargo clippy -- -D warnings` 行为一致。
 [workspace.lints.rust]
