@@ -1,58 +1,28 @@
-use crate::config::RangeParam;
-use crate::strategies::{Signal, Strategy, price_cross_signal};
 use vector_ta::indicators::moving_averages::tema::{TemaInput, TemaParams, tema};
 
+use crate::strategies::single_ma::{MaCalculator, SingleMaStrategy};
+
 /// **TEMA** 策略实现。
-pub struct TemaStrategy {
-    periods: Vec<usize>,
-}
+pub struct TemaCalc;
 
-impl TemaStrategy {
-    /// 由均线周期范围 `range` 构造(单 MA 策略的公共入口)。
-    #[must_use]
-    pub fn new(range: RangeParam<usize>) -> Self {
-        let periods: Vec<usize> = (range.start..=range.end).step_by(range.step).collect();
-        Self { periods }
-    }
-}
+impl MaCalculator for TemaCalc {
+    const NAME: &'static str = "TEMA";
+    const KEY: &'static str = "tema";
 
-impl Strategy for TemaStrategy {
-    fn name(&self) -> &'static str {
-        "TEMA"
-    }
-
-    fn param_count(&self) -> usize {
-        self.periods.len()
-    }
-
-    fn param_str(&self, idx: usize) -> String {
-        format!("tema_{}", self.periods[idx])
-    }
-
-    fn generate_signals_full(
-        &self,
-        _open: &[f64],
-        _high: &[f64],
-        _low: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        _time: &[i64],
-        param_idx: usize,
-    ) -> crate::error::Result<Vec<Signal>> {
-        let period = self.periods[param_idx];
+    fn compute(close: &[f64], period: usize) -> crate::error::Result<Vec<f64>> {
         let input = TemaInput::from_slice(
             close,
             TemaParams {
                 period: Some(period),
             },
         );
-        let ma = match tema(&input) {
-            Ok(v) => v.values,
-            Err(e) => return Err(crate::strategies::param_skipped(e)),
-        };
-        Ok(price_cross_signal(&ma, close))
+        let ma = tema(&input).map_err(crate::strategies::param_skipped)?;
+        Ok(ma.values)
     }
 }
+
+/// 单 MA 策略: 价格穿越 `TemaCalc` 输出的均线。
+pub type TemaStrategy = SingleMaStrategy<TemaCalc>;
 
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]

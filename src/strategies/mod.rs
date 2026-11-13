@@ -122,6 +122,8 @@ pub mod rsi2;
 pub mod sgma;
 /// 跨策略共用的信号类型、工具函数与周期年化表(不对外公开)。
 mod shared;
+/// 单 MA 策略的公共骨架: 泛型 `Strategy` 实现与指标计算器 trait。
+pub mod single_ma;
 /// **SINWMA** 均线策略: 配置 [`MaGridCfg`](crate::config::MaGridCfg), 实现 `SinWmaStrategy`。
 pub mod sinwma;
 /// **SMA** 均线策略: 配置 [`MaGridCfg`](crate::config::MaGridCfg), 实现 `SmaStrategy`。

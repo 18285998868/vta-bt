@@ -1,19 +1,19 @@
-use crate::config::RangeParam;
-use crate::strategies::{Signal, Strategy, price_cross_signal};
+use crate::strategies::single_ma::{MaCalculator, SingleMaStrategy};
 
-/// **MCGINLEY** 策略实现。
-pub struct McGinleyStrategy {
-    periods: Vec<usize>,
-}
+/// **McGinley** 策略实现。
+pub struct McGinleyCalc;
 
-impl McGinleyStrategy {
-    /// 由均线周期范围 `range` 构造(单 MA 策略的公共入口)。
-    #[must_use]
-    pub fn new(range: RangeParam<usize>) -> Self {
-        let periods: Vec<usize> = (range.start..=range.end).step_by(range.step).collect();
-        Self { periods }
+impl MaCalculator for McGinleyCalc {
+    const NAME: &'static str = "McGinley";
+    const KEY: &'static str = "mcginley";
+
+    fn compute(close: &[f64], period: usize) -> crate::error::Result<Vec<f64>> {
+        Ok(mcgd_ma(close, period))
     }
 }
+
+/// 单 MA 策略: 价格穿越 `McGinleyCalc` 输出的均线。
+pub type McGinleyStrategy = SingleMaStrategy<McGinleyCalc>;
 
 #[must_use]
 fn mcgd_ma(close: &[f64], period: usize) -> Vec<f64> {
@@ -36,35 +36,6 @@ fn mcgd_ma(close: &[f64], period: usize) -> Vec<f64> {
         out[i] = md;
     }
     out
-}
-
-impl Strategy for McGinleyStrategy {
-    fn name(&self) -> &'static str {
-        "McGinley"
-    }
-
-    fn param_count(&self) -> usize {
-        self.periods.len()
-    }
-
-    fn param_str(&self, idx: usize) -> String {
-        format!("mcginley_{}", self.periods[idx])
-    }
-
-    fn generate_signals_full(
-        &self,
-        _open: &[f64],
-        _high: &[f64],
-        _low: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        _time: &[i64],
-        param_idx: usize,
-    ) -> crate::error::Result<Vec<Signal>> {
-        let period = self.periods[param_idx];
-        let ma = mcgd_ma(close, period);
-        Ok(price_cross_signal(&ma, close))
-    }
 }
 
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]

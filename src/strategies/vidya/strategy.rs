@@ -1,19 +1,19 @@
-use crate::config::RangeParam;
-use crate::strategies::{Signal, Strategy, price_cross_signal};
+use crate::strategies::single_ma::{MaCalculator, SingleMaStrategy};
 
 /// **VIDYA** 策略实现。
-pub struct VidyaStrategy {
-    periods: Vec<usize>,
-}
+pub struct VidyaCalc;
 
-impl VidyaStrategy {
-    /// 由均线周期范围 `range` 构造(单 MA 策略的公共入口)。
-    #[must_use]
-    pub fn new(range: RangeParam<usize>) -> Self {
-        let periods: Vec<usize> = (range.start..=range.end).step_by(range.step).collect();
-        Self { periods }
+impl MaCalculator for VidyaCalc {
+    const NAME: &'static str = "VIDYA";
+    const KEY: &'static str = "vidya";
+
+    fn compute(close: &[f64], period: usize) -> crate::error::Result<Vec<f64>> {
+        Ok(vidya_ma(close, period))
     }
 }
+
+/// 单 MA 策略: 价格穿越 `VidyaCalc` 输出的均线。
+pub type VidyaStrategy = SingleMaStrategy<VidyaCalc>;
 
 #[must_use]
 fn vidya_ma(close: &[f64], period: usize) -> Vec<f64> {
@@ -58,35 +58,6 @@ fn vidya_ma(close: &[f64], period: usize) -> Vec<f64> {
         out[i] = v;
     }
     out
-}
-
-impl Strategy for VidyaStrategy {
-    fn name(&self) -> &'static str {
-        "VIDYA"
-    }
-
-    fn param_count(&self) -> usize {
-        self.periods.len()
-    }
-
-    fn param_str(&self, idx: usize) -> String {
-        format!("vidya_{}", self.periods[idx])
-    }
-
-    fn generate_signals_full(
-        &self,
-        _open: &[f64],
-        _high: &[f64],
-        _low: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        _time: &[i64],
-        param_idx: usize,
-    ) -> crate::error::Result<Vec<Signal>> {
-        let period = self.periods[param_idx];
-        let ma = vidya_ma(close, period);
-        Ok(price_cross_signal(&ma, close))
-    }
 }
 
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]

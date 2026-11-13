@@ -39,6 +39,7 @@ src/
   strategies/
     mod.rs             # Strategy trait + shared 再导出
     shared.rs          # Signal / StopLines / price_cross_signal / bars_per_year
+    single_ma.rs       # 单 MA 策略的泛型 Strategy 实现(MaCalculator)
     build.rs           # build_one 穷尽 match → build_jobs_checked
     <name>/            # 每个策略: config.rs + strategy.rs
 ```

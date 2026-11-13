@@ -1,45 +1,15 @@
-use crate::config::RangeParam;
-use crate::strategies::{Signal, Strategy, price_cross_signal};
 use vector_ta::indicators::moving_averages::alma::{AlmaInput, AlmaParams, alma};
 
+use crate::strategies::single_ma::{MaCalculator, SingleMaStrategy};
+
 /// **ALMA** 策略实现。
-pub struct AlmaStrategy {
-    periods: Vec<usize>,
-}
+pub struct AlmaCalc;
 
-impl AlmaStrategy {
-    /// 由均线周期范围 `range` 构造(单 MA 策略的公共入口)。
-    #[must_use]
-    pub fn new(range: RangeParam<usize>) -> Self {
-        let periods: Vec<usize> = (range.start..=range.end).step_by(range.step).collect();
-        Self { periods }
-    }
-}
+impl MaCalculator for AlmaCalc {
+    const NAME: &'static str = "ALMA";
+    const KEY: &'static str = "alma";
 
-impl Strategy for AlmaStrategy {
-    fn name(&self) -> &'static str {
-        "ALMA"
-    }
-
-    fn param_count(&self) -> usize {
-        self.periods.len()
-    }
-
-    fn param_str(&self, idx: usize) -> String {
-        format!("alma_{}", self.periods[idx])
-    }
-
-    fn generate_signals_full(
-        &self,
-        _open: &[f64],
-        _high: &[f64],
-        _low: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        _time: &[i64],
-        param_idx: usize,
-    ) -> crate::error::Result<Vec<Signal>> {
-        let period = self.periods[param_idx];
+    fn compute(close: &[f64], period: usize) -> crate::error::Result<Vec<f64>> {
         let input = AlmaInput::from_slice(
             close,
             AlmaParams {
@@ -48,13 +18,13 @@ impl Strategy for AlmaStrategy {
                 sigma: None,
             },
         );
-        let ma = match alma(&input) {
-            Ok(v) => v.values,
-            Err(e) => return Err(crate::strategies::param_skipped(e)),
-        };
-        Ok(price_cross_signal(&ma, close))
+        let ma = alma(&input).map_err(crate::strategies::param_skipped)?;
+        Ok(ma.values)
     }
 }
+
+/// 单 MA 策略: 价格穿越 `AlmaCalc` 输出的均线。
+pub type AlmaStrategy = SingleMaStrategy<AlmaCalc>;
 
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]

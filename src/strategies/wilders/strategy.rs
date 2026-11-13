@@ -1,58 +1,28 @@
-use crate::config::RangeParam;
-use crate::strategies::{Signal, Strategy, price_cross_signal};
 use vector_ta::indicators::moving_averages::wilders::{WildersInput, WildersParams, wilders};
 
-/// **WILDERS** 策略实现。
-pub struct WildersStrategy {
-    periods: Vec<usize>,
-}
+use crate::strategies::single_ma::{MaCalculator, SingleMaStrategy};
 
-impl WildersStrategy {
-    /// 由均线周期范围 `range` 构造(单 MA 策略的公共入口)。
-    #[must_use]
-    pub fn new(range: RangeParam<usize>) -> Self {
-        let periods: Vec<usize> = (range.start..=range.end).step_by(range.step).collect();
-        Self { periods }
-    }
-}
+/// **Wilders** 策略实现。
+pub struct WildersCalc;
 
-impl Strategy for WildersStrategy {
-    fn name(&self) -> &'static str {
-        "Wilders"
-    }
+impl MaCalculator for WildersCalc {
+    const NAME: &'static str = "Wilders";
+    const KEY: &'static str = "rma";
 
-    fn param_count(&self) -> usize {
-        self.periods.len()
-    }
-
-    fn param_str(&self, idx: usize) -> String {
-        format!("rma_{}", self.periods[idx])
-    }
-
-    fn generate_signals_full(
-        &self,
-        _open: &[f64],
-        _high: &[f64],
-        _low: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        _time: &[i64],
-        param_idx: usize,
-    ) -> crate::error::Result<Vec<Signal>> {
-        let period = self.periods[param_idx];
+    fn compute(close: &[f64], period: usize) -> crate::error::Result<Vec<f64>> {
         let input = WildersInput::from_slice(
             close,
             WildersParams {
                 period: Some(period),
             },
         );
-        let ma = match wilders(&input) {
-            Ok(v) => v.values,
-            Err(e) => return Err(crate::strategies::param_skipped(e)),
-        };
-        Ok(price_cross_signal(&ma, close))
+        let ma = wilders(&input).map_err(crate::strategies::param_skipped)?;
+        Ok(ma.values)
     }
 }
+
+/// 单 MA 策略: 价格穿越 `WildersCalc` 输出的均线。
+pub type WildersStrategy = SingleMaStrategy<WildersCalc>;
 
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
