@@ -33,7 +33,7 @@ pub use types::{ExitReason, SimResult, SummaryMetrics, Trade};
 
 use rayon::prelude::*;
 
-use crate::strategies::{Signal, StopLines};
+use crate::strategies::Signal;
 use metrics::compute_metrics;
 
 use scan::scan_trades;
@@ -91,12 +91,10 @@ pub struct SimOptions<'a> {
     pub risk: &'a StopConfig,
     /// 仓位模式。
     pub sizing: &'a SizingConfig,
-    /// 策略止损线; `None` 表示策略不提供。
-    pub strategy_stops: Option<&'a StopLines>,
 }
 
 impl<'a> SimOptions<'a> {
-    /// 默认口径: 无止损、全仓、策略不提供止损线。
+    /// 默认口径: 无止损、全仓。
     #[must_use]
     pub const fn new(
         initial_cash: crate::money::Amount,
@@ -109,7 +107,6 @@ impl<'a> SimOptions<'a> {
             exec,
             risk: &StopConfig::NONE,
             sizing: &SizingConfig::AllIn,
-            strategy_stops: None,
         }
     }
 }
@@ -157,29 +154,27 @@ pub fn simulate_ohlc(
     exec: &ExecConfig,
     risk: &StopConfig,
 ) -> crate::error::Result<SummaryMetrics> {
-    simulate_ohlc_with_stops(
-        high,
-        low,
-        close,
-        open,
+    simulate_ohlcv(
+        Ohlcv::new(open, high, low, close),
         signals,
-        None,
-        initial_cash,
-        bars_per_year,
-        exec,
-        risk,
+        &SimOptions {
+            initial_cash,
+            bars_per_year,
+            exec,
+            risk,
+            sizing: &SizingConfig::AllIn,
+        },
     )
 }
 
-/// 带策略止损线与仓位模式的盘中回测(主入口)。
+/// 盘中回测主入口(带止损与仓位模式)。
 ///
-/// 与 [`simulate_ohlc`] 使用**同一条**指标计算路径, 额外接受策略输出的
-/// [`StopLines`] 与仓位模式。策略止损线与引擎 [`StopConfig`] 可以同时存在,
-/// 引擎取更紧的一侧; 策略止损触发时平仓原因记为 [`ExitReason::StrategyStop`]。
+/// 与 [`simulate_ohlc`] 使用**同一条**指标计算路径; 仓位模式由
+/// [`SimOptions::sizing`] 指定。
 ///
 /// # Errors
-/// 执行费率非法、止损参数越界、仓位参数越界、策略止损线长度不足, 或配置了
-/// 任一种盘中依赖(止损/ATR 仓位)但 `high` / `low` 短于 `close` 时返回错误。
+/// 执行费率非法、止损参数越界、仓位参数越界, 或配置了任一种盘中依赖
+/// (止损/ATR 仓位)但 `high` / `low` 短于 `close` 时返回错误。
 pub fn simulate_ohlcv(
     ohlcv: Ohlcv<'_>,
     signals: &[Signal],
@@ -189,12 +184,7 @@ pub fn simulate_ohlcv(
     opts.risk.validate()?;
     opts.sizing.validate()?;
     let n = ohlcv.close.len().min(signals.len());
-    if let Some(lines) = opts.strategy_stops {
-        lines.validate_len(n)?;
-    }
-    let needs_ohlc = !opts.risk.is_none()
-        || opts.strategy_stops.is_some_and(|s| !s.is_none())
-        || opts.sizing.needs_ohlc();
+    let needs_ohlc = !opts.risk.is_none() || opts.sizing.needs_ohlc();
     if needs_ohlc && (ohlcv.high.len() < n || ohlcv.low.len() < n) {
         return Err(crate::error::AppError::Msg(format!(
             "配置了止损/ATR 仓位但 high/low 长度不足: high={}, low={}, close={n}",
@@ -220,7 +210,6 @@ pub fn simulate_ohlcv(
         ohlcv.close,
         ohlcv.open,
         signals,
-        opts.strategy_stops,
         &[],
         opts.initial_cash,
         opts.exec,
@@ -235,72 +224,6 @@ pub fn simulate_ohlcv(
     let mut summary = compute_metrics(&out.metrics, opts.initial_cash, opts.bars_per_year)?;
     summary.apply_exec(opts.exec);
     Ok(summary)
-}
-
-/// 带策略止损线与仓位模式的盘中回测(旧签名)。
-///
-/// 保留旧签名供既有调用/测试使用; 新代码请用 [`simulate_ohlcv`]。
-///
-/// # Errors
-/// 同 [`simulate_ohlcv`]。
-#[allow(clippy::too_many_arguments)]
-pub fn simulate_ohlc_with_stops_and_sizing(
-    high: &[f64],
-    low: &[f64],
-    close: &[f64],
-    open: &[f64],
-    signals: &[Signal],
-    strategy_stops: Option<&StopLines>,
-    initial_cash: crate::money::Amount,
-    bars_per_year: f64,
-    exec: &ExecConfig,
-    risk: &StopConfig,
-    sizing: &SizingConfig,
-) -> crate::error::Result<SummaryMetrics> {
-    simulate_ohlcv(
-        Ohlcv::new(open, high, low, close),
-        signals,
-        &SimOptions {
-            initial_cash,
-            bars_per_year,
-            exec,
-            risk,
-            sizing,
-            strategy_stops,
-        },
-    )
-}
-
-/// 带策略止损线的盘中回测(默认全仓)。
-///
-/// 保留旧签名供既有调用/测试使用; 需要仓位模式时用
-/// [`simulate_ohlc_with_stops_and_sizing`]。
-#[allow(clippy::too_many_arguments)]
-pub fn simulate_ohlc_with_stops(
-    high: &[f64],
-    low: &[f64],
-    close: &[f64],
-    open: &[f64],
-    signals: &[Signal],
-    strategy_stops: Option<&StopLines>,
-    initial_cash: crate::money::Amount,
-    bars_per_year: f64,
-    exec: &ExecConfig,
-    risk: &StopConfig,
-) -> crate::error::Result<SummaryMetrics> {
-    simulate_ohlc_with_stops_and_sizing(
-        high,
-        low,
-        close,
-        open,
-        signals,
-        strategy_stops,
-        initial_cash,
-        bars_per_year,
-        exec,
-        risk,
-        &SizingConfig::AllIn,
-    )
 }
 
 /// 执行一次回测并额外产出逐笔交易与两条曲线。
@@ -348,22 +271,21 @@ pub fn simulate_detailed_ohlc(
     exec: &ExecConfig,
     risk: &StopConfig,
 ) -> crate::error::Result<SimResult> {
-    simulate_detailed_ohlc_with_stops(
+    simulate_ohlcv_detailed(
         time,
-        high,
-        low,
-        close,
-        open,
+        Ohlcv::new(open, high, low, close),
         signals,
-        None,
-        initial_cash,
-        bars_per_year,
-        exec,
-        risk,
+        &SimOptions {
+            initial_cash,
+            bars_per_year,
+            exec,
+            risk,
+            sizing: &SizingConfig::AllIn,
+        },
     )
 }
 
-/// 带策略止损线与仓位模式的详细回测(主入口)。
+/// 详细回测主入口(带止损与仓位模式)。
 ///
 /// 与 [`simulate_ohlcv`] 使用**同一条**指标计算路径, 仅额外物化逐笔交易与曲线。
 ///
@@ -379,12 +301,7 @@ pub fn simulate_ohlcv_detailed(
     opts.risk.validate()?;
     opts.sizing.validate()?;
     let n = ohlcv.close.len().min(signals.len());
-    if let Some(lines) = opts.strategy_stops {
-        lines.validate_len(n)?;
-    }
-    let needs_ohlc = !opts.risk.is_none()
-        || opts.strategy_stops.is_some_and(|s| !s.is_none())
-        || opts.sizing.needs_ohlc();
+    let needs_ohlc = !opts.risk.is_none() || opts.sizing.needs_ohlc();
     if needs_ohlc && (ohlcv.high.len() < n || ohlcv.low.len() < n) {
         return Err(crate::error::AppError::Msg(format!(
             "配置了止损/ATR 仓位但 high/low 长度不足: high={}, low={}, close={n}",
@@ -413,7 +330,6 @@ pub fn simulate_ohlcv_detailed(
         ohlcv.close,
         ohlcv.open,
         signals,
-        opts.strategy_stops,
         time,
         opts.initial_cash,
         opts.exec,
@@ -445,76 +361,6 @@ pub fn simulate_ohlcv_detailed(
         equity_curve,
         fixed_curve: detail.fixed,
     })
-}
-
-/// 带策略止损线与仓位模式的详细回测(旧签名)。
-///
-/// 保留旧签名供既有调用/测试使用; 新代码请用 [`simulate_ohlcv_detailed`]。
-///
-/// # Errors
-/// 同 [`simulate_ohlcv_detailed`]。
-#[allow(clippy::too_many_arguments)]
-pub fn simulate_detailed_ohlc_with_stops_and_sizing(
-    time: &[i64],
-    high: &[f64],
-    low: &[f64],
-    close: &[f64],
-    open: &[f64],
-    signals: &[Signal],
-    strategy_stops: Option<&StopLines>,
-    initial_cash: crate::money::Amount,
-    bars_per_year: f64,
-    exec: &ExecConfig,
-    risk: &StopConfig,
-    sizing: &SizingConfig,
-) -> crate::error::Result<SimResult> {
-    simulate_ohlcv_detailed(
-        time,
-        Ohlcv::new(open, high, low, close),
-        signals,
-        &SimOptions {
-            initial_cash,
-            bars_per_year,
-            exec,
-            risk,
-            sizing,
-            strategy_stops,
-        },
-    )
-}
-
-/// 带策略止损线的详细回测(默认全仓)。
-///
-/// 保留旧签名供既有调用/测试使用; 需要仓位模式时用
-/// [`simulate_detailed_ohlc_with_stops_and_sizing`]。
-#[allow(clippy::too_many_arguments)]
-pub fn simulate_detailed_ohlc_with_stops(
-    time: &[i64],
-    high: &[f64],
-    low: &[f64],
-    close: &[f64],
-    open: &[f64],
-    signals: &[Signal],
-    strategy_stops: Option<&StopLines>,
-    initial_cash: crate::money::Amount,
-    bars_per_year: f64,
-    exec: &ExecConfig,
-    risk: &StopConfig,
-) -> crate::error::Result<SimResult> {
-    simulate_detailed_ohlc_with_stops_and_sizing(
-        time,
-        high,
-        low,
-        close,
-        open,
-        signals,
-        strategy_stops,
-        initial_cash,
-        bars_per_year,
-        exec,
-        risk,
-        &SizingConfig::AllIn,
-    )
 }
 
 /// 批量回测(rayon 并行)。返回顺序与 `signal_batch` 一一对应。

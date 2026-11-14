@@ -223,18 +223,16 @@ pub(super) fn atr_at_entry(atr: &[f64], bar: usize, fill_close: bool) -> Option<
 /// 当前持仓的有效止损价与原因。
 ///
 /// 同时配置多条规则时取**更紧**的一条: 多头取较高价, 空头取较低价。
-/// 价格相同时按固定止损 > 策略止损 > 追踪/保本的顺序归因。
+/// 价格相同时按固定止损 > 追踪/保本的顺序归因。
 pub(super) fn active_stop(
     cur_pos: Side,
     stop_loss: Option<f64>,
-    strategy_stop: Option<f64>,
     trailing_stop: Option<f64>,
     breakeven_stop: Option<f64>,
 ) -> Option<(f64, ExitReason)> {
     let mut best: Option<(f64, ExitReason)> = None;
     for (value, reason) in [
         (stop_loss, ExitReason::StopLoss),
-        (strategy_stop, ExitReason::StrategyStop),
         (trailing_stop, ExitReason::TrailingStop),
         (breakeven_stop, ExitReason::TrailingStop),
     ] {
@@ -266,17 +264,10 @@ pub(super) fn stop_exit_price(
     open: &[f64],
     close: &[f64],
     stop_loss: Option<f64>,
-    strategy_stop: Option<f64>,
     trailing_stop: Option<f64>,
     breakeven_stop: Option<f64>,
 ) -> Option<(f64, ExitReason)> {
-    let (stop, reason) = active_stop(
-        cur_pos,
-        stop_loss,
-        strategy_stop,
-        trailing_stop,
-        breakeven_stop,
-    )?;
+    let (stop, reason) = active_stop(cur_pos, stop_loss, trailing_stop, breakeven_stop)?;
     if !stop.is_finite() || stop <= 0.0 {
         return None;
     }

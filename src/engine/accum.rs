@@ -11,7 +11,7 @@ pub(super) struct TradeAccum {
     pub(super) stop_loss_exits: u32,
     /// 百分比/ATR 追踪或保本止损离场笔数。
     pub(super) trailing_stop_exits: u32,
-    /// 策略止损线离场笔数。
+    /// 历史字段: 策略止损线能力已移除, 当前版本恒为 0。
     pub(super) strategy_stop_exits: u32,
     /// 逐笔 `pnl`: SQN / skew / kurtosis / pf-stability 的分半统计都要用它。
     ///

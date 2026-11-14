@@ -168,10 +168,10 @@ pub mod wma;
 pub mod zlema;
 
 pub use shared::{
-    CachedBands, DEFAULT_BB_PERIOD, DayBar, MAX_GRID_PREALLOC, PoleCount, Signal, StopLines,
-    aggregate_days, bars_per_year, candle_direction_filter, expand_f64_range, grid_prealloc,
-    is_known_timeframe, money_flow_index, pct_b, price_cross_signal, rolling_highest,
-    rolling_lowest, shift_right_1, supersmoother_3_pole, utc_day_index,
+    CachedBands, DEFAULT_BB_PERIOD, DayBar, MAX_GRID_PREALLOC, PoleCount, Signal, aggregate_days,
+    bars_per_year, candle_direction_filter, expand_f64_range, grid_prealloc, is_known_timeframe,
+    money_flow_index, pct_b, price_cross_signal, rolling_highest, rolling_lowest, shift_right_1,
+    supersmoother_3_pole, utc_day_index,
 };
 pub use sma_cd::SmaCdStrategy;
 
@@ -242,30 +242,6 @@ pub trait Strategy: Send + Sync {
         time: &[i64],
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>>;
-
-    /// 生成**策略止损价格线**(可选)。
-    ///
-    /// 默认不提供。实现本方法的策略负责给出逐 bar 的止损价, 引擎会在盘中
-    /// `low/high` 触发时按 `StopLines` 语义成交, 平仓原因记为
-    /// [`crate::engine::ExitReason::StrategyStop`]。返回值长度必须覆盖
-    /// `generate_signals_full` 的信号长度; `None` / 非法价格表示该 bar 不设止损。
-    ///
-    /// **无前视**: `long[i]` / `short[i]` 只能使用第 `i` 根 bar 开始前已知的信息。
-    // 参数顺序与 `generate_signals_full` 完全一致; 顺序契约由同一组测试锁定。
-    #[allow(clippy::too_many_arguments)]
-    fn generate_stop_lines(
-        &self,
-        open: &[f64],
-        high: &[f64],
-        low: &[f64],
-        close: &[f64],
-        volume: &[f64],
-        time: &[i64],
-        param_idx: usize,
-    ) -> crate::error::Result<Option<StopLines>> {
-        let _ = (open, high, low, close, volume, time, param_idx);
-        Ok(None)
-    }
 
     /// 批量信号入口：一次算出 [start, end) 参数的全部信号（与 range 一一对应，
     /// 顺序保证），允许重参数策略在内部复用跨参数共享指标

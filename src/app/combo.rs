@@ -333,28 +333,6 @@ pub(super) fn run_combo(
                     let params = stop.apply_to(&strategy.param_str(i), &job.sizing);
                     match outcome {
                         crate::strategies::ParamOutcome::Signals(signals) => {
-                            let stop_lines = match strategy.generate_stop_lines(
-                                cols.open(),
-                                cols.high(),
-                                cols.low(),
-                                cols.close(),
-                                cols.volume(),
-                                cols.time(),
-                                i,
-                            ) {
-                                Ok(lines) => lines,
-                                Err(crate::error::AppError::ParamSkipped { reason }) => {
-                                    tracing::warn!(
-                                        "  [{}] 参数档位 {params} 的策略止损线不可计算: {reason}(记为 invalid, 继续)",
-                                        strategy.name(),
-                                    );
-                                    return Ok((params, None, RunStatus::Invalid));
-                                }
-                                Err(e) => return Err(e),
-                            };
-                            if let Some(lines) = &stop_lines {
-                                lines.validate_len(signals.len())?;
-                            }
                             let sim = crate::engine::simulate_ohlcv_detailed(
                                 cols.time(),
                                 crate::engine::Ohlcv::new(
@@ -370,7 +348,6 @@ pub(super) fn run_combo(
                                     exec: &ctx.exec,
                                     risk: stop,
                                     sizing: &job.sizing,
-                                    strategy_stops: stop_lines.as_ref(),
                                 },
                             )?;
                             let status = RunStatus::classify(&signals, &sim.summary);
@@ -487,36 +464,6 @@ pub(super) fn run_combo(
                     let params = stop.apply_to(&strategy.param_str(i), &job.sizing);
                     match outcome {
                         crate::strategies::ParamOutcome::Signals(signals) => {
-                            let stop_lines = match strategy.generate_stop_lines(
-                                cols.open(),
-                                cols.high(),
-                                cols.low(),
-                                cols.close(),
-                                cols.volume(),
-                                cols.time(),
-                                i,
-                            ) {
-                                Ok(lines) => lines,
-                                Err(crate::error::AppError::ParamSkipped { reason }) => {
-                                    tracing::warn!(
-                                        "  [{}] 参数档位 {params} 的策略止损线不可计算: {reason}(记为 invalid, 继续)",
-                                        strategy.name(),
-                                    );
-                                    return Ok(ctx.invalid_row(
-                                        symbol,
-                                        tf,
-                                        strategy,
-                                        &params,
-                                        cols.len(),
-                                        bh_pnl,
-                                        bh_ret,
-                                    ));
-                                }
-                                Err(e) => return Err(e),
-                            };
-                            if let Some(lines) = &stop_lines {
-                                lines.validate_len(signals.len())?;
-                            }
                             let metrics = crate::engine::simulate_ohlcv(
                                 crate::engine::Ohlcv::new(
                                     cols.open(),
@@ -531,7 +478,6 @@ pub(super) fn run_combo(
                                     exec: &ctx.exec,
                                     risk: stop,
                                     sizing: &job.sizing,
-                                    strategy_stops: stop_lines.as_ref(),
                                 },
                             )?;
                             let status = RunStatus::classify(&signals, &metrics);

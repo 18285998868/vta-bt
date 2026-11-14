@@ -21,66 +21,6 @@ pub enum Signal {
     ExitShort,
 }
 
-/// 策略提供的**逐 bar 止损价格线**。
-///
-/// 这是策略输出层, 不是引擎风险规则: 策略负责在 `i` 根 bar 开始前给出
-/// 多头/空头的止损价, 引擎只在盘中 `low/high` 触发时成交。价格线允许
-/// `NaN`、`0` 或负数表示"该 bar 不设止损"; 长度必须覆盖本次回测的
-/// `close.len().min(signals.len())`。
-///
-/// **无前视契约**: `long[i]` / `short[i]` 只能使用第 `i` 根 bar 开始前
-/// 已知的信息。若用第 `i` 根收盘价计算 `i` 根止损线, 就构成前视。
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct StopLines {
-    /// 多头止损价线; `None` 表示该侧不提供策略止损。
-    pub long: Option<Vec<f64>>,
-    /// 空头止损价线; `None` 表示该侧不提供策略止损。
-    pub short: Option<Vec<f64>>,
-}
-
-impl StopLines {
-    /// 两侧都没有止损线。
-    #[must_use]
-    pub fn is_none(&self) -> bool {
-        self.long.is_none() && self.short.is_none()
-    }
-
-    /// 校验两条线都覆盖 `n` 根 bar。
-    ///
-    /// # Errors
-    /// 任一侧长度小于 `n` 时返回 [`crate::error::AppError::Msg`]。
-    pub fn validate_len(&self, n: usize) -> crate::error::Result<()> {
-        for (name, line) in [("long", &self.long), ("short", &self.short)] {
-            if let Some(values) = line
-                && values.len() < n
-            {
-                return Err(crate::error::AppError::Msg(format!(
-                    "策略止损线 {name} 长度不足: {} < {n}",
-                    values.len()
-                )));
-            }
-        }
-        Ok(())
-    }
-
-    /// 多头在第 `bar` 根 bar 的止损价; 非法价格视为未设置。
-    #[must_use]
-    pub fn long_at(&self, bar: usize) -> Option<f64> {
-        valid_stop(self.long.as_ref()?.get(bar).copied()?)
-    }
-
-    /// 空头在第 `bar` 根 bar 的止损价; 非法价格视为未设置。
-    #[must_use]
-    pub fn short_at(&self, bar: usize) -> Option<f64> {
-        valid_stop(self.short.as_ref()?.get(bar).copied()?)
-    }
-}
-
-#[inline]
-fn valid_stop(price: f64) -> Option<f64> {
-    (price.is_finite() && price > 0.0).then_some(price)
-}
-
 /// SuperSmoother 极数。仅支持 2 极与 3 极。
 ///
 /// 序列化/反序列化沿用整数形式 (`2` / `3`), 非法值直接报错而非静默回落。
@@ -568,22 +508,6 @@ pub type CachedBands = Option<(Vec<f64>, Vec<f64>, Vec<f64>)>;
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn stop_lines_filter_invalid_prices_and_validate_length() {
-        let lines = StopLines {
-            long: Some(vec![f64::NAN, 0.0, -1.0, 99.0]),
-            short: None,
-        };
-        assert_eq!(lines.long_at(0), None);
-        assert_eq!(lines.long_at(1), None);
-        assert_eq!(lines.long_at(2), None);
-        assert_eq!(lines.long_at(3), Some(99.0));
-        assert_eq!(lines.short_at(0), None);
-        assert!(lines.validate_len(4).is_ok());
-        assert!(lines.validate_len(5).is_err());
-        assert!(StopLines::default().is_none());
-    }
 
     /// `%B` 的口径: 正常值 + 不可计算时返回 `NaN`。
     ///

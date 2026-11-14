@@ -2,7 +2,7 @@
 
 use std::num::NonZeroUsize;
 
-use crate::strategies::{Signal, StopLines};
+use crate::strategies::Signal;
 
 use super::accum::*;
 use super::exec::*;
@@ -28,19 +28,17 @@ fn sized_detail(
     signals: &[Signal],
     sizing: SizingConfig,
 ) -> SimResult {
-    simulate_detailed_ohlc_with_stops_and_sizing(
+    simulate_ohlcv_detailed(
         &[],
-        high,
-        low,
-        close,
-        open,
+        Ohlcv::new(open, high, low, close),
         signals,
-        None,
-        crate::money::Amount::from_i64(10_000),
-        365.0,
-        &ExecConfig::default(),
-        &StopConfig::default(),
-        &sizing,
+        &SimOptions {
+            initial_cash: crate::money::Amount::from_i64(10_000),
+            bars_per_year: 365.0,
+            exec: &ExecConfig::default(),
+            risk: &StopConfig::default(),
+            sizing: &sizing,
+        },
     )
     .expect("合法回测必须成功")
 }
@@ -1011,7 +1009,6 @@ fn test_simulate_does_not_materialize_equity_curve() {
         &close,
         &close,
         &sig,
-        None,
         &[],
         crate::money::Amount::from_i64(10_000),
         &exec,
@@ -1467,37 +1464,6 @@ fn run_stop(
     .expect("合法回测必须成功")
 }
 
-/// 构造带策略止损线的详细回测; 默认零费率、零滑点、`delay=1`。
-#[allow(clippy::too_many_arguments)]
-fn run_stops(
-    open: &[f64],
-    high: &[f64],
-    low: &[f64],
-    close: &[f64],
-    signals: &[Signal],
-    stop_lines: Option<&StopLines>,
-    stop: StopConfig,
-    fill_close: bool,
-) -> SimResult {
-    let time: Vec<i64> = (0..close.len() as i64).collect();
-    let exec = ExecConfig::try_from_bps_fill(1, 0.0, 0.0, fill_close)
-        .expect("零费率/零滑点/延迟 1 必须合法");
-    simulate_detailed_ohlc_with_stops(
-        &time,
-        high,
-        low,
-        close,
-        open,
-        signals,
-        stop_lines,
-        crate::money::Amount::from_i64(1_000),
-        252.0,
-        &exec,
-        &stop,
-    )
-    .expect("合法回测必须成功")
-}
-
 #[test]
 fn exit_long_and_exit_short_only_close_matching_side() {
     assert_eq!(next_target(Side::Long, Signal::ExitLong), Side::Flat);
@@ -1529,172 +1495,6 @@ fn exit_long_and_exit_short_only_close_matching_side() {
 }
 
 #[test]
-fn strategy_stop_line_long_triggers_intrabar() {
-    let open = [100.0, 100.0, 100.0, 100.0, 100.0];
-    let high = [101.0, 101.0, 101.0, 101.0, 101.0];
-    let low = [99.0, 99.0, 95.0, 99.0, 99.0];
-    let close = [100.0, 100.0, 96.0, 100.0, 100.0];
-    let signals = [
-        Signal::Buy,
-        Signal::Hold,
-        Signal::Hold,
-        Signal::Hold,
-        Signal::Hold,
-    ];
-    let lines = StopLines {
-        long: Some(vec![f64::NAN, 96.0, 96.0, 96.0, 96.0]),
-        short: None,
-    };
-    let d = run_stops(
-        &open,
-        &high,
-        &low,
-        &close,
-        &signals,
-        Some(&lines),
-        StopConfig::default(),
-        false,
-    );
-    assert_eq!(d.trades.len(), 1);
-    assert_eq!(d.trades[0].side, Side::Long);
-    assert_eq!(d.trades[0].exit_time, 2);
-    assert!((d.trades[0].exit_price - 96.0).abs() < 1e-12);
-    assert_eq!(d.trades[0].exit_reason, "strategy_stop");
-    assert_eq!(d.summary.strategy_stop_exits, 1);
-    assert_eq!(d.summary.stop_loss_exits, 0);
-    assert_eq!(d.summary.trailing_stop_exits, 0);
-    assert!((d.summary.final_equity.to_f64() - 960.0).abs() < 1e-9);
-}
-
-#[test]
-fn strategy_stop_line_short_triggers_intrabar() {
-    let open = [100.0, 100.0, 100.0, 100.0, 100.0];
-    let high = [101.0, 101.0, 105.0, 101.0, 101.0];
-    let low = [99.0, 99.0, 99.0, 99.0, 99.0];
-    let close = [100.0, 100.0, 104.0, 100.0, 100.0];
-    let signals = [
-        Signal::Sell,
-        Signal::Hold,
-        Signal::Hold,
-        Signal::Hold,
-        Signal::Hold,
-    ];
-    let lines = StopLines {
-        long: None,
-        short: Some(vec![f64::NAN, 104.0, 104.0, 104.0, 104.0]),
-    };
-    let d = run_stops(
-        &open,
-        &high,
-        &low,
-        &close,
-        &signals,
-        Some(&lines),
-        StopConfig::default(),
-        false,
-    );
-    assert_eq!(d.trades.len(), 1);
-    assert_eq!(d.trades[0].side, Side::Short);
-    assert_eq!(d.trades[0].exit_time, 2);
-    assert!((d.trades[0].exit_price - 104.0).abs() < 1e-12);
-    assert_eq!(d.trades[0].exit_reason, "strategy_stop");
-    assert_eq!(d.summary.strategy_stop_exits, 1);
-    assert!((d.summary.final_equity.to_f64() - 960.0).abs() < 1e-9);
-}
-
-#[test]
-fn strategy_stop_line_gap_fills_at_open() {
-    let open = [100.0, 100.0, 94.0, 94.0, 94.0];
-    let high = [101.0, 101.0, 95.0, 95.0, 95.0];
-    let low = [99.0, 99.0, 93.0, 93.0, 93.0];
-    let close = [100.0, 100.0, 94.0, 94.0, 94.0];
-    let signals = [
-        Signal::Buy,
-        Signal::Hold,
-        Signal::Hold,
-        Signal::Hold,
-        Signal::Hold,
-    ];
-    let lines = StopLines {
-        long: Some(vec![f64::NAN, 96.0, 96.0, 96.0, 96.0]),
-        short: None,
-    };
-    let d = run_stops(
-        &open,
-        &high,
-        &low,
-        &close,
-        &signals,
-        Some(&lines),
-        StopConfig::default(),
-        false,
-    );
-    assert_eq!(d.trades.len(), 1);
-    assert_eq!(d.trades[0].exit_time, 2);
-    assert!(
-        (d.trades[0].exit_price - 94.0).abs() < 1e-12,
-        "跳空必须按 open 成交, exit={}",
-        d.trades[0].exit_price
-    );
-    assert_eq!(d.trades[0].exit_reason, "strategy_stop");
-}
-
-#[test]
-fn strategy_stop_line_is_tighter_than_engine_stop() {
-    let open = [100.0; 4];
-    let high = [101.0, 101.0, 101.0, 101.0];
-    let low = [99.0, 98.5, 99.0, 99.0];
-    let close = [100.0; 4];
-    let signals = [Signal::Buy, Signal::Hold, Signal::Hold, Signal::Hold];
-    let lines = StopLines {
-        long: Some(vec![f64::NAN, 99.0, 99.0, 99.0]),
-        short: None,
-    };
-    let d = run_stops(
-        &open,
-        &high,
-        &low,
-        &close,
-        &signals,
-        Some(&lines),
-        StopConfig {
-            stop_loss_pct: Some(2.0),
-            ..StopConfig::default()
-        },
-        false,
-    );
-    assert_eq!(d.trades.len(), 1);
-    assert!((d.trades[0].exit_price - 99.0).abs() < 1e-12);
-    assert_eq!(d.trades[0].exit_reason, "strategy_stop");
-    assert_eq!(d.summary.strategy_stop_exits, 1);
-    assert_eq!(d.summary.stop_loss_exits, 0);
-}
-
-#[test]
-fn strategy_stop_lines_must_cover_signal_length() {
-    let close = [100.0; 3];
-    let signals = [Signal::Buy, Signal::Hold, Signal::Hold];
-    let lines = StopLines {
-        long: Some(vec![99.0]),
-        short: None,
-    };
-    let err = simulate_ohlc_with_stops(
-        &close,
-        &close,
-        &close,
-        &close,
-        &signals,
-        Some(&lines),
-        crate::money::Amount::from_i64(1_000),
-        252.0,
-        &ExecConfig::default(),
-        &StopConfig::default(),
-    )
-    .expect_err("短止损线必须报错");
-    assert!(err.to_string().contains("长度不足"), "err={err}");
-}
-
-#[test]
 fn atr_fixed_stop_uses_prior_completed_bar_atr() {
     let open = [100.0, 100.0, 100.0, 100.0, 100.0, 100.0];
     let high = [101.0, 101.0, 101.0, 101.0, 101.0, 101.0];
@@ -1708,13 +1508,12 @@ fn atr_fixed_stop_uses_prior_completed_bar_atr() {
         Signal::Hold,
         Signal::Hold,
     ];
-    let d = run_stops(
+    let d = run_stop(
         &open,
         &high,
         &low,
         &close,
         &signals,
-        None,
         StopConfig {
             atr: Some(AtrStopConfig {
                 period: 2,
@@ -1747,13 +1546,12 @@ fn atr_trailing_stop_ratchets_from_highest_high() {
         Signal::Hold,
         Signal::Hold,
     ];
-    let d = run_stops(
+    let d = run_stop(
         &open,
         &high,
         &low,
         &close,
         &signals,
-        None,
         StopConfig {
             atr: Some(AtrStopConfig {
                 period: 2,
@@ -1792,13 +1590,12 @@ fn atr_trailing_stop_never_loosens_when_atr_expands() {
         Signal::Hold,
         Signal::Hold,
     ];
-    let d = run_stops(
+    let d = run_stop(
         &open,
         &high,
         &low,
         &close,
         &signals,
-        None,
         StopConfig {
             atr: Some(AtrStopConfig {
                 period: 2,
@@ -1829,13 +1626,12 @@ fn breakeven_stop_moves_to_entry_after_trigger() {
     let low = [99.0, 99.0, 99.0, 99.0];
     let close = [100.0, 103.0, 100.0, 100.0];
     let signals = [Signal::Buy, Signal::Hold, Signal::Hold, Signal::Hold];
-    let d = run_stops(
+    let d = run_stop(
         &open,
         &high,
         &low,
         &close,
         &signals,
-        None,
         StopConfig {
             breakeven: Some(BreakevenConfig {
                 trigger_pct: 2.0,
@@ -2449,110 +2245,4 @@ fn exit_reason_values_are_closed_and_wrong() {
             t.exit_reason
         );
     }
-}
-
-/// 新 `Ohlcv` / `SimOptions` 入口与旧签名逐位等价。
-///
-/// 旧签名保留为兼容包装层; 本测试钉住两者在「止损 + ATR 仓位 + 策略止损线」
-/// 组合下产出完全相同的指标、交易与曲线。
-#[test]
-fn ohlcv_api_matches_legacy_signatures() {
-    let n = 120;
-    let close = make_prices(n);
-    let open: Vec<f64> = close.iter().map(|c| c - 0.4).collect();
-    let high: Vec<f64> = close.iter().map(|c| c + 1.2).collect();
-    let low: Vec<f64> = close.iter().map(|c| c - 1.2).collect();
-    let time: Vec<i64> = (0..n as i64).map(|i| i * 60_000).collect();
-
-    let mut signals = vec![Signal::Hold; n];
-    signals[4] = Signal::Buy;
-    signals[40] = Signal::Close;
-    signals[55] = Signal::Sell;
-    signals[95] = Signal::ExitShort;
-
-    let exec = ExecConfig::try_from_bps_fill(2, 3.0, 1.5, false).expect("费率/滑点合法");
-    let risk = StopConfig {
-        stop_loss_pct: Some(2.5),
-        trailing_stop_pct: Some(4.0),
-        ..StopConfig::default()
-    };
-    let sizing = SizingConfig::Atr {
-        risk_pct: 1.0,
-        period: 14,
-        mult: 2.0,
-        max_position_pct: 50.0,
-        fallback_fraction_pct: 10.0,
-    };
-    let mut long_line = vec![f64::NAN; n];
-    long_line[33] = low[33];
-    let lines = StopLines {
-        long: Some(long_line),
-        short: None,
-    };
-    let cash = crate::money::Amount::from_i64(10_000);
-    let opts = SimOptions {
-        initial_cash: cash,
-        bars_per_year: 252.0,
-        exec: &exec,
-        risk: &risk,
-        sizing: &sizing,
-        strategy_stops: Some(&lines),
-    };
-
-    let new = simulate_ohlcv(Ohlcv::new(&open, &high, &low, &close), &signals, &opts)
-        .expect("新入口必须成功");
-    let old = simulate_ohlc_with_stops_and_sizing(
-        &high,
-        &low,
-        &close,
-        &open,
-        &signals,
-        Some(&lines),
-        cash,
-        252.0,
-        &exec,
-        &risk,
-        &sizing,
-    )
-    .expect("旧入口必须成功");
-    assert_eq!(new, old);
-
-    let new_detailed = simulate_ohlcv_detailed(
-        &time,
-        Ohlcv::new(&open, &high, &low, &close),
-        &signals,
-        &opts,
-    )
-    .expect("新入口必须成功");
-    let old_detailed = simulate_detailed_ohlc_with_stops_and_sizing(
-        &time,
-        &high,
-        &low,
-        &close,
-        &open,
-        &signals,
-        Some(&lines),
-        cash,
-        252.0,
-        &exec,
-        &risk,
-        &sizing,
-    )
-    .expect("旧入口必须成功");
-    assert_eq!(new_detailed, old_detailed);
-    assert!(
-        !new_detailed.trades.is_empty(),
-        "等价测试必须真的产生交易, 否则没有覆盖成交路径"
-    );
-
-    // close-only 入口: high/low 退化后不得改变任何数值。
-    let new_close_only = simulate_ohlcv(
-        Ohlcv::close_only(&close, &open),
-        &signals,
-        &SimOptions::new(cash, 252.0, &exec),
-    )
-    .expect("新入口必须成功");
-    let old_close_only =
-        simulate(&close, &open, &signals, cash, 252.0, &exec).expect("旧入口必须成功");
-    assert_eq!(new_close_only, old_close_only);
 }

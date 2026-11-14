@@ -3,7 +3,7 @@
 use crate::config;
 use crate::engine;
 use crate::output;
-use crate::strategies::build::{StrategyJob, build_strategies_checked};
+use crate::strategies::build::build_strategies_checked;
 
 use super::combo::*;
 use super::fingerprint::*;
@@ -428,100 +428,6 @@ fn fingerprint_covers_stop_config() {
     assert_ne!(base, with_breakeven, "保本止损必须改变缓存指纹");
     assert_ne!(with_sl, with_trail, "不同止损配置必须可区分");
     assert_ne!(with_atr, with_breakeven, "不同止损配置必须可区分");
-}
-
-/// App 层必须把 `generate_stop_lines` 的 `Some` 路径接到引擎, 并在报告中
-/// 计入 `strategy_stop_exits`。这里用一个最小策略直接跑 `run_combo`。
-#[test]
-fn app_runs_strategy_stop_lines_and_counts_strategy_stop_exits() {
-    struct StopLineStrategy;
-
-    impl crate::strategies::Strategy for StopLineStrategy {
-        fn name(&self) -> &'static str {
-            "stopline_test"
-        }
-
-        fn param_count(&self) -> usize {
-            1
-        }
-
-        fn param_str(&self, _idx: usize) -> String {
-            "period=1".to_string()
-        }
-
-        fn generate_signals_full(
-            &self,
-            _open: &[f64],
-            _high: &[f64],
-            _low: &[f64],
-            close: &[f64],
-            _volume: &[f64],
-            _time: &[i64],
-            _param_idx: usize,
-        ) -> crate::error::Result<Vec<crate::strategies::Signal>> {
-            let mut signals = vec![crate::strategies::Signal::Hold; close.len()];
-            if signals.len() > 1 {
-                signals[1] = crate::strategies::Signal::Buy;
-            }
-            Ok(signals)
-        }
-
-        fn generate_stop_lines(
-            &self,
-            _open: &[f64],
-            _high: &[f64],
-            _low: &[f64],
-            close: &[f64],
-            _volume: &[f64],
-            _time: &[i64],
-            _param_idx: usize,
-        ) -> crate::error::Result<Option<crate::strategies::StopLines>> {
-            Ok(Some(crate::strategies::StopLines {
-                long: Some(vec![101.5; close.len()]),
-                short: None,
-            }))
-        }
-    }
-
-    let dir = std::env::temp_dir().join(format!("vta-app-stop-lines-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("创建临时目录");
-    let cols = cols(10);
-    let ctx = ComboCtx {
-        balance: crate::money::Amount::from_i64(10_000),
-        detail: false,
-        fixed_curves: false,
-        overwrite: true,
-        no_cache: true,
-        temps_dir: dir.clone(),
-        detail_dir: dir.join("detail"),
-        window: "test".to_string(),
-        exec: engine::ExecConfig::default(),
-    };
-    let job = StrategyJob {
-        strategy: Box::new(StopLineStrategy),
-        stop: engine::StopConfig::default(),
-        sizing: engine::SizingConfig::default(),
-    };
-    let (path, computed) = run_combo(
-        &job,
-        "BTCUSDT",
-        "1d",
-        &cols,
-        365.0,
-        data_fingerprint(&cols),
-        &ctx,
-    )
-    .expect("run_combo");
-    assert!(computed);
-    let rows = output::read_parquet(&path).expect("读回组合结果");
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].metrics.num_trades, 1);
-    assert_eq!(rows[0].metrics.strategy_stop_exits, 1);
-    assert_eq!(rows[0].metrics.stop_loss_exits, 0);
-    assert_eq!(rows[0].metrics.trailing_stop_exits, 0);
-    assert_eq!(rows[0].status, RunStatus::Ok);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// **回归**: 指纹必须含**实现版本**(源码内容哈希)。

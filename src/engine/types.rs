@@ -35,7 +35,9 @@ pub struct SummaryMetrics {
     pub stop_loss_exits: u32,
     /// 因百分比/ATR 追踪止损或保本止损离场的笔数。
     pub trailing_stop_exits: u32,
-    /// 因策略提供的止损价格线离场的笔数。
+    /// 历史字段: 策略止损线能力已移除, 当前版本恒为 0。
+    ///
+    /// 保留该字段与报告列只为兼容既有报告 schema 与旧 detail 文件。
     pub strategy_stop_exits: u32,
     /// 盈利笔的平均 pnl(货币; 定点十进制)。
     pub avg_win: crate::money::Amount,
@@ -176,7 +178,9 @@ pub enum ExitReason {
     StopLoss,
     /// 百分比/ATR 追踪止损或保本止损触发。
     TrailingStop,
-    /// 策略提供的止损价格线触发。
+    /// 历史变体: 策略止损线能力已移除, 不再产生。
+    ///
+    /// 保留该变体只为兼容旧 detail 文件中的 `strategy_stop` 文本。
     StrategyStop,
     /// 数据末尾强制平仓。
     EndOfData,

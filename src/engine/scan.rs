@@ -1,6 +1,6 @@
 //! 信号扫描: 目标方向状态机、成交与平仓结算。
 
-use crate::strategies::{Signal, StopLines};
+use crate::strategies::Signal;
 
 use super::accum::{CurveAccum, TradeAccum};
 use super::exec::{ExecConfig, Side};
@@ -318,8 +318,8 @@ pub(super) struct ScanOut {
 /// 退回收盘价, **不会**因此少回测末尾的 bar。旧实现把 `open.len()` 也算进
 /// `n` 的 `min`, 于是 `open = []` 时整段信号被静默丢弃、一笔都不成交。
 ///
-/// `high` / `low` 只在配置了 [`StopConfig`] 或策略提供了 [`StopLines`] 时
-/// 参与盘中止损判定; 两者都为空时完全不影响结果, 与旧路径逐位一致。
+/// `high` / `low` 只在配置了 [`StopConfig`] 时参与盘中止损判定; 未配置时
+/// 完全不影响结果, 与旧路径逐位一致。
 #[allow(clippy::too_many_arguments)]
 pub(super) fn scan_trades(
     high: &[f64],
@@ -327,7 +327,6 @@ pub(super) fn scan_trades(
     close: &[f64],
     open: &[f64],
     signals: &[Signal],
-    strategy_stops: Option<&StopLines>,
     time: &[i64],
     initial_cash: crate::money::Amount,
     exec: &ExecConfig,
@@ -338,9 +337,6 @@ pub(super) fn scan_trades(
     risk.validate()?;
     sizing.validate()?;
     let n = close.len().min(signals.len());
-    if let Some(lines) = strategy_stops {
-        lines.validate_len(n)?;
-    }
     let atr_values = risk.atr.map(|cfg| wilder_atr(high, low, close, cfg.period));
     let sizing_atr = match *sizing {
         SizingConfig::Atr { period, .. } => Some(wilder_atr(high, low, close, period)),
@@ -401,7 +397,6 @@ pub(super) fn scan_trades(
     let mut pos_stop_loss: Option<f64> = None;
     let mut pos_trail_extreme: Option<f64> = None;
     let mut pos_trail_stop: Option<f64> = None;
-    let mut pos_strategy_stop: Option<f64> = None;
     let mut pos_breakeven_stop: Option<f64> = None;
 
     // 信号在 fill bar 才生效: 每个 bar 算出的目标方向要延迟 `delay` 根 bar 再应用。
@@ -416,15 +411,6 @@ pub(super) fn scan_trades(
     // 可变借用 `cash`/`acc`/`trades`, 与循环内其他读写冲突。
     macro_rules! try_stop_exit {
         ($bar:expr) => {{
-            if cur_pos.is_open() {
-                // 策略止损线是逐 bar 输出: 每根 bar 开始前取当前方向的价格线。
-                // 无 line / NaN / 非正价格 => 该 bar 不设策略止损。
-                pos_strategy_stop = match cur_pos {
-                    Side::Long => strategy_stops.and_then(|s| s.long_at($bar)),
-                    Side::Short => strategy_stops.and_then(|s| s.short_at($bar)),
-                    Side::Flat => None,
-                };
-            }
             if cur_pos.is_open()
                 && !($bar == pos_entry_bar && pos_entry_at_close)
                 && let Some((base, reason)) = stop_exit_price(
@@ -435,7 +421,6 @@ pub(super) fn scan_trades(
                     open,
                     close,
                     pos_stop_loss,
-                    pos_strategy_stop,
                     pos_trail_stop,
                     pos_breakeven_stop,
                 )
@@ -474,7 +459,6 @@ pub(super) fn scan_trades(
                     pos_stop_loss = None;
                     pos_trail_extreme = None;
                     pos_trail_stop = None;
-                    pos_strategy_stop = None;
                     pos_breakeven_stop = None;
                     // 止损是风险覆盖, 不是策略信号: 平仓后把目标重置为 Flat,
                     // 并把 stop 之前已经排队的陈旧目标全部改成 Flat。**不能
@@ -543,7 +527,6 @@ pub(super) fn scan_trades(
                     pos_stop_loss = None;
                     pos_trail_extreme = None;
                     pos_trail_stop = None;
-                    pos_strategy_stop = None;
                     pos_breakeven_stop = None;
                 }
             }
@@ -627,7 +610,6 @@ pub(super) fn scan_trades(
                         || risk.atr.is_some_and(|c| c.trailing))
                     .then_some(entry_price);
                     pos_trail_stop = trail;
-                    pos_strategy_stop = None;
                     pos_breakeven_stop = None;
                 }
             }

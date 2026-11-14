@@ -38,7 +38,7 @@ src/
       columns.rs / schema.rs  # Arrow 列读取辅助 / 单位表
   strategies/
     mod.rs             # Strategy trait + shared 再导出
-    shared.rs          # Signal / StopLines / price_cross_signal / bars_per_year
+    shared.rs          # Signal / price_cross_signal / bars_per_year
     single_ma.rs       # 单 MA 策略的泛型 Strategy 实现(MaCalculator)
     build.rs           # build_one 穷尽 match → build_jobs_checked
     <name>/            # 每个策略: config.rs + strategy.rs
@@ -111,7 +111,7 @@ detail 模式 -> write_detail_index(detail/manifest.toml)                # 只�
 - `simulate_ohlcv_detailed(time, Ohlcv, signals, &SimOptions) -> SimResult`
 
 `Ohlcv` 统一为 `open/high/low/close` 顺序（`Ohlcv::close_only` 用于纯收盘价策略），
-`SimOptions` 打包资金、年化、执行口径、止损、仓位与策略止损线。旧 `simulate_*`
+`SimOptions` 打包资金、年化、执行口径、止损与仓位。旧 `simulate_*`
 签名保留为薄包装，由等价测试锁定逐位一致。
 
 ### 合并
