@@ -777,7 +777,9 @@ fn parquet_io_apis_take_path_and_never_panic_on_non_utf8() {
     let src = concat!(
         include_str!("../output/parquet/report.rs"),
         include_str!("../output/parquet/read.rs"),
-        include_str!("../output/parquet/detail.rs"),
+        include_str!("../output/parquet/detail/manifest.rs"),
+        include_str!("../output/parquet/detail/read.rs"),
+        include_str!("../output/parquet/detail/write.rs"),
     );
     let io_fns = [
         "pub fn write_parquet(",

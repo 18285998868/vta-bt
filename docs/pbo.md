@@ -23,5 +23,5 @@ cargo run --release -- --pbo /path/to/reports_XXX
   `warn!` 条数。时间列必须严格递增；按**精确时间网格**分组，选样本数最大的 cohort，
   不再按 `min(len)` 截断（旧实现会让一条短曲线把整组 T 拉小且无提示）。
 - T<32 或 N<10 的组跳过并明示；φ>0.05 按 Neyman-Pearson 惯例拒绝。
-- 源码：`src/pbo.rs`（纯 CSCV + 单测：噪声φ高/植入边际φ低）+ detail fixedcurve 写读。
+- 源码：`src/pbo/`（`cscv.rs` 纯 CSCV + `report.rs` 报告装配 + `tests.rs` 单测：噪声φ高/植入边际φ低）+ detail fixedcurve 写读。
 

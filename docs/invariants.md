@@ -30,7 +30,7 @@
 
 空头持仓期间权益可能 ≤ 0，此时 `ln(curr/prev)` 返回 NaN；NaN 经 Welford 污染均值/方差后会让 `ret_m2 > 0.0` 守卫失效，导致 **sharpe/volatility 被静默归零**、sortino 直接输出 NaN。
 
-`engine::bar_log_returns` 是全部收益口径的唯一来源（含 `pbo.rs`），两侧都要检查 `prev <= 0` 与 `curr <= 0`。**不要绕过它直接调 `.ln()`。**
+`engine::bar_log_returns` 是全部收益口径的唯一来源（含 `pbo/`），两侧都要检查 `prev <= 0` 与 `curr <= 0`。**不要绕过它直接调 `.ln()`。**
 
 ### 5. 指标口径与**单位**（报告引用前请确认）
 

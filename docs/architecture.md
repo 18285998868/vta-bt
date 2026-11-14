@@ -10,7 +10,11 @@ src/
   money.rs             # Amount(rust_decimal 定点十进制): 钱的唯一类型
   error.rs             # thiserror AppError(Io/Config/BinanceData/DukascopyData/Parquet/Arrow/Msg)
   data.rs              # DataSection::for_pair → reader 的 DataConfig; KlineColumns
-  pbo.rs               # CSCV 实算 + 单测
+  pbo/                 # CSCV 实算 + 报告
+    mod.rs             # PboResult / pick_s / block_counts
+    cscv.rs            # CSCV 核心
+    report.rs          # --pbo 报告装配
+    tests.rs           # 单测
   app/                 # 编排层
     run.rs             # run/run_with: 配置 → 作业 → 双层串行取数 → run_combo → merge
     combo.rs           # run_combo: 缓存判定 / 参数分批并行 / 写盘
@@ -32,7 +36,11 @@ src/
   output/
     parquet/           # Parquet 读写
       report.rs        # 汇总报告构建与原子写入
-      detail.rs        # 逐笔明细/权益曲线/侧车清单
+      detail/          # 逐笔明细/权益曲线/侧车清单
+        mod.rs
+        write.rs       # 明细与曲线落盘
+        read.rs        # 曲线读取
+        manifest.rs    # 侧车清单与 detail 索引
       read.rs          # 缓存校验读取、合并
       params.rs        # 参数串规范化与编码
       columns.rs / schema.rs  # Arrow 列读取辅助 / 单位表
@@ -130,4 +138,4 @@ detail 模式 -> write_detail_index(detail/manifest.toml)                # 只�
 - `engine/mod.rs`：`simulate` / `simulate_detailed` 与带 high/low 的 `simulate_ohlc*`：信号 → 持仓 → 成交 → 绩效。
 - `output/parquet/`：`temps/` 单组合写 + `detail/` 明细写 + `read` 校验 + `merge`。
 - `strategies/build.rs`：按 `[[strategy]]` 展开参数实例，并把该条的 `stop` 一并带入作业。
-- `pbo.rs`：读 `detail/manifest.toml` 索引 → 筛 `status == ok` / 同时间网格 → 分组 CSCV → 报告。
+- `pbo/`：读 `detail/manifest.toml` 索引 → 筛 `status == ok` / 同时间网格 → 分组 CSCV → 报告。
