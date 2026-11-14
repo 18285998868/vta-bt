@@ -115,17 +115,12 @@ impl Strategy for BbrkPctbStrategy {
 
     fn generate_signals_full(
         &self,
-        _open: &[f64],
-        _high: &[f64],
-        _low: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        _time: &[i64],
+        bars: crate::strategies::Bars<'_>,
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
         // %b 只需 close（与 BB 同源），双入口逐位一致。
         let (s, b, e) = self.pairs[param_idx];
-        compute(close, s, b, e)
+        compute(bars.close(), s, b, e)
     }
 }
 

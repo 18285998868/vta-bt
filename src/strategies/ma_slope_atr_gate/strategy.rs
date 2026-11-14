@@ -239,12 +239,7 @@ impl Strategy for MaSlopeAtrGateStrategy {
 
     fn generate_signals_full(
         &self,
-        _open: &[f64],
-        high: &[f64],
-        low: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        _time: &[i64],
+        bars: crate::strategies::Bars<'_>,
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
         // `Params` 是 `Copy` 的(不含 `String`), 故此处**不克隆**任何堆数据。
@@ -256,7 +251,7 @@ impl Strategy for MaSlopeAtrGateStrategy {
         }
 
         let ma = match sma(&SmaInput::from_slice(
-            close,
+            bars.close(),
             SmaParams {
                 period: Some(ma_len),
             },
@@ -264,9 +259,16 @@ impl Strategy for MaSlopeAtrGateStrategy {
             Ok(v) => v.values,
             Err(e) => return Err(crate::strategies::param_skipped(e)),
         };
-        let atr_values = atr_by_kind(high, low, close, atr_n, atr_kind)?;
+        let atr_values = atr_by_kind(bars.high(), bars.low(), bars.close(), atr_n, atr_kind)?;
 
-        Ok(gate_signals(close, &ma, &atr_values, slope_k, z_win, th))
+        Ok(gate_signals(
+            bars.close(),
+            &ma,
+            &atr_values,
+            slope_k,
+            z_win,
+            th,
+        ))
     }
 }
 
@@ -484,7 +486,10 @@ mod tests {
         assert_eq!(s.name(), "MA_SLOPE_ATR_GATE");
         assert_eq!(s.param_str(0), "ma100_k20_atr14_sma_z60_th0.5");
         let sig = s
-            .generate_signals_full(&[], &high, &low, &close, &[], &[], 0)
+            .generate_signals_full(
+                crate::strategies::Bars::new(&[], &high, &low, &close, &[], &[]),
+                0,
+            )
             .unwrap();
         assert_eq!(sig.len(), close.len());
         assert!(sig.contains(&Signal::Buy));
@@ -499,7 +504,10 @@ mod tests {
             quints: vec![(20, 5, 14, 20, 0.5, AtrKind::Sma)],
         };
         let err = s
-            .generate_signals_full(&[], &close, &close, &close, &[], &[], 0)
+            .generate_signals_full(
+                crate::strategies::Bars::new(&[], &close, &close, &close, &[], &[]),
+                0,
+            )
             .expect_err("MA(20)/ATR(14) 在 5 根 bar 上不可计算");
         assert!(
             matches!(err, crate::error::AppError::ParamSkipped { .. }),

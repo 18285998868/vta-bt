@@ -147,19 +147,14 @@ impl Strategy for BbrkM3Strategy {
 
     fn generate_signals_full(
         &self,
-        _open: &[f64],
-        high: &[f64],
-        low: &[f64],
-        close: &[f64],
-        volume: &[f64],
-        _time: &[i64],
+        bars: crate::strategies::Bars<'_>,
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
         self.compute(
-            high,
-            low,
-            close,
-            volume,
+            bars.high(),
+            bars.low(),
+            bars.close(),
+            bars.volume(),
             self.pairs[param_idx].0,
             self.pairs[param_idx].1,
         )

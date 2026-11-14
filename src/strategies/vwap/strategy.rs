@@ -116,15 +116,17 @@ impl Strategy for VwapStrategy {
 
     fn generate_signals_full(
         &self,
-        _open: &[f64],
-        high: &[f64],
-        low: &[f64],
-        close: &[f64],
-        volume: &[f64],
-        time: &[i64],
+        bars: crate::strategies::Bars<'_>,
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
-        compute(high, low, close, volume, time, self.threshs[param_idx])
+        compute(
+            bars.high(),
+            bars.low(),
+            bars.close(),
+            bars.volume(),
+            bars.time(),
+            self.threshs[param_idx],
+        )
     }
 }
 
@@ -189,7 +191,10 @@ mod tests {
         let close = vec![100.0; n];
         let s = VwapStrategy { threshs: vec![1.5] };
         let err = s
-            .generate_signals_full(&[], &close, &close, &close, &close, &t, 0)
+            .generate_signals_full(
+                crate::strategies::Bars::new(&[], &close, &close, &close, &close, &t),
+                0,
+            )
             .expect_err("ATR(14) 在 5 根 bar 上不可计算");
         assert!(
             matches!(err, crate::error::AppError::ParamSkipped { .. }),

@@ -140,16 +140,11 @@ impl Strategy for BbrkAdxStrategy {
 
     fn generate_signals_full(
         &self,
-        _open: &[f64],
-        high: &[f64],
-        low: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        _time: &[i64],
+        bars: crate::strategies::Bars<'_>,
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
         let (s, l, a, t) = self.pairs[param_idx];
-        compute(high, low, close, s, l, a, t)
+        compute(bars.high(), bars.low(), bars.close(), s, l, a, t)
     }
 }
 

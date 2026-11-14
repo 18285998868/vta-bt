@@ -68,20 +68,18 @@ impl Strategy for RSI2Strategy {
 
     fn generate_signals_full(
         &self,
-        _open: &[f64],
-        _high: &[f64],
-        _low: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        _time: &[i64],
+        bars: crate::strategies::Bars<'_>,
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
         let (b, s) = self.pairs[param_idx];
-        let rsi_vals = match rsi(&RsiInput::from_slice(close, RsiParams { period: Some(2) })) {
+        let rsi_vals = match rsi(&RsiInput::from_slice(
+            bars.close(),
+            RsiParams { period: Some(2) },
+        )) {
             Ok(v) => v.values,
             Err(e) => return Err(crate::strategies::param_skipped(e)),
         };
-        Ok(rsi2_signals(close, &rsi_vals, b, s))
+        Ok(rsi2_signals(bars.close(), &rsi_vals, b, s))
     }
 }
 

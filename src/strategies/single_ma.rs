@@ -58,16 +58,11 @@ impl<C: MaCalculator> Strategy for SingleMaStrategy<C> {
 
     fn generate_signals_full(
         &self,
-        _open: &[f64],
-        _high: &[f64],
-        _low: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        _time: &[i64],
+        bars: crate::strategies::Bars<'_>,
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
         let period = self.periods[param_idx];
-        let ma = C::compute(close, period)?;
-        Ok(price_cross_signal(&ma, close))
+        let ma = C::compute(bars.close(), period)?;
+        Ok(price_cross_signal(&ma, bars.close()))
     }
 }

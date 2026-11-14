@@ -172,16 +172,11 @@ impl Strategy for BbrkAtrEmaStrategy {
 
     fn generate_signals_full(
         &self,
-        open: &[f64],
-        high: &[f64],
-        low: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        _time: &[i64],
+        bars: crate::strategies::Bars<'_>,
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
         let (s, b, t) = self.pairs[param_idx];
-        compute(open, high, low, close, s, b, t)
+        compute(bars.open(), bars.high(), bars.low(), bars.close(), s, b, t)
     }
 }
 

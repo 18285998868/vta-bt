@@ -169,28 +169,18 @@ impl Strategy for BbrkVolStrategy {
 
     fn generate_signals_full(
         &self,
-        open: &[f64],
-        _high: &[f64],
-        _low: &[f64],
-        close: &[f64],
-        volume: &[f64],
-        _time: &[i64],
+        bars: crate::strategies::Bars<'_>,
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
         let (s, l, n, m) = self.pairs[param_idx];
-        compute(open, close, volume, s, l, n, m)
+        compute(bars.open(), bars.close(), bars.volume(), s, l, n, m)
     }
 
     /// 批量版：BB 按去重后的 (sigma, bblen) 只算一次（720×→36×），
     /// 再并行跑各 (N, m) 的门逻辑。输出与逐个调逐位一致（单测锁定）。
     fn generate_signals_batch(
         &self,
-        open: &[f64],
-        _high: &[f64],
-        _low: &[f64],
-        close: &[f64],
-        volume: &[f64],
-        _time: &[i64],
+        bars: crate::strategies::Bars<'_>,
         range: std::ops::Range<usize>,
     ) -> crate::error::Result<Vec<ParamOutcome>> {
         use rayon::prelude::*;
@@ -203,7 +193,7 @@ impl Strategy for BbrkVolStrategy {
             let (s, l, _, _) = self.pairs[idx];
             bbmap.entry((s.to_bits(), l)).or_insert_with(|| {
                 bollinger_bands(&BollingerBandsInput::from_slice(
-                    close,
+                    bars.close(),
                     BollingerBandsParams {
                         period: Some(l),
                         devup: Some(s),
@@ -222,7 +212,14 @@ impl Strategy for BbrkVolStrategy {
                 let (s, l, n, m) = self.pairs[idx];
                 match bbmap.get(&(s.to_bits(), l)) {
                     Some(Some((lower, mid, upper))) => Ok(ParamOutcome::Signals(bbrk_vol_signals(
-                        open, close, volume, lower, mid, upper, n, m,
+                        bars.open(),
+                        bars.close(),
+                        bars.volume(),
+                        lower,
+                        mid,
+                        upper,
+                        n,
+                        m,
                     ))),
                     _ => Ok(ParamOutcome::Skipped(format!(
                         "BBRK_VOL: BB 指标缺失 (sigma={s}, bblen={l})"
@@ -298,7 +295,10 @@ mod tests {
             pairs: vec![(2.5, 20, 10, 1.5), (2.5, 20, 10, 3.0), (2.0, 10, 5, 2.0)],
         };
         let batched = st
-            .generate_signals_batch(&open, &[], &[], &close, &vol, &time, 0..3)
+            .generate_signals_batch(
+                crate::strategies::Bars::new(&open, &[], &[], &close, &vol, &time),
+                0..3,
+            )
             .unwrap();
         assert_eq!(batched.len(), 3);
         for (i, sig) in batched.iter().enumerate() {
@@ -309,7 +309,10 @@ mod tests {
                 }
             };
             let one = st
-                .generate_signals_full(&open, &[], &[], &close, &vol, &time, i)
+                .generate_signals_full(
+                    crate::strategies::Bars::new(&open, &[], &[], &close, &vol, &time),
+                    i,
+                )
                 .unwrap();
             assert_eq!(*sig, one, "param {i} 不一致");
         }

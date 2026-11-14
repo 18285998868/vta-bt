@@ -114,17 +114,18 @@ impl Strategy for DualThrustStrategy {
 
     fn generate_signals_full(
         &self,
-        open: &[f64],
-        high: &[f64],
-        low: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        time: &[i64],
+        bars: crate::strategies::Bars<'_>,
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
         let (n, k) = self.pairs[param_idx];
-        let days = aggregate_days(time, open, high, low, close);
-        Ok(dualthrust_signals(&days, close, n, k))
+        let days = aggregate_days(
+            bars.time(),
+            bars.open(),
+            bars.high(),
+            bars.low(),
+            bars.close(),
+        );
+        Ok(dualthrust_signals(&days, bars.close(), n, k))
     }
 }
 

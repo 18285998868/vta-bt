@@ -126,25 +126,15 @@ impl Strategy for MaAtrStrategy {
     }
     fn generate_signals_full(
         &self,
-        _open: &[f64],
-        high: &[f64],
-        low: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        _time: &[i64],
+        bars: crate::strategies::Bars<'_>,
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
         let (m, l, k, a) = &self.quints[param_idx];
-        compute(high, low, close, m, *l, *k, *a)
+        compute(bars.high(), bars.low(), bars.close(), m, *l, *k, *a)
     }
     fn generate_signals_batch(
         &self,
-        _open: &[f64],
-        high: &[f64],
-        low: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        _time: &[i64],
+        bars: crate::strategies::Bars<'_>,
         range: std::ops::Range<usize>,
     ) -> crate::error::Result<Vec<ParamOutcome>> {
         use rayon::prelude::*;
@@ -156,7 +146,10 @@ impl Strategy for MaAtrStrategy {
         }
         let mut atr_cache: HashMap<usize, Option<Vec<f64>>> = HashMap::new();
         for a in &alens {
-            atr_cache.insert(*a, ma_atr_atr(high, low, close, *a).ok());
+            atr_cache.insert(
+                *a,
+                ma_atr_atr(bars.high(), bars.low(), bars.close(), *a).ok(),
+            );
         }
         // 分组键用 `(ma 名, len)`: 键里的 `String` 只在**建组时**克隆一次,
         // 之后一律借用(`groups.iter()`), 不再为每个参数克隆一遍。
@@ -175,7 +168,7 @@ impl Strategy for MaAtrStrategy {
         // 占位初值: 每个下标都会被下面的分组循环覆盖一次。
         let mut out: Vec<ParamOutcome> = vec![ParamOutcome::Skipped(String::new()); idxs.len()];
         for ((m, l), members) in keys {
-            let mv = match ma_atr_ma(close, m, *l) {
+            let mv = match ma_atr_ma(bars.close(), m, *l) {
                 Some(v) => v,
                 None => {
                     for &i in members {
@@ -213,7 +206,7 @@ impl Strategy for MaAtrStrategy {
                     };
                     Ok((
                         i,
-                        ParamOutcome::Signals(ma_atr_signals(close, &mv, av.as_slice(), *k)),
+                        ParamOutcome::Signals(ma_atr_signals(bars.close(), &mv, av.as_slice(), *k)),
                     ))
                 })
                 .collect::<crate::error::Result<Vec<_>>>()?;
@@ -297,12 +290,18 @@ mod tests {
             ],
         };
         let batch = s
-            .generate_signals_batch(&close, &high, &low, &close, &[], &time, 0..2)
+            .generate_signals_batch(
+                crate::strategies::Bars::new(&close, &high, &low, &close, &[], &time),
+                0..2,
+            )
             .unwrap();
         assert_eq!(batch.len(), 2);
         for (i, b) in batch.iter().enumerate() {
             let single = s
-                .generate_signals_full(&close, &high, &low, &close, &[], &time, i)
+                .generate_signals_full(
+                    crate::strategies::Bars::new(&close, &high, &low, &close, &[], &time),
+                    i,
+                )
                 .unwrap();
             let b = match b {
                 crate::strategies::ParamOutcome::Signals(s) => s,
@@ -322,7 +321,10 @@ mod tests {
             quints: vec![("sma".to_string(), 5, 2.0, 14)],
         };
         let err = s
-            .generate_signals_full(&close, &close, &close, &close, &[], &[], 0)
+            .generate_signals_full(
+                crate::strategies::Bars::new(&close, &close, &close, &close, &[], &[]),
+                0,
+            )
             .expect_err("ATR(14) 在 5 根 bar 上不可计算");
         assert!(
             matches!(err, crate::error::AppError::ParamSkipped { .. }),
@@ -330,7 +332,10 @@ mod tests {
         );
         // 批量路径同样逐档跳过, 不得让整个 batch 变成 Err。
         let batch = s
-            .generate_signals_batch(&close, &close, &close, &close, &[], &[], 0..1)
+            .generate_signals_batch(
+                crate::strategies::Bars::new(&close, &close, &close, &close, &[], &[]),
+                0..1,
+            )
             .expect("单档失败不应中断 batch");
         assert!(matches!(
             &batch[0],

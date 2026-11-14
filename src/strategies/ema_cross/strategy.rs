@@ -48,22 +48,19 @@ impl Strategy for EmaCrossStrategy {
 
     fn generate_signals_full(
         &self,
-        _open: &[f64],
-        _high: &[f64],
-        _low: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        _time: &[i64],
+        bars: crate::strategies::Bars<'_>,
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
         let (fast_p, slow_p) = self.pairs[param_idx];
-        let (Some(fast), Some(slow)) = (ema_values(close, fast_p), ema_values(close, slow_p))
-        else {
+        let (Some(fast), Some(slow)) = (
+            ema_values(bars.close(), fast_p),
+            ema_values(bars.close(), slow_p),
+        ) else {
             return Err(crate::strategies::param_skipped(format!(
                 "EMA_CROSS: EMA 计算失败 (fast={fast_p}, slow={slow_p})"
             )));
         };
-        let n = close.len().min(fast.len()).min(slow.len());
+        let n = bars.close().len().min(fast.len()).min(slow.len());
         let mut sig = vec![Signal::Hold; n];
         // 首个双有效 bar 按状态进场, 之后只在翻转处给信号。
         let mut prev: Option<bool> = None;
@@ -116,7 +113,10 @@ mod tests {
         let close: Vec<f64> = (0..300).map(|i| 100.0 + i as f64).collect();
         let s = EmaCrossStrategy::new(cfg_one(10, 20));
         let sig = s
-            .generate_signals_full(&[], &[], &[], &close, &[], &[], 0)
+            .generate_signals_full(
+                crate::strategies::Bars::new(&[], &[], &[], &close, &[], &[]),
+                0,
+            )
             .unwrap();
         assert_eq!(sig.len(), 300);
         let buys: Vec<usize> = sig
@@ -137,7 +137,10 @@ mod tests {
         close.extend((0..200).map(|i| 100.0 + i as f64 * 0.5));
         let s = EmaCrossStrategy::new(cfg_one(5, 20));
         let sig = s
-            .generate_signals_full(&[], &[], &[], &close, &[], &[], 0)
+            .generate_signals_full(
+                crate::strategies::Bars::new(&[], &[], &[], &close, &[], &[]),
+                0,
+            )
             .unwrap();
         assert!(sig.contains(&Signal::Buy));
         assert!(sig.contains(&Signal::Sell));

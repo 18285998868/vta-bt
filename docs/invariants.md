@@ -15,12 +15,16 @@
 
 `ExecConfig::delay_bars` 是 `NonZeroUsize`，`delay_bars = 0`（信号当根成交）属前视乐观口径，已在**引擎层彻底删除**，`try_from_bps_fill(0, ..)` 直接返回 `Err`。配置层 `Config::validate` 亦拒绝。
 
-### 3. `generate_signals_full` 的形参顺序由测试锁定
+### 3. 行情列顺序由 `Bars` 的构造点锁定
 
-形参是 `&self, open, high, low, close, volume, time, param_idx`，**全部 `&[f64]`，编译器无法发现错位**。
-历史故障：移除 close-only 入口时把 `high`/`low` 插到 `open` 之前 → high/low 的数据被喂进 `open`，静默产出错误信号且无任何报错。
+`generate_signals_full` / `generate_signals_batch` 的入参是 `Bars` —— 六列由
+具名访问器读取, 不再依赖 6 个同类型切片的位置。历史故障：移除 close-only
+入口时把 `high`/`low` 插到 `open` 之前 → high/low 的数据被喂进 `open`，
+静默产出错误信号且无任何报错。
 
-`strategies::arg_order_tests::test_full_arg_order_contract` 用等长但内容差异极大的切片做探针锁定该契约。**新增或改签名时必须让该测试通过。**
+列顺序只在 `Bars::new(open, high, low, close, volume, time)` 一处确定；
+`strategies::bars_tests::bars_accessors_preserve_column_order` 用内容互不相同的
+切片锁定构造顺序与访问器。**新增列或改签名时必须让该测试通过。**
 
 ### 4. 权益曲线穿零（空头浮空）按 0 收益处理
 

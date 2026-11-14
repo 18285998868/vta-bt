@@ -233,19 +233,14 @@ impl Strategy for BbrkKdjStrategy {
 
     fn generate_signals_full(
         &self,
-        open: &[f64],
-        high: &[f64],
-        low: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        _time: &[i64],
+        bars: crate::strategies::Bars<'_>,
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
         compute(
-            open,
-            high,
-            low,
-            close,
+            bars.open(),
+            bars.high(),
+            bars.low(),
+            bars.close(),
             self.pairs[param_idx].0,
             self.pairs[param_idx].1,
         )

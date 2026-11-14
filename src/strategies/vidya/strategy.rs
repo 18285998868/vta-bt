@@ -138,7 +138,10 @@ mod tests {
             step: 1,
         });
         let sig = s
-            .generate_signals_full(&[], &[], &[], &close, &[], &[], 0)
+            .generate_signals_full(
+                crate::strategies::Bars::new(&[], &[], &[], &close, &[], &[]),
+                0,
+            )
             .unwrap();
         assert!(sig.contains(&Signal::Buy));
     }

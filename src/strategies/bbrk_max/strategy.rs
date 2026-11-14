@@ -270,16 +270,11 @@ impl Strategy for BbrkMaxStrategy {
 
     fn generate_signals_full(
         &self,
-        _open: &[f64],
-        _high: &[f64],
-        _low: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        _time: &[i64],
+        bars: crate::strategies::Bars<'_>,
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
         let (m, l, b) = &self.pairs[param_idx];
-        compute(close, m, *l, *b)
+        compute(bars.close(), m, *l, *b)
     }
 }
 

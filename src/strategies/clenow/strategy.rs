@@ -151,15 +151,15 @@ impl Strategy for ClenowStrategy {
 
     fn generate_signals_full(
         &self,
-        _open: &[f64],
-        high: &[f64],
-        low: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        _time: &[i64],
+        bars: crate::strategies::Bars<'_>,
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
-        signals_from_ohlc(close, high, low, &self.combos[param_idx])
+        signals_from_ohlc(
+            bars.close(),
+            bars.high(),
+            bars.low(),
+            &self.combos[param_idx],
+        )
     }
 }
 

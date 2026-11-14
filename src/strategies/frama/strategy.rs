@@ -32,19 +32,14 @@ impl Strategy for FramaStrategy {
 
     fn generate_signals_full(
         &self,
-        _open: &[f64],
-        high: &[f64],
-        low: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        _time: &[i64],
+        bars: crate::strategies::Bars<'_>,
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
         let period = self.periods[param_idx];
         let ma = match frama(&FramaInput::from_slices(
-            high,
-            low,
-            close,
+            bars.high(),
+            bars.low(),
+            bars.close(),
             FramaParams {
                 window: Some(period),
                 sc: Some(300),
@@ -54,7 +49,7 @@ impl Strategy for FramaStrategy {
             Ok(v) => v.values,
             Err(e) => return Err(crate::strategies::param_skipped(e)),
         };
-        Ok(price_cross_signal(&ma, close))
+        Ok(price_cross_signal(&ma, bars.close()))
     }
 }
 
@@ -80,7 +75,10 @@ mod tests {
         let high: Vec<f64> = close.iter().map(|v| v * 1.01).collect();
         let low: Vec<f64> = close.iter().map(|v| v * 0.99).collect();
         let sig = s
-            .generate_signals_full(&[], &high, &low, &close, &[], &[], 0)
+            .generate_signals_full(
+                crate::strategies::Bars::new(&[], &high, &low, &close, &[], &[]),
+                0,
+            )
             .unwrap();
         assert_eq!(sig.len(), close.len());
         assert!(sig.contains(&Signal::Buy) || sig.contains(&Signal::Sell));
@@ -102,10 +100,16 @@ mod tests {
             step: 1,
         });
         let full = s
-            .generate_signals_full(&[], &high, &low, &close, &[], &[], 0)
+            .generate_signals_full(
+                crate::strategies::Bars::new(&[], &high, &low, &close, &[], &[]),
+                0,
+            )
             .unwrap();
         let close_as_hl = s
-            .generate_signals_full(&[], &close, &close, &close, &[], &[], 0)
+            .generate_signals_full(
+                crate::strategies::Bars::new(&[], &close, &close, &close, &[], &[]),
+                0,
+            )
             .unwrap();
         assert_ne!(
             full, close_as_hl,

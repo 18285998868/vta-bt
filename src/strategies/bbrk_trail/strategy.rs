@@ -154,16 +154,11 @@ impl Strategy for BbrkTrailStrategy {
 
     fn generate_signals_full(
         &self,
-        _open: &[f64],
-        high: &[f64],
-        low: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        _time: &[i64],
+        bars: crate::strategies::Bars<'_>,
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
         let (s, b, a, k) = self.pairs[param_idx];
-        compute(high, low, close, s, b, a, k)
+        compute(bars.high(), bars.low(), bars.close(), s, b, a, k)
     }
 }
 

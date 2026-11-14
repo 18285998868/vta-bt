@@ -103,16 +103,17 @@ impl Strategy for TurtleStrategy {
 
     fn generate_signals_full(
         &self,
-        _open: &[f64],
-        high: &[f64],
-        low: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        _time: &[i64],
+        bars: crate::strategies::Bars<'_>,
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
         let (e, x) = self.pairs[param_idx];
-        Ok(signals_from_ohlc(high, low, close, e, x))
+        Ok(signals_from_ohlc(
+            bars.high(),
+            bars.low(),
+            bars.close(),
+            e,
+            x,
+        ))
     }
 }
 

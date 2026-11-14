@@ -81,16 +81,11 @@ impl Strategy for MacdStrategy {
 
     fn generate_signals_full(
         &self,
-        _open: &[f64],
-        _high: &[f64],
-        _low: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        _time: &[i64],
+        bars: crate::strategies::Bars<'_>,
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
         let (f, s, g) = self.triples[param_idx];
-        compute(close, f, s, g)
+        compute(bars.close(), f, s, g)
     }
 }
 
@@ -130,7 +125,10 @@ mod tests {
             triples: vec![(12, 26, 9)],
         };
         let err = s
-            .generate_signals_full(&[], &[], &[], &close, &[], &[], 0)
+            .generate_signals_full(
+                crate::strategies::Bars::new(&[], &[], &[], &close, &[], &[]),
+                0,
+            )
             .expect_err("策略入口同样不得静默");
         assert!(matches!(err, crate::error::AppError::ParamSkipped { .. }));
     }

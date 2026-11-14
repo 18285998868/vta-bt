@@ -31,25 +31,20 @@ impl Strategy for VwmaStrategy {
 
     fn generate_signals_full(
         &self,
-        _open: &[f64],
-        _high: &[f64],
-        _low: &[f64],
-        close: &[f64],
-        volume: &[f64],
-        _time: &[i64],
+        bars: crate::strategies::Bars<'_>,
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
         let period = self.periods[param_idx];
-        if volume.len() != close.len() {
+        if bars.volume().len() != bars.close().len() {
             return Err(crate::error::AppError::Msg(format!(
                 "VWMA 需要与 close 等长的 volume 数据 (当前 volume={} close={}), 不做静默降级",
-                volume.len(),
-                close.len()
+                bars.volume().len(),
+                bars.close().len()
             )));
         }
         let input = VwmaInput::from_slice(
-            close,
-            volume,
+            bars.close(),
+            bars.volume(),
             VwmaParams {
                 period: Some(period),
             },
@@ -60,7 +55,7 @@ impl Strategy for VwmaStrategy {
                 return Err(crate::error::AppError::Msg(format!("VWMA 计算失败: {e}")));
             }
         };
-        Ok(price_cross_signal(&ma, close))
+        Ok(price_cross_signal(&ma, bars.close()))
     }
 }
 
@@ -85,7 +80,10 @@ mod tests {
             step: 1,
         });
         let sig = s
-            .generate_signals_full(&[], &[], &[], &close, &volume, &[], 0)
+            .generate_signals_full(
+                crate::strategies::Bars::new(&[], &[], &[], &close, &volume, &[]),
+                0,
+            )
             .unwrap();
         assert!(sig.contains(&Signal::Buy));
     }
@@ -101,8 +99,11 @@ mod tests {
             step: 1,
         });
         assert!(
-            s.generate_signals_full(&[], &[], &[], &close, &[], &[], 0)
-                .is_err()
+            s.generate_signals_full(
+                crate::strategies::Bars::new(&[], &[], &[], &close, &[], &[]),
+                0
+            )
+            .is_err()
         );
     }
 }

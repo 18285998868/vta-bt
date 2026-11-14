@@ -161,16 +161,17 @@ impl Strategy for RBreakerStrategy {
 
     fn generate_signals_full(
         &self,
-        open: &[f64],
-        high: &[f64],
-        low: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        time: &[i64],
+        bars: crate::strategies::Bars<'_>,
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
-        let days = aggregate_days(time, open, high, low, close);
-        Ok(rbreaker_signals(&days, close, self.stops[param_idx]))
+        let days = aggregate_days(
+            bars.time(),
+            bars.open(),
+            bars.high(),
+            bars.low(),
+            bars.close(),
+        );
+        Ok(rbreaker_signals(&days, bars.close(), self.stops[param_idx]))
     }
 }
 

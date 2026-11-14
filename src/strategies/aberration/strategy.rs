@@ -38,16 +38,11 @@ impl Strategy for AberrationStrategy {
 
     fn generate_signals_full(
         &self,
-        _open: &[f64],
-        high: &[f64],
-        low: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        _time: &[i64],
+        bars: crate::strategies::Bars<'_>,
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
         let (n, m) = self.pairs[param_idx];
-        Self::compute(high, low, close, n, m)
+        Self::compute(bars.high(), bars.low(), bars.close(), n, m)
     }
 }
 

@@ -6,9 +6,9 @@
 use vta::config::{F64Param, PeriodParam};
 use vta::data::{DataConfig, DataSource};
 use vta::strategies::Signal;
-use vta::strategies::Strategy;
 use vta::strategies::bbrk_adx::{BbrkAdxConfig, BbrkAdxStrategy};
 use vta::strategies::bbrk_bb::{BbrkBbConfig, BbrkBbStrategy};
+use vta::strategies::{Bars, Strategy};
 
 fn quantile(mut v: Vec<i64>, q: f64) -> f64 {
     if v.is_empty() {
@@ -69,23 +69,27 @@ fn run_pair(symbol: &str, timeframe: &str, len: usize, sigma: f64, adxlen: usize
     });
     let bs = base
         .generate_signals_full(
-            cols.open(),
-            cols.high(),
-            cols.low(),
-            cols.close(),
-            cols.volume(),
-            cols.time(),
+            Bars::new(
+                cols.open(),
+                cols.high(),
+                cols.low(),
+                cols.close(),
+                cols.volume(),
+                cols.time(),
+            ),
             0,
         )
         .expect("base signals");
     let fs = filt
         .generate_signals_full(
-            cols.open(),
-            cols.high(),
-            cols.low(),
-            cols.close(),
-            cols.volume(),
-            cols.time(),
+            Bars::new(
+                cols.open(),
+                cols.high(),
+                cols.low(),
+                cols.close(),
+                cols.volume(),
+                cols.time(),
+            ),
             0,
         )
         .expect("filt signals");

@@ -167,28 +167,28 @@ impl Strategy for BbrkAtrStrategy {
 
     fn generate_signals_full(
         &self,
-        open: &[f64],
-        high: &[f64],
-        low: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        _time: &[i64],
+        bars: crate::strategies::Bars<'_>,
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
         let (s, l, a1, a2, t) = self.pairs[param_idx];
-        compute(open, high, low, close, s, l, a1, a2, t)
+        compute(
+            bars.open(),
+            bars.high(),
+            bars.low(),
+            bars.close(),
+            s,
+            l,
+            a1,
+            a2,
+            t,
+        )
     }
 
     /// 批量版：ATR 按窗长去重（各unique长度算一次），BB 按 (sigma, bblen)
     /// 去重，再并行跑各 (atr1, atr2, thr)。输出与逐个调逐位一致（单测锁定）。
     fn generate_signals_batch(
         &self,
-        open: &[f64],
-        high: &[f64],
-        low: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        _time: &[i64],
+        bars: crate::strategies::Bars<'_>,
         range: std::ops::Range<usize>,
     ) -> crate::error::Result<Vec<ParamOutcome>> {
         use rayon::prelude::*;
@@ -202,9 +202,9 @@ impl Strategy for BbrkAtrStrategy {
             for len in [a1, a2] {
                 atrmap.entry(len).or_insert_with(|| {
                     atr(&AtrInput::from_slices(
-                        high,
-                        low,
-                        close,
+                        bars.high(),
+                        bars.low(),
+                        bars.close(),
                         AtrParams { length: Some(len) },
                     ))
                     .ok()
@@ -217,7 +217,7 @@ impl Strategy for BbrkAtrStrategy {
             let (s, l, _, _, _) = self.pairs[idx];
             bbmap.entry((s.to_bits(), l)).or_insert_with(|| {
                 bollinger_bands(&BollingerBandsInput::from_slice(
-                    close,
+                    bars.close(),
                     BollingerBandsParams {
                         period: Some(l),
                         devup: Some(s),
@@ -241,7 +241,14 @@ impl Strategy for BbrkAtrStrategy {
                 ) {
                     (Some(Some(short)), Some(Some(long)), Some(Some((lower, mid, upper)))) => {
                         Ok(ParamOutcome::Signals(bbrk_atr_signals(
-                            open, close, lower, mid, upper, short, long, t,
+                            bars.open(),
+                            bars.close(),
+                            lower,
+                            mid,
+                            upper,
+                            short,
+                            long,
+                            t,
                         )))
                     }
                     _ => Ok(ParamOutcome::Skipped(format!(
@@ -328,7 +335,10 @@ mod tests {
             ],
         };
         let batched = st
-            .generate_signals_batch(&open, &high, &low, &close, &[], &time, 0..3)
+            .generate_signals_batch(
+                crate::strategies::Bars::new(&open, &high, &low, &close, &[], &time),
+                0..3,
+            )
             .unwrap();
         assert_eq!(batched.len(), 3);
         for (i, sig) in batched.iter().enumerate() {
@@ -339,7 +349,10 @@ mod tests {
                 }
             };
             let one = st
-                .generate_signals_full(&open, &high, &low, &close, &[], &time, i)
+                .generate_signals_full(
+                    crate::strategies::Bars::new(&open, &high, &low, &close, &[], &time),
+                    i,
+                )
                 .unwrap();
             assert_eq!(*sig, one, "param {i} 不一致");
         }

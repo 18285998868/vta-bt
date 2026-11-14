@@ -40,12 +40,7 @@ impl Strategy for SsfStrategy {
 
     fn generate_signals_full(
         &self,
-        _open: &[f64],
-        _high: &[f64],
-        _low: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        _time: &[i64],
+        bars: crate::strategies::Bars<'_>,
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
         let period = self.periods[param_idx];
@@ -58,7 +53,7 @@ impl Strategy for SsfStrategy {
                 };
 
                 match supersmoother(&SuperSmootherInput::from_slice(
-                    close,
+                    bars.close(),
                     SuperSmootherParams {
                         period: Some(period),
                     },
@@ -67,7 +62,7 @@ impl Strategy for SsfStrategy {
                     Err(e) => return Err(crate::strategies::param_skipped(e)),
                 }
             }
-            PoleCount::Three => match supersmoother_3_pole(close, period) {
+            PoleCount::Three => match supersmoother_3_pole(bars.close(), period) {
                 Some(v) => v,
                 None => {
                     return Err(crate::strategies::param_skipped(format!(
@@ -76,7 +71,7 @@ impl Strategy for SsfStrategy {
                 }
             },
         };
-        Ok(price_cross_signal(&values, close))
+        Ok(price_cross_signal(&values, bars.close()))
     }
 }
 
@@ -108,7 +103,10 @@ mod tests {
         let s = SsfStrategy::new(cfg(PoleCount::Two));
         assert!(s.param_count() > 0);
         let sig = s
-            .generate_signals_full(&[], &[], &[], &prices(200), &[], &[], 0)
+            .generate_signals_full(
+                crate::strategies::Bars::new(&[], &[], &[], &prices(200), &[], &[]),
+                0,
+            )
             .unwrap();
         assert_eq!(sig.len(), 200);
         assert!(sig.contains(&Signal::Buy));
@@ -118,7 +116,10 @@ mod tests {
     fn test_ssf_three_pole() {
         let s = SsfStrategy::new(cfg(PoleCount::Three));
         let sig = s
-            .generate_signals_full(&[], &[], &[], &prices(200), &[], &[], 0)
+            .generate_signals_full(
+                crate::strategies::Bars::new(&[], &[], &[], &prices(200), &[], &[]),
+                0,
+            )
             .unwrap();
         assert_eq!(sig.len(), 200);
         assert!(sig.contains(&Signal::Buy));
@@ -128,10 +129,16 @@ mod tests {
     fn test_ssf_two_and_three_pole_differ() {
         let close = prices(400);
         let two = SsfStrategy::new(cfg(PoleCount::Two))
-            .generate_signals_full(&[], &[], &[], &close, &[], &[], 0)
+            .generate_signals_full(
+                crate::strategies::Bars::new(&[], &[], &[], &close, &[], &[]),
+                0,
+            )
             .unwrap();
         let three = SsfStrategy::new(cfg(PoleCount::Three))
-            .generate_signals_full(&[], &[], &[], &close, &[], &[], 0)
+            .generate_signals_full(
+                crate::strategies::Bars::new(&[], &[], &[], &close, &[], &[]),
+                0,
+            )
             .unwrap();
         assert_ne!(two, three, "2 极与 3 极不应产生完全相同的信号序列");
     }
@@ -150,7 +157,10 @@ mod tests {
     fn test_ssf_short_data_is_skipped_not_silently_held() {
         let s = SsfStrategy::new(cfg(PoleCount::Two));
         let e = s
-            .generate_signals_full(&[], &[], &[], &prices(5), &[], &[], 0)
+            .generate_signals_full(
+                crate::strategies::Bars::new(&[], &[], &[], &prices(5), &[], &[]),
+                0,
+            )
             .expect_err("数据不足必须显式跳过, 不得静默降级");
         assert!(
             matches!(e, crate::error::AppError::ParamSkipped { .. }),

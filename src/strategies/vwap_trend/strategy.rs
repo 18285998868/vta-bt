@@ -209,22 +209,17 @@ impl Strategy for VwapTrendStrategy {
 
     fn generate_signals_full(
         &self,
-        _open: &[f64],
-        high: &[f64],
-        low: &[f64],
-        close: &[f64],
-        volume: &[f64],
-        time: &[i64],
+        bars: crate::strategies::Bars<'_>,
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
         // 无 high/low/time 入口直接由 generate_signals 报错，不静默降级(P7)。
         // full 入口缺 volume/time 时 compute 内按 NaN→Hold。
         Ok(compute(
-            high,
-            low,
-            close,
-            volume,
-            time,
+            bars.high(),
+            bars.low(),
+            bars.close(),
+            bars.volume(),
+            bars.time(),
             self.modes[param_idx],
         ))
     }

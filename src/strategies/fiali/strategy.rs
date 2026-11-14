@@ -93,16 +93,17 @@ impl Strategy for FialiStrategy {
 
     fn generate_signals_full(
         &self,
-        open: &[f64],
-        high: &[f64],
-        low: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        time: &[i64],
+        bars: crate::strategies::Bars<'_>,
         _param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
-        let days = aggregate_days(time, open, high, low, close);
-        Ok(fiali_signals(&days, open, close))
+        let days = aggregate_days(
+            bars.time(),
+            bars.open(),
+            bars.high(),
+            bars.low(),
+            bars.close(),
+        );
+        Ok(fiali_signals(&days, bars.open(), bars.close()))
     }
 }
 

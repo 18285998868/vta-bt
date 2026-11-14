@@ -87,15 +87,10 @@ impl Strategy for KeltnerStrategy {
 
     fn generate_signals_full(
         &self,
-        _open: &[f64],
-        high: &[f64],
-        low: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        _time: &[i64],
+        bars: crate::strategies::Bars<'_>,
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
-        compute(high, low, close, self.mults[param_idx])
+        compute(bars.high(), bars.low(), bars.close(), self.mults[param_idx])
     }
 }
 

@@ -201,16 +201,11 @@ impl Strategy for BbrkTtmFireStrategy {
 
     fn generate_signals_full(
         &self,
-        _open: &[f64],
-        high: &[f64],
-        low: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        _time: &[i64],
+        bars: crate::strategies::Bars<'_>,
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
         let (s, b, k) = self.pairs[param_idx];
-        compute(high, low, close, s, b, k)
+        compute(bars.high(), bars.low(), bars.close(), s, b, k)
     }
 
     /// 批量版：动量柱/EMA基线/ATR14 与参数无关各算一次，
@@ -218,12 +213,7 @@ impl Strategy for BbrkTtmFireStrategy {
     /// 输出与逐个调逐位一致（单测锁定）。
     fn generate_signals_batch(
         &self,
-        _open: &[f64],
-        high: &[f64],
-        low: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        _time: &[i64],
+        bars: crate::strategies::Bars<'_>,
         range: std::ops::Range<usize>,
     ) -> crate::error::Result<Vec<ParamOutcome>> {
         use rayon::prelude::*;
@@ -231,7 +221,7 @@ impl Strategy for BbrkTtmFireStrategy {
         use vector_ta::indicators::bollinger_bands::{
             BollingerBandsInput, BollingerBandsParams, bollinger_bands,
         };
-        let hist = match momentum(high, low, close) {
+        let hist = match momentum(bars.high(), bars.low(), bars.close()) {
             Ok(v) => v,
             Err(e) => {
                 // 动量柱算不出来是整批共同的失败原因: 逐档记 Skipped,
@@ -243,7 +233,7 @@ impl Strategy for BbrkTtmFireStrategy {
             }
         };
         let basis: Option<Vec<f64>> = ema(&EmaInput::from_slice(
-            close,
+            bars.close(),
             EmaParams {
                 period: Some(KC_PERIOD),
             },
@@ -251,9 +241,9 @@ impl Strategy for BbrkTtmFireStrategy {
         .ok()
         .map(|v| v.values);
         let atr_vals: Option<Vec<f64>> = atr(&AtrInput::from_slices(
-            high,
-            low,
-            close,
+            bars.high(),
+            bars.low(),
+            bars.close(),
             AtrParams {
                 length: Some(ATR_LEN),
             },
@@ -267,7 +257,7 @@ impl Strategy for BbrkTtmFireStrategy {
             let (s, b, _) = self.pairs[idx];
             bbmap.entry((s.to_bits(), b)).or_insert_with(|| {
                 bollinger_bands(&BollingerBandsInput::from_slice(
-                    close,
+                    bars.close(),
                     BollingerBandsParams {
                         period: Some(b),
                         devup: Some(s),
@@ -293,7 +283,12 @@ impl Strategy for BbrkTtmFireStrategy {
                             )));
                         }
                     };
-                let n = close.len().min(lower.len()).min(em.len()).min(a_all.len());
+                let n = bars
+                    .close()
+                    .len()
+                    .min(lower.len())
+                    .min(em.len())
+                    .min(a_all.len());
                 let mut sqz = vec![false; n];
                 for i in 0..n {
                     let a = a_all[i];
@@ -303,7 +298,10 @@ impl Strategy for BbrkTtmFireStrategy {
                     sqz[i] = upper[i] < em[i] + k * a && lower[i] > em[i] - k * a;
                 }
                 Ok(ParamOutcome::Signals(bbrk_ttm_fire_signals(
-                    close, mid, &sqz, &hist,
+                    bars.close(),
+                    mid,
+                    &sqz,
+                    &hist,
                 )))
             })
             .collect()
@@ -395,7 +393,10 @@ mod tests {
             pairs: vec![(2.5, 20, 1.5), (2.5, 20, 2.0), (2.0, 20, 1.5)],
         };
         let batched = st
-            .generate_signals_batch(&open, &high, &low, &close, &[], &time, 0..3)
+            .generate_signals_batch(
+                crate::strategies::Bars::new(&open, &high, &low, &close, &[], &time),
+                0..3,
+            )
             .unwrap();
         assert_eq!(batched.len(), 3);
         for (i, sig) in batched.iter().enumerate() {
@@ -406,7 +407,10 @@ mod tests {
                 }
             };
             let one = st
-                .generate_signals_full(&open, &high, &low, &close, &[], &time, i)
+                .generate_signals_full(
+                    crate::strategies::Bars::new(&open, &high, &low, &close, &[], &time),
+                    i,
+                )
                 .unwrap();
             assert_eq!(*sig, one, "param {i} 不一致");
         }
@@ -430,14 +434,20 @@ mod tests {
             pairs: vec![(2.0, 5, 1.0)],
         };
         let err = s
-            .generate_signals_full(&close, &close, &close, &close, &[], &[], 0)
+            .generate_signals_full(
+                crate::strategies::Bars::new(&close, &close, &close, &close, &[], &[]),
+                0,
+            )
             .expect_err("动量柱在 5 根 bar 上不可计算");
         assert!(
             matches!(err, crate::error::AppError::ParamSkipped { .. }),
             "必须是 ParamSkipped, 实际: {err}"
         );
         let batch = s
-            .generate_signals_batch(&close, &close, &close, &close, &[], &[], 0..1)
+            .generate_signals_batch(
+                crate::strategies::Bars::new(&close, &close, &close, &close, &[], &[]),
+                0..1,
+            )
             .expect("单档失败不应中断 batch");
         assert!(matches!(
             &batch[0],

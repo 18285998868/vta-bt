@@ -479,12 +479,14 @@ pub(super) fn run_combo(
     for start in (0..n).step_by(plan.chunk.max(1)) {
         let end = (start + plan.chunk).min(n);
         let batch = strategy.generate_signals_batch(
-            cols.open(),
-            cols.high(),
-            cols.low(),
-            cols.close(),
-            cols.volume(),
-            cols.time(),
+            crate::strategies::Bars::new(
+                cols.open(),
+                cols.high(),
+                cols.low(),
+                cols.close(),
+                cols.volume(),
+                cols.time(),
+            ),
             start..end,
         )?;
         check_batch_len(strategy.name(), batch.len(), end - start)?;

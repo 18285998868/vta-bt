@@ -9,7 +9,7 @@ use vta::engine;
 use vta::engine::ExecConfig;
 use vta::strategies::Signal;
 use vta::strategies::ssf::{SsfConfig, SsfStrategy};
-use vta::strategies::{PoleCount, Strategy};
+use vta::strategies::{Bars, PoleCount, Strategy};
 
 fn rising_prices(n: usize) -> Vec<f64> {
     (0..n).map(|i| 100.0 + i as f64 * 0.5).collect()
@@ -36,7 +36,7 @@ fn test_ssf_standard_across_runs() {
     assert!(s.param_count() > 0);
     for i in 0..s.param_count() {
         let sig = s
-            .generate_signals_full(&[], &[], &[], &close, &[], &[], i)
+            .generate_signals_full(Bars::new(&[], &[], &[], &close, &[], &[]), i)
             .unwrap();
         assert_eq!(sig.len(), 500);
     }
@@ -193,7 +193,7 @@ fn test_strategy_period_larger_than_window() {
     // **不是**静默降级成"全程 Hold"(见 `RunStatus::Invalid` 的文档):
     // 二者在报告里必须可区分, 否则"算不出来"会被当成"零波动低风险"。
     let e = s
-        .generate_signals_full(&[], &[], &[], &close, &[], &[], 0)
+        .generate_signals_full(Bars::new(&[], &[], &[], &close, &[], &[]), 0)
         .expect_err("period 超过数据长度必须显式跳过");
     assert!(
         matches!(e, vta::error::AppError::ParamSkipped { .. }),
@@ -214,7 +214,7 @@ fn invalid_param_is_reported_as_invalid_without_aborting_the_batch() {
     });
     // 批量入口: 不可计算的那一档是 `Skipped`, 其余档照常。
     let batch = s
-        .generate_signals_batch(&[], &[], &[], &close, &[], &[], 0..1)
+        .generate_signals_batch(Bars::new(&[], &[], &[], &close, &[], &[]), 0..1)
         .expect("批量入口必须成功返回(不可计算只影响单档)");
     assert_eq!(batch.len(), 1);
     assert!(

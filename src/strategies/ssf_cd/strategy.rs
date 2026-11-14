@@ -43,12 +43,7 @@ impl Strategy for SsfCdStrategy {
 
     fn generate_signals_full(
         &self,
-        open: &[f64],
-        _high: &[f64],
-        _low: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        _time: &[i64],
+        bars: crate::strategies::Bars<'_>,
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
         let period = self.periods[param_idx];
@@ -59,7 +54,7 @@ impl Strategy for SsfCdStrategy {
                 };
 
                 match supersmoother(&SuperSmootherInput::from_slice(
-                    close,
+                    bars.close(),
                     SuperSmootherParams {
                         period: Some(period),
                     },
@@ -68,7 +63,7 @@ impl Strategy for SsfCdStrategy {
                     Err(e) => return Err(crate::strategies::param_skipped(e)),
                 }
             }
-            PoleCount::Three => match supersmoother_3_pole(close, period) {
+            PoleCount::Three => match supersmoother_3_pole(bars.close(), period) {
                 Some(v) => v,
                 None => {
                     return Err(crate::strategies::param_skipped(format!(
@@ -77,8 +72,8 @@ impl Strategy for SsfCdStrategy {
                 }
             },
         };
-        let mut signals = price_cross_signal(&values, close);
-        candle_direction_filter(&mut signals, open, close);
+        let mut signals = price_cross_signal(&values, bars.close());
+        candle_direction_filter(&mut signals, bars.open(), bars.close());
         Ok(signals)
     }
 }
@@ -122,7 +117,10 @@ mod tests {
         let close = prices(200);
         let open = mixed_open(&close);
         let sig = s
-            .generate_signals_full(&open, &[], &[], &close, &[], &[], 0)
+            .generate_signals_full(
+                crate::strategies::Bars::new(&open, &[], &[], &close, &[], &[]),
+                0,
+            )
             .unwrap();
         assert_eq!(sig.len(), 200);
     }
@@ -133,7 +131,10 @@ mod tests {
         let close = prices(200);
         let open = mixed_open(&close);
         let sig = s
-            .generate_signals_full(&open, &[], &[], &close, &[], &[], 0)
+            .generate_signals_full(
+                crate::strategies::Bars::new(&open, &[], &[], &close, &[], &[]),
+                0,
+            )
             .unwrap();
         assert_eq!(sig.len(), 200);
     }
@@ -145,7 +146,10 @@ mod tests {
         let close = prices(400);
         let open = mixed_open(&close);
         let sig = s
-            .generate_signals_full(&open, &[], &[], &close, &[], &[], 0)
+            .generate_signals_full(
+                crate::strategies::Bars::new(&open, &[], &[], &close, &[], &[]),
+                0,
+            )
             .unwrap();
         for (i, &sg) in sig.iter().enumerate() {
             match sg {
@@ -179,10 +183,16 @@ mod tests {
             }),
             poles: PoleCount::Two,
         })
-        .generate_signals_full(&open, &[], &[], &close, &[], &[], 0)
+        .generate_signals_full(
+            crate::strategies::Bars::new(&open, &[], &[], &close, &[], &[]),
+            0,
+        )
         .unwrap();
         let filtered = SsfCdStrategy::new(cfg(PoleCount::Two))
-            .generate_signals_full(&open, &[], &[], &close, &[], &[], 0)
+            .generate_signals_full(
+                crate::strategies::Bars::new(&open, &[], &[], &close, &[], &[]),
+                0,
+            )
             .unwrap();
         let cnt = |v: &[Signal]| v.iter().filter(|&&s| s != Signal::Hold).count();
         assert!(
@@ -199,7 +209,10 @@ mod tests {
         let close = prices(400);
         let open: Vec<f64> = close.iter().map(|c| c - 1.0).collect();
         let sig = SsfCdStrategy::new(cfg(PoleCount::Two))
-            .generate_signals_full(&open, &[], &[], &close, &[], &[], 0)
+            .generate_signals_full(
+                crate::strategies::Bars::new(&open, &[], &[], &close, &[], &[]),
+                0,
+            )
             .unwrap();
         assert!(!sig.contains(&Signal::Sell), "全阳线下不应出现 Sell 信号");
     }
@@ -219,7 +232,10 @@ mod tests {
         let close = prices(5);
         let open = mixed_open(&close);
         let e = SsfCdStrategy::new(cfg(PoleCount::Two))
-            .generate_signals_full(&open, &[], &[], &close, &[], &[], 0)
+            .generate_signals_full(
+                crate::strategies::Bars::new(&open, &[], &[], &close, &[], &[]),
+                0,
+            )
             .expect_err("数据不足必须显式跳过, 不得静默降级");
         assert!(
             matches!(e, crate::error::AppError::ParamSkipped { .. }),

@@ -35,17 +35,12 @@ impl Strategy for SgmaStrategy {
 
     fn generate_signals_full(
         &self,
-        _open: &[f64],
-        _high: &[f64],
-        _low: &[f64],
-        close: &[f64],
-        _volume: &[f64],
-        _time: &[i64],
+        bars: crate::strategies::Bars<'_>,
         param_idx: usize,
     ) -> crate::error::Result<Vec<Signal>> {
         let (period, poly_order) = self.pairs[param_idx];
         let ma = match sgf(&SgfInput::from_slice(
-            close,
+            bars.close(),
             SgfParams {
                 period: Some(period),
                 poly_order: Some(poly_order),
@@ -54,7 +49,7 @@ impl Strategy for SgmaStrategy {
             Ok(v) => v.values,
             Err(e) => return Err(crate::strategies::param_skipped(e)),
         };
-        Ok(price_cross_signal(&ma, close))
+        Ok(price_cross_signal(&ma, bars.close()))
     }
 }
 
@@ -76,7 +71,10 @@ mod tests {
         let s = SgmaStrategy::new(cfg);
         assert_eq!(s.param_count(), 1);
         let sig = s
-            .generate_signals_full(&[], &[], &[], &close, &[], &[], 0)
+            .generate_signals_full(
+                crate::strategies::Bars::new(&[], &[], &[], &close, &[], &[]),
+                0,
+            )
             .unwrap();
         assert!(sig.contains(&Signal::Buy));
     }
