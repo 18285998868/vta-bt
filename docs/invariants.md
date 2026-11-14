@@ -203,14 +203,17 @@ schema 发生增删列或改类型，旧缓存要到 merge 阶段的 `read_parqu
 （而不是只补写"看起来缺"的一个文件）。这解决了"手动删 `detail/` 后全部命中缓存、
 一个 detail 文件都不补"以及"同名文件被另一轮数据窗口覆盖"两类静默错误。
 
-### 11. `RunResult` 只有一个构造点
+### 11. `RunResult` 只有一个构造点, 逐参数求值也只有一个入口
 
-detail 与非 detail 两条分支共用 `ComboCtx::run_row`。此前两份 16 字段字面量
-各自维护，任何新增字段都可能只改到其中一条 —— 该漂移**已经真实发生过**
+detail 与非 detail 两条分支共用 `ComboCtx::run_row`; 而"如何求值一档参数"
+(调用引擎、分类状态、构造报告行) 收敛到 `app::combo::ParamEval::evaluate`。
+`run_combo` 只负责分块、并行调度与写出。此前两条分支各有一份分块循环与并行
+闭包，任何一次改动都可能只落到其中一条 —— 该漂移**已经真实发生过**
 （非 detail 分支曾内联写一份字面量）。
 
-回归测试 `both_combo_branches_construct_run_rows_via_run_row` 用源码级断言钉死：
-`run_combo` 函数体内不得出现 `RunResult {` 字面量，且 `ctx.run_row(` 恰出现 2 次。
+回归测试 `combo_rows_are_built_by_the_single_param_evaluator` 用源码级断言钉死：
+`run_combo` 函数体内不得出现 `RunResult {` 字面量，且必须调用 `eval.evaluate(`；
+`evaluate` 内正常档经 `run_row`、跳过档经 `invalid_row`。
 
 ### 12. 指标与 `--detail` 开关无关（类型级保证）
 
@@ -237,7 +240,7 @@ detail 与非 detail 两条分支共用 `ComboCtx::run_row`。此前两份 16 �
 
 ### 14. K 线六列必须等长
 
-生产路径由 `assert_columns_aligned` 在进入回测前一次性拒绝六列不等长，**不报错
+生产路径由 `app::combo::validate_columns` 在进入回测前一次性拒绝六列不等长，**不报错
 地少算几根 bar** 不是可接受行为。
 
 引擎 `scan_trades` 的循环上界只用 `close.len().min(signals.len())`，**不再**把

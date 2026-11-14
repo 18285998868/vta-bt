@@ -111,6 +111,42 @@ impl<'a> SimOptions<'a> {
     }
 }
 
+/// 两个主入口共用的输入校验。
+///
+/// 顺序固定为: 执行口径 → 风险规则 → 仓位模式 → 盘中列长度。校验通过后返回
+/// 实际参与回测的 bar 数 `min(close.len(), signals.len())`。
+fn validate_inputs(
+    ohlcv: Ohlcv<'_>,
+    signals: &[Signal],
+    opts: &SimOptions<'_>,
+) -> crate::error::Result<usize> {
+    opts.exec.validate_rates()?;
+    opts.risk.validate()?;
+    opts.sizing.validate()?;
+    let n = ohlcv.close.len().min(signals.len());
+    let needs_ohlc = !opts.risk.is_none() || opts.sizing.needs_ohlc();
+    if needs_ohlc && (ohlcv.high.len() < n || ohlcv.low.len() < n) {
+        return Err(crate::error::AppError::Msg(format!(
+            "配置了止损/ATR 仓位但 high/low 长度不足: high={}, low={}, close={n}",
+            ohlcv.high.len(),
+            ohlcv.low.len()
+        )));
+    }
+    Ok(n)
+}
+
+/// 数据不足(< 2 bar)时的空指标: 权益 = 初始资金, 执行口径照常回填。
+///
+/// 若不回填, 报告里同一列会出现"数据不足的行是 0、正常行是真实值"的混排。
+fn empty_summary(opts: &SimOptions<'_>) -> SummaryMetrics {
+    let mut summary = SummaryMetrics {
+        final_equity: opts.initial_cash,
+        ..SummaryMetrics::default()
+    };
+    summary.apply_exec(opts.exec);
+    summary
+}
+
 /// 执行一次回测并返回全部指标。
 ///
 /// **不物化权益曲线**(曲线统计 O(1))。`--detail` 开关不影响任何指标数值,
@@ -180,27 +216,9 @@ pub fn simulate_ohlcv(
     signals: &[Signal],
     opts: &SimOptions<'_>,
 ) -> crate::error::Result<SummaryMetrics> {
-    opts.exec.validate_rates()?;
-    opts.risk.validate()?;
-    opts.sizing.validate()?;
-    let n = ohlcv.close.len().min(signals.len());
-    let needs_ohlc = !opts.risk.is_none() || opts.sizing.needs_ohlc();
-    if needs_ohlc && (ohlcv.high.len() < n || ohlcv.low.len() < n) {
-        return Err(crate::error::AppError::Msg(format!(
-            "配置了止损/ATR 仓位但 high/low 长度不足: high={}, low={}, close={n}",
-            ohlcv.high.len(),
-            ohlcv.low.len()
-        )));
-    }
+    let n = validate_inputs(ohlcv, signals, opts)?;
     if n < 2 {
-        // 无成交 ⇒ 权益就是初始资金; 执行口径仍需回填, 否则报告里同一列
-        // 会出现"数据不足的行是 0、正常行是真实值"的混排。
-        let mut summary = SummaryMetrics {
-            final_equity: opts.initial_cash,
-            ..SummaryMetrics::default()
-        };
-        summary.apply_exec(opts.exec);
-        return Ok(summary);
+        return Ok(empty_summary(opts));
     }
     // collect_curves = false: 不物化曲线与逐笔 Trade; 曲线统计在线累计,
     // 逐笔 pnl 仍保留(O(交易笔数))用于高阶矩与分半 PF。
@@ -297,26 +315,10 @@ pub fn simulate_ohlcv_detailed(
     signals: &[Signal],
     opts: &SimOptions<'_>,
 ) -> crate::error::Result<SimResult> {
-    opts.exec.validate_rates()?;
-    opts.risk.validate()?;
-    opts.sizing.validate()?;
-    let n = ohlcv.close.len().min(signals.len());
-    let needs_ohlc = !opts.risk.is_none() || opts.sizing.needs_ohlc();
-    if needs_ohlc && (ohlcv.high.len() < n || ohlcv.low.len() < n) {
-        return Err(crate::error::AppError::Msg(format!(
-            "配置了止损/ATR 仓位但 high/low 长度不足: high={}, low={}, close={n}",
-            ohlcv.high.len(),
-            ohlcv.low.len()
-        )));
-    }
+    let n = validate_inputs(ohlcv, signals, opts)?;
     if n < 2 {
-        let mut summary = SummaryMetrics {
-            final_equity: opts.initial_cash,
-            ..SummaryMetrics::default()
-        };
-        summary.apply_exec(opts.exec);
         return Ok(SimResult {
-            summary,
+            summary: empty_summary(opts),
             trades: Vec::new(),
             equity_curve: Vec::new(),
             fixed_curve: Vec::new(),

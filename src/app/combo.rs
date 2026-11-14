@@ -184,6 +184,183 @@ pub(super) fn check_batch_len(name: &str, got: usize, want: usize) -> crate::err
     Ok(())
 }
 
+/// 单个参数档位的求值产物: 报告行 + detail 模式的落盘数据。
+struct ParamRun {
+    row: RunResult,
+    detail: Option<DetailResult>,
+}
+
+/// 组合内逐参数求值的共享上下文。
+///
+/// 此前 detail / 非 detail 各有一份分块循环、并行闭包与结果行构造; 两条分支
+/// 的任何一次改动都可能只落到其中一条。这里把"求值一档参数"收敛为唯一入口。
+struct ParamEval<'a> {
+    ctx: &'a ComboCtx,
+    job: &'a StrategyJob,
+    symbol: &'a str,
+    tf: &'a str,
+    ohlcv: engine::Ohlcv<'a>,
+    time: &'a [i64],
+    bpy: f64,
+    bars_used: usize,
+    bh_pnl: crate::money::Amount,
+    bh_ret: f64,
+}
+
+impl ParamEval<'_> {
+    /// 求值第 `i` 档参数。
+    ///
+    /// `Skipped` 记一行 `invalid` 并**继续**; detail 与非 detail 只差引擎入口
+    /// (`simulate_ohlcv_detailed` / `simulate_ohlcv`), 指标同源故逐位一致。
+    fn evaluate(
+        &self,
+        i: usize,
+        outcome: crate::strategies::ParamOutcome,
+    ) -> crate::error::Result<ParamRun> {
+        let strategy = self.job.strategy.as_ref();
+        // 一次分配: params 列、detail 行与日志共用同一字符串。
+        let params = self
+            .job
+            .stop
+            .apply_to(&strategy.param_str(i), &self.job.sizing);
+        let opts = engine::SimOptions {
+            initial_cash: self.ctx.balance,
+            bars_per_year: self.bpy,
+            exec: &self.ctx.exec,
+            risk: &self.job.stop,
+            sizing: &self.job.sizing,
+        };
+        match outcome {
+            crate::strategies::ParamOutcome::Signals(signals) => {
+                if self.ctx.detail {
+                    let sim =
+                        engine::simulate_ohlcv_detailed(self.time, self.ohlcv, &signals, &opts)?;
+                    let status = RunStatus::classify(&signals, &sim.summary);
+                    let row = self.ctx.run_row(
+                        self.symbol,
+                        self.tf,
+                        strategy,
+                        &params,
+                        sim.summary,
+                        self.bars_used,
+                        status,
+                        self.bh_pnl,
+                        self.bh_ret,
+                    );
+                    return Ok(ParamRun {
+                        row,
+                        detail: Some(DetailResult {
+                            symbol: self.symbol.to_string(),
+                            timeframe: self.tf.to_string(),
+                            strategy: strategy.name().to_string(),
+                            params,
+                            status,
+                            trades: sim.trades,
+                            equity_curve: sim.equity_curve,
+                            fixed_curve: sim.fixed_curve,
+                        }),
+                    });
+                }
+                let metrics = engine::simulate_ohlcv(self.ohlcv, &signals, &opts)?;
+                let status = RunStatus::classify(&signals, &metrics);
+                Ok(ParamRun {
+                    row: self.ctx.run_row(
+                        self.symbol,
+                        self.tf,
+                        strategy,
+                        &params,
+                        metrics,
+                        self.bars_used,
+                        status,
+                        self.bh_pnl,
+                        self.bh_ret,
+                    ),
+                    detail: None,
+                })
+            }
+            crate::strategies::ParamOutcome::Skipped(reason) => {
+                tracing::warn!(
+                    "  [{}] 参数档位 {params} 不可计算: {reason}(记为 invalid, 继续)",
+                    strategy.name(),
+                );
+                Ok(ParamRun {
+                    row: self.ctx.invalid_row(
+                        self.symbol,
+                        self.tf,
+                        strategy,
+                        &params,
+                        self.bars_used,
+                        self.bh_pnl,
+                        self.bh_ret,
+                    ),
+                    detail: None,
+                })
+            }
+        }
+    }
+}
+
+/// 逐参数分块计划: 单档峰值估算 + 每批参数个数。
+///
+/// detail 的曲线与逐笔交易常驻内存曾导致整机 swap, 非 detail 的全量信号也曾
+/// OOM; 两者估算单位不同, 但共用同一预算与分块公式。
+struct ChunkPlan {
+    /// 单个参数档位的估算峰值(字节)。
+    per_param: u64,
+    /// 每批参数个数。
+    chunk: usize,
+}
+
+impl ChunkPlan {
+    /// 峰值预算: 4 GiB。
+    const BUDGET: u64 = 4 * 1024 * 1024 * 1024;
+
+    /// detail: 约 `T × 200B`; 非 detail: `T × size_of::<Signal>()`。
+    ///
+    /// detail 单档就超预算时**拒绝执行**, 而不是跑一个注定 swap 的组合。
+    fn new(name: &str, detail: bool, bars: usize, n: usize) -> crate::error::Result<Self> {
+        let per_param = if detail {
+            bars as u64 * 200
+        } else {
+            bars as u64 * size_of::<crate::strategies::Signal>() as u64
+        };
+        if detail && per_param > Self::BUDGET {
+            return Err(crate::error::AppError::Msg(format!(
+                "[{name}] detail 单 param 预估 {} 超预算 {}, 拒绝执行(请关 detail 或拆小时间窗)",
+                gib(per_param),
+                gib(Self::BUDGET)
+            )));
+        }
+        let chunk = ((Self::BUDGET / per_param.max(1))
+            .max(1)
+            .min(n.max(1) as u64)) as usize;
+        Ok(Self { per_param, chunk })
+    }
+
+    /// 记录分块决策。detail 每次都打印预检; 非 detail 只在确实分块时打印。
+    fn log(&self, name: &str, n: usize, detail: bool) {
+        let batches = n.div_ceil(self.chunk.max(1));
+        if detail {
+            tracing::info!(
+                "  [{name}] detail 预检: 总量约 {}, 分 {batches} 批, 峰值约 {}",
+                gib(self.per_param.saturating_mul(n as u64)),
+                gib(self.per_param.saturating_mul(self.chunk as u64))
+            );
+        } else if n > self.chunk {
+            tracing::info!("  [{name}] batch 分块: {n} 参数, 分 {batches} 批");
+        }
+    }
+}
+
+/// 人类可读的字节数(用于内存预算日志)。
+fn gib(bytes: u64) -> String {
+    if bytes < 1_073_741_824 {
+        format!("{:.1} MiB", bytes as f64 / 1_048_576.0)
+    } else {
+        format!("{:.1} GiB", bytes as f64 / 1_073_741_824.0)
+    }
+}
+
 /// 执行单个 (symbol, timeframe, strategy) 组合:
 /// 1. 若 overwrite=false 且缓存文件(含参数指纹)已存在且可读, 直接返回(跳过)
 /// 2. 该策略的 n 个参数并行执行 信号生成+回测; detail 模式收集 trades/equity_curve
@@ -277,136 +454,57 @@ pub(super) fn run_combo(
         // 旧清单必须先失效, 再覆盖任何 detail 文件。否则中途崩溃会留下
         // "旧清单 + 新 detail + 旧组合 parquet" 的假完整缓存。
         output::invalidate_combo_detail_manifest(&combo_path)?;
-        let (bh_pnl, bh_ret) = crate::engine::buy_hold_pnl(cols.close(), ctx.balance)?;
-        // detail 预检与自适应分块: 曲线(trades+equity+fixed)常驻内存曾导致整机 swap。
-        // 单 param 约 T×200B; 峰值钳在 DETAIL_MEM_BUDGET, 超量分批, 单批都装不下则拒绝。
-        const DETAIL_MEM_BUDGET: u64 = 4 * 1024 * 1024 * 1024;
-        let per_param = cols.len() as u64 * 200;
-        let total_est = per_param.saturating_mul(n as u64);
-        let gib = |b: u64| {
-            if b < 1_073_741_824 {
-                format!("{:.1} MiB", b as f64 / 1_048_576.0)
-            } else {
-                format!("{:.1} GiB", b as f64 / 1_073_741_824.0)
-            }
-        };
-        if per_param > DETAIL_MEM_BUDGET {
-            return Err(crate::error::AppError::Msg(format!(
-                "[{}] detail 单 param 预估 {} GiB 超预算 {} GiB, 拒绝执行(请关 detail 或拆小时间窗)",
-                strategy.name(),
-                gib(per_param),
-                gib(DETAIL_MEM_BUDGET)
-            )));
-        }
-        let chunk = ((DETAIL_MEM_BUDGET / per_param.max(1))
-            .max(1)
-            .min(n.max(1) as u64)) as usize;
-        tracing::info!(
-            "  [{}] detail 预检: 总量约 {}, 分 {} 批, 峰值约 {}",
-            strategy.name(),
-            gib(total_est),
-            n.div_ceil(chunk.max(1)),
-            gib(per_param.saturating_mul(chunk as u64))
-        );
+    }
 
-        let mut run_rows = Vec::with_capacity(n);
-        let mut detail_files: Vec<PathBuf> = Vec::new();
-        for start in (0..n).step_by(chunk.max(1)) {
-            let end = (start + chunk).min(n);
-            let batch = strategy.generate_signals_batch(
-                cols.open(),
-                cols.high(),
-                cols.low(),
-                cols.close(),
-                cols.volume(),
-                cols.time(),
-                start..end,
-            )?;
-            check_batch_len(strategy.name(), batch.len(), end - start)?;
-            // 每档独立: `Skipped` = 该档不可计算(记 Invalid, **继续**跑),
-            // `Signals` = 正常回测。
-            let sims: Vec<(String, Option<crate::engine::SimResult>, RunStatus)> = batch
-                .into_par_iter()
-                .enumerate()
-                .map(|(k, outcome)| {
-                    let i = start + k;
-                    let params = stop.apply_to(&strategy.param_str(i), &job.sizing);
-                    match outcome {
-                        crate::strategies::ParamOutcome::Signals(signals) => {
-                            let sim = crate::engine::simulate_ohlcv_detailed(
-                                cols.time(),
-                                crate::engine::Ohlcv::new(
-                                    cols.open(),
-                                    cols.high(),
-                                    cols.low(),
-                                    cols.close(),
-                                ),
-                                &signals,
-                                &crate::engine::SimOptions {
-                                    initial_cash: ctx.balance,
-                                    bars_per_year: bpy,
-                                    exec: &ctx.exec,
-                                    risk: stop,
-                                    sizing: &job.sizing,
-                                },
-                            )?;
-                            let status = RunStatus::classify(&signals, &sim.summary);
-                            Ok((params, Some(sim), status))
-                        }
-                        crate::strategies::ParamOutcome::Skipped(reason) => {
-                            tracing::warn!(
-                                "  [{}] 参数档位 {params} 不可计算: {reason}(记为 invalid, 继续)",
-                                strategy.name(),
-                            );
-                            Ok((params, None, RunStatus::Invalid))
-                        }
-                    }
-                })
-                .collect::<crate::error::Result<Vec<_>>>()?;
+    let (bh_pnl, bh_ret) = engine::buy_hold_pnl(cols.close(), ctx.balance)?;
+    // detail 与非 detail 的峰值估算单位不同(曲线 vs 信号), 但预算与分块公式一致。
+    let plan = ChunkPlan::new(strategy.name(), ctx.detail, cols.len(), n)?;
+    plan.log(strategy.name(), n, ctx.detail);
 
-            let mut detail_rows = Vec::with_capacity(end - start);
-            for (params, sim, status) in sims {
-                let Some(crate::engine::SimResult {
-                    summary,
-                    trades,
-                    equity_curve,
-                    fixed_curve,
-                }) = sim
-                else {
-                    // 不可计算的档位**没有**逐笔交易与曲线 → 不产出 detail 产物,
-                    // 但仍写一行 `status = invalid` 的结果行(让报告完整可见)。
-                    run_rows.push(ctx.invalid_row(
-                        symbol,
-                        tf,
-                        strategy,
-                        &params,
-                        cols.len(),
-                        bh_pnl,
-                        bh_ret,
-                    ));
-                    continue;
-                };
-                run_rows.push(ctx.run_row(
-                    symbol,
-                    tf,
-                    strategy,
-                    &params,
-                    summary,
-                    cols.len(),
-                    status,
-                    bh_pnl,
-                    bh_ret,
-                ));
-                detail_rows.push(DetailResult {
-                    symbol: symbol.to_string(),
-                    timeframe: tf.to_string(),
-                    strategy: strategy.name().to_string(),
-                    params,
-                    status,
-                    trades,
-                    equity_curve,
-                    fixed_curve,
-                });
+    let eval = ParamEval {
+        ctx,
+        job,
+        symbol,
+        tf,
+        ohlcv: engine::Ohlcv::new(cols.open(), cols.high(), cols.low(), cols.close()),
+        time: cols.time(),
+        bpy,
+        bars_used: cols.len(),
+        bh_pnl,
+        bh_ret,
+    };
+
+    let mut run_rows: Vec<RunResult> = Vec::with_capacity(n);
+    let mut detail_files: Vec<PathBuf> = Vec::new();
+    for start in (0..n).step_by(plan.chunk.max(1)) {
+        let end = (start + plan.chunk).min(n);
+        let batch = strategy.generate_signals_batch(
+            cols.open(),
+            cols.high(),
+            cols.low(),
+            cols.close(),
+            cols.volume(),
+            cols.time(),
+            start..end,
+        )?;
+        check_batch_len(strategy.name(), batch.len(), end - start)?;
+        // 每档独立: `Skipped` = 该档不可计算(记 Invalid, **继续**跑),
+        // `Signals` = 正常回测。
+        let evaluated = batch
+            .into_par_iter()
+            .enumerate()
+            .map(|(k, outcome)| eval.evaluate(start + k, outcome))
+            .collect::<crate::error::Result<Vec<_>>>()?;
+
+        if ctx.detail {
+            let mut detail_rows = Vec::with_capacity(evaluated.len());
+            for run in evaluated {
+                run_rows.push(run.row);
+                // 不可计算的档位**没有**逐笔交易与曲线 → 不产出 detail 产物,
+                // 但仍写一行 `status = invalid` 的结果行(让报告完整可见)。
+                if let Some(detail) = run.detail {
+                    detail_rows.push(detail);
+                }
             }
             detail_files.extend(output::write_detail_parquet(
                 &detail_rows,
@@ -414,107 +512,25 @@ pub(super) fn run_combo(
                 ctx.fixed_curves,
                 &combo_id,
             )?);
+        } else {
+            debug_assert!(
+                evaluated.iter().all(|run| run.detail.is_none()),
+                "非 detail 路径不得物化逐笔交易与曲线"
+            );
+            run_rows.extend(evaluated.into_iter().map(|run| run.row));
         }
+    }
 
+    if ctx.detail {
         detail_files.sort();
         detail_files.dedup();
-        output::write_single_parquet(&run_rows, &combo_path, ctx.balance)?;
+    }
+    output::write_single_parquet(&run_rows, &combo_path, ctx.balance)?;
+    if ctx.detail {
         // 组合 parquet 与侧车清单的写入顺序: 先写组合, 再写清单。若中途崩溃,
         // 下次缓存命中会因缺清单而重算; 反过来则会留下"清单说文件齐全, 但组合
         // parquet 不存在"的假缓存。
         output::write_combo_detail_manifest(&combo_path, &ctx.detail_dir, &detail_files)?;
-    } else {
-        let (bh_pnl, bh_ret) = crate::engine::buy_hold_pnl(cols.close(), ctx.balance)?;
-        // 非 detail 也按信号内存分块: 全量 batch 常驻曾 OOM (35k×2.6M)。
-        // 单 param 约 T×size_of::<Signal>()B; 峰值钳在 BATCH_MEM_BUDGET, 超量分批。
-        const BATCH_MEM_BUDGET: u64 = 4 * 1024 * 1024 * 1024;
-        let per_param = cols.len() as u64 * size_of::<crate::strategies::Signal>() as u64;
-        let chunk = ((BATCH_MEM_BUDGET / per_param.max(1))
-            .max(1)
-            .min(n.max(1) as u64)) as usize;
-        if n > chunk {
-            tracing::info!(
-                "  [{}] batch 分块: {} 参数, 分 {} 批",
-                strategy.name(),
-                n,
-                n.div_ceil(chunk.max(1)),
-            );
-        }
-        let mut run_rows: Vec<RunResult> = Vec::with_capacity(n);
-        for start in (0..n).step_by(chunk.max(1)) {
-            let end = (start + chunk).min(n);
-            let batch = strategy.generate_signals_batch(
-                cols.open(),
-                cols.high(),
-                cols.low(),
-                cols.close(),
-                cols.volume(),
-                cols.time(),
-                start..end,
-            )?;
-            check_batch_len(strategy.name(), batch.len(), end - start)?;
-            let mut rows: Vec<RunResult> = batch
-                .into_par_iter()
-                .enumerate()
-                .map(|(k, outcome)| {
-                    let i = start + k;
-                    // `param_str` 会为每次调用分配一个 `String`。本分支需要它三次
-                    // (params 列 + 两列派生编码), 故只算一次再复用。止损后缀必须
-                    // 拼进 params, 否则同一策略的 stop 网格行主键会碰撞。
-                    let params = stop.apply_to(&strategy.param_str(i), &job.sizing);
-                    match outcome {
-                        crate::strategies::ParamOutcome::Signals(signals) => {
-                            let metrics = crate::engine::simulate_ohlcv(
-                                crate::engine::Ohlcv::new(
-                                    cols.open(),
-                                    cols.high(),
-                                    cols.low(),
-                                    cols.close(),
-                                ),
-                                &signals,
-                                &crate::engine::SimOptions {
-                                    initial_cash: ctx.balance,
-                                    bars_per_year: bpy,
-                                    exec: &ctx.exec,
-                                    risk: stop,
-                                    sizing: &job.sizing,
-                                },
-                            )?;
-                            let status = RunStatus::classify(&signals, &metrics);
-                            Ok(ctx.run_row(
-                                symbol,
-                                tf,
-                                strategy,
-                                &params,
-                                metrics,
-                                cols.len(),
-                                status,
-                                bh_pnl,
-                                bh_ret,
-                            ))
-                        }
-                        crate::strategies::ParamOutcome::Skipped(reason) => {
-                            tracing::warn!(
-                                "  [{}] 参数档位 {params} 不可计算: {reason}(记为 invalid, 继续)",
-                                strategy.name()
-                            );
-                            Ok(ctx.invalid_row(
-                                symbol,
-                                tf,
-                                strategy,
-                                &params,
-                                cols.len(),
-                                bh_pnl,
-                                bh_ret,
-                            ))
-                        }
-                    }
-                })
-                .collect::<crate::error::Result<Vec<_>>>()?;
-            run_rows.append(&mut rows);
-        }
-
-        output::write_single_parquet(&run_rows, &combo_path, ctx.balance)?;
     }
 
     Ok((combo_path, true))

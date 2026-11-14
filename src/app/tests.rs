@@ -668,34 +668,44 @@ fn uneven_columns_are_rejected_at_construction() {
     // 同样只能得到等长实例。
 }
 
-/// O9 回归: `run_combo` 的**两条分支**(detail / 非 detail)必须都经
-/// [`ComboCtx::run_row`] 构造 `RunResult`。
+/// O9 回归: `run_combo` 的 detail / 非 detail 结果必须经**同一**求值入口构造。
 ///
-/// 可触发场景: 非 detail 分支曾内联写一份 16 字段字面量, 而 detail 分支走
-/// `run_row`。两者字段集合已在一次字段新增中出现过漂移 —— 新列只加进其中一条,
-/// 报告里 `--detail` 开关会改变指标列的语义, 且不报错。
-/// 本测试用源码级断言把"两条分支都调用 run_row"钉死。
+/// 历史上两条分支各写一份 16 字段字面量, 新列只加进其中一条 → 报告语义随
+/// `--detail` 漂移。P1 把"求值一档参数"收敛到 `ParamEval::evaluate`, 本测试用
+/// 源码级断言钉死: `run_combo` 不得内联 `RunResult`, 且分块循环必须调用
+/// `evaluate`; `evaluate` 内部正常档走 `run_row`、跳过档走 `invalid_row`。
 #[test]
-fn both_combo_branches_construct_run_rows_via_run_row() {
+fn combo_rows_are_built_by_the_single_param_evaluator() {
     let src = include_str!("combo.rs");
-    let body = src
+    let combo = src
         .split("fn run_combo(")
         .nth(1)
         .expect("源码中应存在 run_combo");
-    // 只看函数体(到下一个顶层 `/// ` 文档注释为止), 避免匹配到后面的测试。
-    let body = body.split("\n/// ").next().expect("run_combo 体应可截取");
+    let combo = combo.split("\n/// ").next().expect("run_combo 体应可截取");
 
-    // 唯一构造点是 ComboCtx::run_row: 函数体内不得出现 RunResult 字面量。
     assert!(
-        !body.contains("RunResult {"),
+        !combo.contains("RunResult {"),
         "run_combo 内不得内联构造 RunResult —— 唯一构造点是 ComboCtx::run_row; \
          内联字面量会让 detail / 非 detail 两条分支的字段集合漂移(O9)"
     );
-    // 两条分支各调用一次。
     assert_eq!(
-        body.matches("ctx.run_row(").count(),
-        2,
-        "detail 与非 detail 分支必须各经一次 ctx.run_row"
+        combo.matches("eval.evaluate(").count(),
+        1,
+        "分块循环必须经 ParamEval::evaluate 求值每一档参数"
+    );
+
+    let eval = src
+        .split("fn evaluate(")
+        .nth(1)
+        .expect("源码中应存在 ParamEval::evaluate");
+    let eval = eval.split("\n/// ").next().expect("evaluate 体应可截取");
+    assert!(
+        eval.contains("self.ctx.run_row("),
+        "正常档必须经 run_row 构造报告行"
+    );
+    assert!(
+        eval.contains("self.ctx.invalid_row("),
+        "跳过档必须经 invalid_row 构造报告行"
     );
 }
 
