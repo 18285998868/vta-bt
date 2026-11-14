@@ -16,7 +16,7 @@ pub enum AppError {
     Config(#[from] toml::de::Error),
     #[error("binance data error: {0}")]
     /// Binance 行情数据加载失败。
-    BinanceData(#[from] binance_data_reader::ReaderError),
+    BinanceData(#[from] binance_data_reader::Error),
     #[error("dukascopy data error: {0}")]
     /// Dukascopy 行情数据加载失败。
     DukascopyData(#[from] dukascopy_data_reader::ReaderError),

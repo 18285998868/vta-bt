@@ -3,6 +3,10 @@ use std::path::Path;
 use tempfile::TempDir;
 use tradingview_backend::app::data_loader::{DataLoader, MarketType};
 
+/// 2024-01-01T00:00:00Z；fixture 行必须落在文件名对应的 UTC 日期内。
+const BASE_MS: i64 = 1_704_067_200_000;
+const HOUR_MS: i64 = 3_600_000;
+
 fn write_zip(
     dir: &Path,
     pair: &str,
@@ -23,9 +27,16 @@ fn write_zip(
 
     let mut csv = String::new();
     for r in rows {
+        // fixture 都是 1h bar：close_time 必须是 open + 1h - 1ms。
         csv.push_str(&format!(
-            "{},{},{},{},{},{},0,0,0,0,0,0\n",
-            r.0, r.1, r.2, r.3, r.4, r.5
+            "{},{},{},{},{},{},{},0,0,0,0,0\n",
+            r.0,
+            r.1,
+            r.2,
+            r.3,
+            r.4,
+            r.5,
+            r.0 + HOUR_MS - 1
         ));
     }
     let name = format!("{pair}-{timeframe}-{suffix}.zip");
@@ -51,8 +62,8 @@ fn test_full_pipeline_futures() {
         "BTCUSDT",
         "1h",
         &[
-            (1_000_000, 100.0, 105.0, 95.0, 102.0, 10.0),
-            (2_000_000, 102.0, 107.0, 97.0, 104.0, 20.0),
+            (BASE_MS, 100.0, 105.0, 95.0, 102.0, 10.0),
+            (BASE_MS + HOUR_MS, 102.0, 107.0, 97.0, 104.0, 20.0),
         ],
         "2024-01-01",
     );
@@ -61,8 +72,8 @@ fn test_full_pipeline_futures() {
         "BTCUSDT",
         "1h",
         &[
-            (3_000_000, 104.0, 109.0, 99.0, 106.0, 30.0),
-            (4_000_000, 106.0, 111.0, 101.0, 108.0, 40.0),
+            (BASE_MS + 24 * HOUR_MS, 104.0, 109.0, 99.0, 106.0, 30.0),
+            (BASE_MS + 25 * HOUR_MS, 106.0, 111.0, 101.0, 108.0, 40.0),
         ],
         "2024-01-02",
     );
@@ -70,7 +81,7 @@ fn test_full_pipeline_futures() {
         dir.path(),
         "ETHUSDT",
         "1h",
-        &[(1_000_000, 10.0, 11.0, 9.0, 10.5, 100.0)],
+        &[(BASE_MS, 10.0, 11.0, 9.0, 10.5, 100.0)],
         "2024-01-01",
     );
 
@@ -96,17 +107,18 @@ fn test_full_pipeline_futures() {
 }
 
 #[test]
-fn test_klines_dedup_across_files() {
+fn test_duplicate_rows_across_files_are_rejected() {
+    // 新版 binance reader 在加载阶段校验时间戳必须落在文件名对应的 UTC 日期内，
+    // 因此把同一条 bar 写进两个不同日期的文件会直接报错，而不是静默去重。
     let dir = TempDir::new().unwrap();
-    let rows = &[(1_000_000, 100.0, 105.0, 95.0, 102.0, 10.0)];
+    let rows = &[(BASE_MS, 100.0, 105.0, 95.0, 102.0, 10.0)];
     write_zip(dir.path(), "BTCUSDT", "1h", rows, "2024-01-01");
     write_zip(dir.path(), "BTCUSDT", "1h", rows, "2024-01-02");
 
     let loader = DataLoader::new(dir.path());
-    let klines = loader
-        .load_klines_filtered(MarketType::Futures, "BTCUSDT", "1h", None, None, None)
-        .unwrap();
-    assert_eq!(klines.len(), 1);
+    let result =
+        loader.load_klines_filtered(MarketType::Futures, "BTCUSDT", "1h", None, None, None);
+    assert!(result.is_err());
 }
 
 #[test]
@@ -117,9 +129,9 @@ fn test_before_after_limit_combined() {
         "BTCUSDT",
         "1h",
         &[
-            (1_000_000, 100.0, 105.0, 95.0, 102.0, 10.0),
-            (2_000_000, 102.0, 107.0, 97.0, 104.0, 20.0),
-            (3_000_000, 104.0, 109.0, 99.0, 106.0, 30.0),
+            (BASE_MS, 100.0, 105.0, 95.0, 102.0, 10.0),
+            (BASE_MS + HOUR_MS, 102.0, 107.0, 97.0, 104.0, 20.0),
+            (BASE_MS + 2 * HOUR_MS, 104.0, 109.0, 99.0, 106.0, 30.0),
         ],
         "2024-01-01",
     );
@@ -130,14 +142,14 @@ fn test_before_after_limit_combined() {
             MarketType::Futures,
             "BTCUSDT",
             "1h",
-            Some(3_500_000),
-            Some(500_000),
+            Some(BASE_MS + 2 * HOUR_MS + HOUR_MS / 2),
+            Some(BASE_MS - HOUR_MS / 2),
             Some(1),
         )
         .unwrap();
     assert_eq!(klines.len(), 1);
-    // limit=1 takes the last element after filtering: 3_000_000
-    assert_eq!(klines[0].time, 3_000_000);
+    // limit=1 takes the last element after filtering: the 02:00 bar.
+    assert_eq!(klines[0].time, BASE_MS + 2 * HOUR_MS);
 }
 
 #[test]
@@ -148,9 +160,9 @@ fn test_limit_takes_last_bars() {
         "BTCUSDT",
         "1h",
         &[
-            (1_000_000, 100.0, 105.0, 95.0, 102.0, 10.0),
-            (2_000_000, 102.0, 107.0, 97.0, 104.0, 20.0),
-            (3_000_000, 104.0, 109.0, 99.0, 106.0, 30.0),
+            (BASE_MS, 100.0, 105.0, 95.0, 102.0, 10.0),
+            (BASE_MS + HOUR_MS, 102.0, 107.0, 97.0, 104.0, 20.0),
+            (BASE_MS + 2 * HOUR_MS, 104.0, 109.0, 99.0, 106.0, 30.0),
         ],
         "2024-01-01",
     );
@@ -160,8 +172,8 @@ fn test_limit_takes_last_bars() {
         .load_klines_filtered(MarketType::Futures, "BTCUSDT", "1h", None, None, Some(2))
         .unwrap();
     assert_eq!(klines.len(), 2);
-    assert_eq!(klines[0].time, 2_000_000);
-    assert_eq!(klines[1].time, 3_000_000);
+    assert_eq!(klines[0].time, BASE_MS + HOUR_MS);
+    assert_eq!(klines[1].time, BASE_MS + 2 * HOUR_MS);
 }
 
 #[test]
@@ -172,9 +184,9 @@ fn test_columns_api_matches_klines_api() {
         "BTCUSDT",
         "1h",
         &[
-            (1_000_000, 100.0, 105.0, 95.0, 102.0, 10.0),
-            (2_000_000, 102.0, 107.0, 97.0, 104.0, 20.0),
-            (3_000_000, 104.0, 109.0, 99.0, 106.0, 30.0),
+            (BASE_MS, 100.0, 105.0, 95.0, 102.0, 10.0),
+            (BASE_MS + HOUR_MS, 102.0, 107.0, 97.0, 104.0, 20.0),
+            (BASE_MS + 2 * HOUR_MS, 104.0, 109.0, 99.0, 106.0, 30.0),
         ],
         "2024-01-01",
     );

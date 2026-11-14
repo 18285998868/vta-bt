@@ -23,7 +23,8 @@ pub enum MarketType {
     Futures,
     /// binance 现货（本地暂无对应数据）。
     Spot,
-    /// Dukascopy 外汇/贵金属（`{dir}/dukascopy/{symbol}/{yyyy}/{mm}/{dd}/*.bi5`）。
+    /// Dukascopy 外汇/贵金属（`{dir}/dukascopy/{symbol}/{yyyy}/{MM}/{dd}/*.bi5`，
+    /// 月份 0-based：`00` = 1 月）。
     Dukascopy,
 }
 
@@ -95,11 +96,15 @@ pub enum DataError {
 
     /// binance-data-reader 读取/解析失败。
     #[error("binance reader error: {0}")]
-    BinanceReader(#[from] binance_data_reader::ReaderError),
+    BinanceReader(#[from] binance_data_reader::Error),
 
     /// dukascopy-data-reader 读取/解析失败。
     #[error("dukascopy reader error: {0}")]
     DukascopyReader(#[from] dukascopy_data_reader::ReaderError),
+
+    /// 数据内容不完整（例如缺少必需列）。
+    #[error("data error: {0}")]
+    Data(String),
 
     /// 数据目录或数据集不存在。
     #[error("not found: {0}")]
@@ -253,15 +258,41 @@ impl KlineColumns {
     }
 }
 
-impl From<binance_data_reader::KlineColumns> for KlineColumns {
-    fn from(raw: binance_data_reader::KlineColumns) -> Self {
-        Self::from_parts(raw.into_parts())
+impl TryFrom<binance_data_reader::Table> for KlineColumns {
+    type Error = DataError;
+
+    fn try_from(table: binance_data_reader::Table) -> Result<Self, Self::Error> {
+        fn column<'a, T>(
+            table: &'a binance_data_reader::Table,
+            name: &str,
+            get: impl Fn(&'a binance_data_reader::Table, &str) -> Option<&'a [T]>,
+        ) -> Result<&'a [T], DataError> {
+            get(table, name)
+                .ok_or_else(|| DataError::Data(format!("kline table is missing `{name}` column")))
+        }
+
+        let time = column(&table, "open_time", binance_data_reader::Table::i64)?.to_vec();
+        let open = column(&table, "open", binance_data_reader::Table::f64)?.to_vec();
+        let high = column(&table, "high", binance_data_reader::Table::f64)?.to_vec();
+        let low = column(&table, "low", binance_data_reader::Table::f64)?.to_vec();
+        let close = column(&table, "close", binance_data_reader::Table::f64)?.to_vec();
+        let volume = column(&table, "volume", binance_data_reader::Table::f64)?.to_vec();
+        Ok(Self::from_parts((time, open, high, low, close, volume)))
     }
 }
 
 impl From<dukascopy_data_reader::KlineColumns> for KlineColumns {
     fn from(raw: dukascopy_data_reader::KlineColumns) -> Self {
-        Self::from_parts(raw.into_parts())
+        let parts = raw.into_parts();
+        Self::from_parts((
+            parts.time,
+            parts.open,
+            parts.high,
+            parts.low,
+            parts.close,
+            // Dukascopy stores raw `u32` volume units; this layer uses `f64`.
+            parts.volume.into_iter().map(f64::from).collect(),
+        ))
     }
 }
 
@@ -375,9 +406,9 @@ impl DataLoader {
                 if !has_data_files(&pair_dir, market_type.data_ext()) {
                     return Ok(vec![]);
                 }
-                dukascopy_data_reader::supported_timeframes()
+                dukascopy_data_reader::Timeframe::ALL
                     .iter()
-                    .map(|s| (*s).to_string())
+                    .map(|timeframe| timeframe.as_str().to_string())
                     .collect()
             }
             _ => std::fs::read_dir(&pair_dir)?
@@ -445,17 +476,20 @@ impl DataLoader {
         tracing::debug!(?key, "cache miss — reading kline files");
 
         // 周期合法性由数据源裁定：不同源的可用周期不同（binance 1m..1d，
-        // dukascopy M1/H1/D1/1m/1h/1d），由对应 reader 判定才能给出
-        // "该源支持哪些"的准确信息；用户输错属于 400 而非 500。
-        let parsed = match market_type {
-            MarketType::Dukascopy => dukascopy_data_reader::Timeframe::parse(timeframe)
-                .map(|_| ())
-                .map_err(|e| e.to_string()),
-            _ => binance_data_reader::Timeframe::parse(timeframe)
-                .map(|_| ())
-                .map_err(|e| e.to_string()),
-        };
-        parsed.map_err(DataError::InvalidParam)?;
+        // dukascopy M1/H1/D1，别名 1m/1h/1d 由 reader 归一），由对应 reader
+        // 判定才能给出"该源支持哪些"的准确信息；用户输错属于 400 而非 500。
+        match market_type {
+            MarketType::Dukascopy => {
+                timeframe
+                    .parse::<dukascopy_data_reader::Timeframe>()
+                    .map_err(|e| DataError::InvalidParam(e.to_string()))?;
+            }
+            _ => {
+                timeframe
+                    .parse::<binance_data_reader::Interval>()
+                    .map_err(DataError::InvalidParam)?;
+            }
+        }
 
         let Some(base) = self.base_path(market_type) else {
             tracing::warn!("market not backed by a data reader yet");
@@ -485,13 +519,10 @@ impl DataLoader {
 
         let cols = match market_type {
             MarketType::Dukascopy => {
-                let cfg = dukascopy_data_reader::DataConfig::new(
-                    &self.data_dir,
-                    pair,
-                    timeframe,
-                    None,
-                    None,
-                )?;
+                let timeframe = timeframe
+                    .parse::<dukascopy_data_reader::Timeframe>()
+                    .map_err(|e| DataError::InvalidParam(e.to_string()))?;
+                let cfg = dukascopy_data_reader::DataConfig::new(&self.data_dir, pair, timeframe)?;
                 let raw = dukascopy_data_reader::load_columns(&cfg)?;
                 KlineColumns::from(raw)
             }
@@ -500,16 +531,17 @@ impl DataLoader {
                     MarketType::Spot => binance_data_reader::Market::Spot,
                     _ => binance_data_reader::Market::Um,
                 };
-                let cfg = binance_data_reader::KlineConfig::new_with_market(
-                    market,
-                    &self.data_dir,
+                let interval: binance_data_reader::Interval =
+                    timeframe.parse().map_err(DataError::InvalidParam)?;
+                let cfg = binance_data_reader::Config::builder(
+                    self.data_dir.join("binance"),
+                    binance_data_reader::Dataset::Klines,
                     pair,
-                    timeframe,
-                    None,
-                    None,
-                )?;
-                let raw = binance_data_reader::load_kline_columns(&cfg)?;
-                KlineColumns::from(raw)
+                )
+                .market(market)
+                .interval(interval)
+                .build()?;
+                KlineColumns::try_from(binance_data_reader::read(&cfg)?.table)?
             }
         };
         if cols.is_empty() {
@@ -553,6 +585,10 @@ mod tests {
             .join(timeframe)
     }
 
+    /// 2024-01-01T00:00:00Z；所有 kline fixture 都落在这天的文件周期内。
+    const BASE_MS: i64 = 1_704_067_200_000;
+    const HOUR_MS: i64 = 3_600_000;
+
     fn write_test_zip(
         dir: &Path,
         pair: &str,
@@ -564,9 +600,17 @@ mod tests {
         std::fs::create_dir_all(&tf_dir).unwrap();
         let mut csv = String::new();
         for r in rows {
+            // 读入的 fixture 都是 1h bar：close_time 必须是 open + 1h - 1ms，
+            // 否则新版 reader 会按 `BadRowPolicy::Fail` 直接报错。
             csv.push_str(&format!(
-                "{},{},{},{},{},{},0,0,0,0,0,0\n",
-                r.0, r.1, r.2, r.3, r.4, r.5
+                "{},{},{},{},{},{},{},0,0,0,0,0\n",
+                r.0,
+                r.1,
+                r.2,
+                r.3,
+                r.4,
+                r.5,
+                r.0 + HOUR_MS - 1
             ));
         }
         let zip_path = tf_dir.join(name);
@@ -582,9 +626,9 @@ mod tests {
 
     fn test_rows() -> Vec<(i64, f64, f64, f64, f64, f64)> {
         vec![
-            (1_000_000, 100.0, 105.0, 95.0, 102.0, 10.0),
-            (2_000_000, 102.0, 107.0, 97.0, 104.0, 20.0),
-            (3_000_000, 104.0, 109.0, 99.0, 106.0, 30.0),
+            (BASE_MS, 100.0, 105.0, 95.0, 102.0, 10.0),
+            (BASE_MS + HOUR_MS, 102.0, 107.0, 97.0, 104.0, 20.0),
+            (BASE_MS + 2 * HOUR_MS, 104.0, 109.0, 99.0, 106.0, 30.0),
         ]
     }
 
@@ -730,13 +774,13 @@ mod tests {
                 MarketType::Futures,
                 "BTCUSDT",
                 "1h",
-                Some(2_500_000),
+                Some(BASE_MS + HOUR_MS + HOUR_MS / 2),
                 None,
                 None,
             )
             .unwrap();
         assert_eq!(klines.len(), 2);
-        assert_eq!(klines[0].time, 1_000_000);
+        assert_eq!(klines[0].time, BASE_MS);
     }
 
     #[test]
@@ -757,12 +801,12 @@ mod tests {
                 "BTCUSDT",
                 "1h",
                 None,
-                Some(1_500_000),
+                Some(BASE_MS + HOUR_MS / 2),
                 None,
             )
             .unwrap();
         assert_eq!(klines.len(), 2);
-        assert_eq!(klines[0].time, 2_000_000);
+        assert_eq!(klines[0].time, BASE_MS + HOUR_MS);
     }
 
     #[test]
@@ -781,7 +825,7 @@ mod tests {
             .load_klines_filtered(MarketType::Futures, "BTCUSDT", "1h", None, None, Some(2))
             .unwrap();
         assert_eq!(klines.len(), 2);
-        assert_eq!(klines[0].time, 2_000_000);
+        assert_eq!(klines[0].time, BASE_MS + HOUR_MS);
     }
 
     #[test]
@@ -820,8 +864,8 @@ mod tests {
                 MarketType::Futures,
                 "BTCUSDT",
                 "1h",
-                Some(1_000_000),
-                Some(2_000_000),
+                Some(BASE_MS + HOUR_MS),
+                Some(BASE_MS),
                 None,
             )
             .unwrap();
@@ -829,51 +873,34 @@ mod tests {
     }
 
     #[test]
-    fn test_load_klines_skips_nan() {
-        let dir = TempDir::new().unwrap();
-        let rows = vec![
-            (1_000_000, 100.0, 105.0, 95.0, 102.0, 10.0),
-            (2_000_000, f64::NAN, 107.0, 97.0, 104.0, 20.0),
-            (3_000_000, 104.0, 109.0, 99.0, 106.0, 30.0),
-        ];
-        write_test_zip(
-            dir.path(),
-            "BTCUSDT",
-            "1h",
-            "BTCUSDT-1h-2024-01-01.zip",
-            &rows,
-        );
-
-        let loader = DataLoader::new(dir.path());
-        let klines = loader
-            .load_klines_filtered(MarketType::Futures, "BTCUSDT", "1h", None, None, None)
-            .unwrap();
-        assert_eq!(klines.len(), 2);
+    fn test_columns_skip_nan() {
+        // 新版 binance reader 对非有限值直接报 BadRow，NaN 防护留在本层：
+        // 用 `from_parts` 构造含 NaN 的列，验证下游仍会丢弃该行。
+        let cols = KlineColumns::from_parts((
+            vec![BASE_MS, BASE_MS + HOUR_MS, BASE_MS + 2 * HOUR_MS],
+            vec![100.0, f64::NAN, 104.0],
+            vec![105.0, 107.0, 109.0],
+            vec![95.0, 97.0, 99.0],
+            vec![102.0, 104.0, 106.0],
+            vec![10.0, 20.0, 30.0],
+        ));
+        assert_eq!(cols.len(), 2);
+        assert_eq!(cols.time, vec![BASE_MS, BASE_MS + 2 * HOUR_MS]);
     }
 
     #[test]
-    fn test_load_klines_dedup() {
-        let dir = TempDir::new().unwrap();
-        write_test_zip(
-            dir.path(),
-            "BTCUSDT",
-            "1h",
-            "BTCUSDT-1h-2024-01-01.zip",
-            &test_rows(),
-        );
-        write_test_zip(
-            dir.path(),
-            "BTCUSDT",
-            "1h",
-            "BTCUSDT-1h-2024-01-02.zip",
-            &test_rows(),
-        );
-
-        let loader = DataLoader::new(dir.path());
-        let klines = loader
-            .load_klines_filtered(MarketType::Futures, "BTCUSDT", "1h", None, None, None)
-            .unwrap();
-        assert_eq!(klines.len(), 3);
+    fn test_columns_dedup_keeps_first() {
+        // 新版 binance reader 在加载阶段就拒绝重复 open_time，去重防护留在本层。
+        let cols = KlineColumns::from_parts((
+            vec![BASE_MS, BASE_MS, BASE_MS + HOUR_MS],
+            vec![100.0, 102.0, 104.0],
+            vec![105.0, 107.0, 109.0],
+            vec![95.0, 97.0, 99.0],
+            vec![102.0, 104.0, 106.0],
+            vec![10.0, 20.0, 30.0],
+        ));
+        assert_eq!(cols.len(), 2);
+        assert_eq!(cols.close, vec![102.0, 106.0]);
     }
 
     #[test]
@@ -946,10 +973,16 @@ mod tests {
 
         let loader = DataLoader::new(dir.path());
         let cols = loader
-            .load_columns_filtered(MarketType::Futures, "BTCUSDT", "1h", None, Some(1_500_000))
+            .load_columns_filtered(
+                MarketType::Futures,
+                "BTCUSDT",
+                "1h",
+                None,
+                Some(BASE_MS + HOUR_MS / 2),
+            )
             .unwrap();
         assert_eq!(cols.len(), 2);
-        assert_eq!(cols.time, vec![2_000_000, 3_000_000]);
+        assert_eq!(cols.time, vec![BASE_MS + HOUR_MS, BASE_MS + 2 * HOUR_MS]);
         assert_eq!(cols.close, vec![104.0, 106.0]);
         assert_eq!(cols.len(), cols.open.len());
         assert_eq!(cols.len(), cols.volume.len());
@@ -1019,13 +1052,14 @@ mod tests {
 
     // ---- Dukascopy 数据源 ----
 
-    /// 造一个 dukascopy 目录树：`{dir}/dukascopy/{symbol}/{yyyy}/{mm}/{dd}/*.bi5`。
+    /// 造一个 dukascopy 目录树：`{dir}/dukascopy/{symbol}/{yyyy}/{MM}/{dd}/*.bi5`，
+    /// 其中月份 0-based（`00` = 1 月）。
     fn write_dukascopy_tree(dir: &Path, symbol: &str) {
         let d = dir
             .join("dukascopy")
             .join(symbol)
             .join("2025")
-            .join("01")
+            .join("00")
             .join("02");
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(d.join("BID_candles_min_1.bi5"), b"stub").unwrap();
@@ -1051,8 +1085,9 @@ mod tests {
         let tfs = loader
             .list_timeframes(MarketType::Dukascopy, "EURUSD")
             .unwrap();
-        // 周期由数据源决定（同一批 .bi5 的不同聚合粒度），不是子目录。
-        assert!(tfs.contains(&"1h".to_string()));
+        // 周期由数据源决定（同一批 .bi5 的不同聚合粒度），不是子目录；
+        // reader 0.2 只对外列规范名，别名 1m/1h/1d 仍在解析边界被接受。
+        assert!(tfs.contains(&"H1".to_string()));
         assert!(tfs.contains(&"D1".to_string()));
         assert!(!tfs.contains(&"3m".to_string())); // dukascopy 不支持 3m
     }

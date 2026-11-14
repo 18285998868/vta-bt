@@ -23,9 +23,16 @@ fn write_zip(dir: &Path, pair: &str, timeframe: &str, rows: &[(i64, f64, f64, f6
     std::fs::create_dir_all(&tf_dir).unwrap();
     let mut csv = String::new();
     for r in rows {
+        // fixture 都是 1h bar：新版 reader 会校验 close_time = open + 1h - 1ms。
         csv.push_str(&format!(
-            "{},{},{},{},{},{},0,0,0,0,0,0\n",
-            r.0, r.1, r.2, r.3, r.4, r.5
+            "{},{},{},{},{},{},{},0,0,0,0,0\n",
+            r.0,
+            r.1,
+            r.2,
+            r.3,
+            r.4,
+            r.5,
+            r.0 + 3_599_999
         ));
     }
     let name = format!("{pair}-{timeframe}-2023-11-14.zip");
@@ -60,14 +67,15 @@ async fn get_json(app: &axum::Router, uri: &str) -> (StatusCode, Value) {
 #[tokio::test]
 async fn udf_fixture_endpoints() {
     let dir = TempDir::new().unwrap();
+    // 2023-11-14T00:00:00Z 起连续 3 根；reader 会校验每行 open_time 落在文件日期内。
     write_zip(
         dir.path(),
         "BTCUSDT",
         "1h",
         &[
-            (1_700_000_000_000, 100.0, 105.0, 95.0, 102.0, 10.0),
-            (1_700_003_600_000, 102.0, 107.0, 97.0, 104.0, 20.0),
-            (1_700_007_200_000, 104.0, 108.0, 100.0, 101.0, 30.0),
+            (1_699_920_000_000, 100.0, 105.0, 95.0, 102.0, 10.0),
+            (1_699_923_600_000, 102.0, 107.0, 97.0, 104.0, 20.0),
+            (1_699_927_200_000, 104.0, 108.0, 100.0, 101.0, 30.0),
         ],
     );
     let app = app(dir.path());
@@ -103,7 +111,7 @@ async fn udf_fixture_endpoints() {
 
     let (status, history) = get_json(
         &app,
-        "/udf/history?symbol=BINANCE:BTCUSDT&resolution=60&from=1700000000&to=1700007200",
+        "/udf/history?symbol=BINANCE:BTCUSDT&resolution=60&from=1699920000&to=1699927200",
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -111,9 +119,9 @@ async fn udf_fixture_endpoints() {
     assert_eq!(
         history["t"].as_array().unwrap(),
         &vec![
-            serde_json::json!(1_700_000_000_i64),
-            serde_json::json!(1_700_003_600_i64),
-            serde_json::json!(1_700_007_200_i64),
+            serde_json::json!(1_699_920_000_i64),
+            serde_json::json!(1_699_923_600_i64),
+            serde_json::json!(1_699_927_200_i64),
         ]
     );
     assert_eq!(history["o"].as_array().unwrap().len(), 3);
