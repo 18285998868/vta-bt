@@ -1,0 +1,403 @@
+# 行为冻结夹具: 每个 StrategyConfig 变体一条, 参数网格刻意小(2~3 档/维)。
+# 用途: tests/golden_signals.rs 冻结 param_str / 编码值 / 信号指纹。
+# 新增策略时必须在此追加一条, 否则 golden 测试会报“变体缺失”。
+
+[[strategy]]
+type = "aberration"
+n = { start = 20, end = 100, step = 80 }
+mult = { start = 1.5, end = 2.5, step = 1.0 }
+
+[[strategy]]
+type = "alma"
+period = { start = 10, end = 30, step = 10 }
+
+[[strategy]]
+type = "atr_band"
+mult = { start = 1.5, end = 2.5, step = 0.5 }
+
+[[strategy]]
+type = "bbmr"
+sigma = { start = 2.0, end = 3.0, step = 0.5 }
+
+[[strategy]]
+type = "bbrk"
+sigma = { start = 1.0, end = 2.0, step = 1.0 }
+bblen = { start = 10, end = 30, step = 10 }
+
+[[strategy]]
+type = "bbrk_adx"
+sigma = { start = 1.5, end = 2.5, step = 0.5 }
+bblen = 20
+adx = 25.0
+
+[[strategy]]
+type = "bbrk_atr"
+sigma = { start = 1.5, end = 2.5, step = 1.0 }
+bblen = 20
+atrthr = 1.0
+
+[[strategy]]
+type = "bbrk_atr_ema"
+sigma = { start = 1.5, end = 2.5, step = 1.0 }
+bblen = 20
+atrthr = 1.0
+
+[[strategy]]
+type = "bbrk_bb"
+ma = ["sma"]
+bblen = 20
+sigma = { start = 1.5, end = 2.5, step = 1.0 }
+
+[[strategy]]
+type = "bbrk_cross"
+sigma = { start = 1.5, end = 2.5, step = 1.0 }
+bblen = 20
+
+[[strategy]]
+type = "bbrk_don"
+sigma = { start = 1.5, end = 2.5, step = 1.0 }
+bblen = 20
+exitn = 10
+
+[[strategy]]
+type = "bbrk_ema"
+sigma = { start = 1.5, end = 2.5, step = 1.0 }
+bblen = 20
+emareg = 30
+
+[[strategy]]
+type = "bbrk_hma"
+sigma = { start = 1.5, end = 2.5, step = 1.0 }
+bblen = 20
+hmalen = 30
+
+[[strategy]]
+type = "bbrk_hma_ema"
+sigma = { start = 1.5, end = 2.5, step = 1.0 }
+bblen = 20
+hmalen = 30
+
+[[strategy]]
+type = "bbrk_hma_v1"
+sigma = { start = 1.5, end = 2.5, step = 1.0 }
+bblen = 20
+hmalen = 30
+
+[[strategy]]
+type = "bbrk_hma_v2"
+sigma = { start = 1.5, end = 2.5, step = 1.0 }
+bblen = 20
+hmalen = 30
+
+[[strategy]]
+type = "bbrk_hma_v3"
+sigma = { start = 1.5, end = 2.5, step = 1.0 }
+bblen = 20
+
+[[strategy]]
+type = "bbrk_hma_v4"
+sigma = { start = 1.5, end = 2.5, step = 1.0 }
+bblen = 20
+
+[[strategy]]
+type = "bbrk_hma_v5"
+sigma = { start = 1.5, end = 2.5, step = 1.0 }
+bblen = 20
+hmalen = 30
+
+[[strategy]]
+type = "bbrk_kdj"
+sigma = { start = 1.0, end = 3.0, step = 1.0 }
+
+[[strategy]]
+type = "bbrk_m2"
+sigma = { start = 1.0, end = 3.0, step = 1.0 }
+
+[[strategy]]
+type = "bbrk_m3"
+sigma = { start = 1.0, end = 3.0, step = 1.0 }
+
+[[strategy]]
+type = "bbrk_max"
+ma = ["sma"]
+malen = 30
+bblen = 20
+
+[[strategy]]
+type = "bbrk_orth"
+sigma = { start = 1.0, end = 3.0, step = 1.0 }
+
+[[strategy]]
+type = "bbrk_pctb"
+sigma = { start = 1.0, end = 3.0, step = 1.0 }
+exitb = 0.8
+
+[[strategy]]
+type = "bbrk_rex"
+sigma = { start = 1.5, end = 2.5, step = 1.0 }
+bblen = 20
+rexn = 10
+rexmult = 1.0
+
+[[strategy]]
+type = "bbrk_sma"
+sigma = { start = 1.5, end = 2.5, step = 1.0 }
+bblen = 20
+smareg = 30
+
+[[strategy]]
+type = "bbrk_sma_ema"
+sigma = { start = 1.5, end = 2.5, step = 1.0 }
+bblen = 20
+smareg = 30
+
+[[strategy]]
+type = "bbrk_str"
+sigma = { start = 1.5, end = 2.5, step = 1.0 }
+bblen = 20
+body = 0.5
+
+[[strategy]]
+type = "bbrk_trail"
+sigma = { start = 1.5, end = 2.5, step = 1.0 }
+bblen = 20
+trailk = 2.0
+
+[[strategy]]
+type = "bbrk_ttm"
+sigma = { start = 1.0, end = 3.0, step = 1.0 }
+kc = { start = 1.0, end = 2.0, step = 1.0 }
+ttmn = 20
+
+[[strategy]]
+type = "bbrk_ttm_fire"
+sigma = { start = 1.0, end = 3.0, step = 1.0 }
+kc = { start = 1.0, end = 2.0, step = 1.0 }
+
+[[strategy]]
+type = "bbrk_vol"
+sigma = { start = 1.0, end = 3.0, step = 1.0 }
+volmult = { start = 1.0, end = 3.0, step = 1.0 }
+voln = 20
+bblen = 20
+
+[[strategy]]
+type = "bbrk_vol_ema"
+sigma = { start = 1.0, end = 3.0, step = 1.0 }
+volmult = { start = 1.0, end = 3.0, step = 1.0 }
+voln = 20
+
+[[strategy]]
+type = "bbrk_zlema_ema"
+sigma = { start = 1.5, end = 2.5, step = 1.0 }
+bblen = 20
+zlemareg = 30
+
+[[strategy]]
+type = "clenow"
+fast = { start = 50, end = 100, step = 50 }
+slow = { start = 100, end = 200, step = 100 }
+entry = { start = 20, end = 55, step = 35 }
+exit = { start = 10, end = 20, step = 10 }
+mode = ["long_short", "long_only"]
+
+[[strategy]]
+type = "dema"
+period = { start = 10, end = 30, step = 10 }
+
+[[strategy]]
+type = "dma"
+period = { start = 10, end = 30, step = 10 }
+
+[[strategy]]
+type = "dual_thrust"
+n = { start = 3, end = 10, step = 7 }
+k = { start = 0.1, end = 0.3, step = 0.1 }
+
+[[strategy]]
+type = "ehma"
+period = { start = 10, end = 30, step = 10 }
+
+[[strategy]]
+type = "ema"
+period = { start = 10, end = 30, step = 10 }
+
+[[strategy]]
+type = "ema_cross"
+fast = { start = 5, end = 15, step = 5 }
+slow = { start = 20, end = 40, step = 10 }
+
+[[strategy]]
+type = "fiali"
+
+[[strategy]]
+type = "frama"
+period = { start = 10, end = 30, step = 10 }
+
+[[strategy]]
+type = "fwma"
+period = { start = 10, end = 30, step = 10 }
+
+[[strategy]]
+type = "hma"
+period = { start = 10, end = 30, step = 10 }
+
+[[strategy]]
+type = "jma"
+period = { start = 10, end = 30, step = 10 }
+
+[[strategy]]
+type = "kama"
+period = { start = 10, end = 30, step = 10 }
+
+[[strategy]]
+type = "keltner"
+mult = { start = 1.5, end = 2.5, step = 0.5 }
+
+[[strategy]]
+type = "lin_reg"
+period = { start = 10, end = 30, step = 10 }
+
+[[strategy]]
+type = "ma_atr"
+ma = ["sma"]
+len = { start = 10, end = 30, step = 10 }
+mult = 1.0
+atrlen = 14
+
+[[strategy]]
+type = "ma_slope_atr_gate"
+ma = 100
+slope_k = 20
+atr_n = 120
+z_win = 60
+th = 0.5
+atr_kind = "sma"
+
+[[strategy]]
+type = "mabb_long"
+ma = ["sma"]
+bblen = 20
+sigma = { start = 1.5, end = 2.5, step = 1.0 }
+stopk = 1.0
+atrlen = 14
+
+[[strategy]]
+type = "mabb_short"
+ma = ["sma"]
+bblen = 20
+sigma = { start = 1.5, end = 2.5, step = 1.0 }
+stopk = 1.0
+atrlen = 14
+
+[[strategy]]
+type = "macd"
+groups = [[12, 26, 9]]
+
+[[strategy]]
+type = "mc_ginley"
+period = { start = 10, end = 30, step = 10 }
+
+[[strategy]]
+type = "pwma"
+period = { start = 10, end = 30, step = 10 }
+
+[[strategy]]
+type = "r_breaker"
+stop_pct = { start = 0.5, end = 2.0, step = 1.5 }
+
+[[strategy]]
+type = "rsi2"
+buy = { start = 5.0, end = 10.0, step = 5.0 }
+sell = { start = 90.0, end = 95.0, step = 5.0 }
+
+[[strategy]]
+type = "sgma"
+period = { start = 10, end = 30, step = 10 }
+poly_order = 2
+
+[[strategy]]
+type = "sin_wma"
+period = { start = 10, end = 30, step = 10 }
+
+[[strategy]]
+type = "sma"
+period = { start = 10, end = 30, step = 10 }
+
+[[strategy]]
+type = "sma_cd"
+period = { start = 10, end = 30, step = 10 }
+
+[[strategy]]
+type = "smma"
+period = { start = 10, end = 30, step = 10 }
+
+[[strategy]]
+type = "ssf"
+period = { start = 10, end = 30, step = 10 }
+
+[[strategy]]
+type = "ssf_cd"
+period = { start = 10, end = 30, step = 10 }
+
+[[strategy]]
+type = "ssf_st"
+period = { start = 10, end = 30, step = 10 }
+
+[[strategy]]
+type = "ssf_st_cd"
+period = { start = 10, end = 30, step = 10 }
+
+[[strategy]]
+type = "swing_fractal"
+left = { start = 3, end = 13, step = 5 }
+right = { start = 3, end = 7, step = 2 }
+
+[[strategy]]
+type = "swma"
+period = { start = 10, end = 30, step = 10 }
+
+[[strategy]]
+type = "tema"
+period = { start = 10, end = 30, step = 10 }
+
+[[strategy]]
+type = "tilson"
+period = { start = 10, end = 30, step = 10 }
+
+[[strategy]]
+type = "trima"
+period = { start = 10, end = 30, step = 10 }
+
+[[strategy]]
+type = "turtle"
+entry = { start = 20, end = 55, step = 35 }
+exit = { start = 10, end = 20, step = 10 }
+
+[[strategy]]
+type = "vidya"
+period = { start = 10, end = 30, step = 10 }
+
+[[strategy]]
+type = "vwap"
+thresh = { start = 10, end = 30, step = 10 }
+
+[[strategy]]
+type = "vwap_trend"
+reset = { start = 10, end = 30, step = 10 }
+
+[[strategy]]
+type = "vwma"
+period = { start = 10, end = 30, step = 10 }
+
+[[strategy]]
+type = "wilders"
+period = { start = 10, end = 30, step = 10 }
+
+[[strategy]]
+type = "wma"
+period = { start = 10, end = 30, step = 10 }
+
+[[strategy]]
+type = "zlma"
+period = { start = 10, end = 30, step = 10 }

@@ -1,0 +1,49 @@
+# 重构验收用冒烟配置: 规模小, 但**刻意**覆盖四条会被重构的代码路径。
+#
+# - `sma`      : 单 MA 泛型实现(`single_ma.rs`)+ 参数范围展开
+# - `bbrk_sma` : 突破状态机(flat → 突破 → 中线离场)
+# - `bbrk_vol` : `generate_signals_batch` 的跨参数指标复用
+# - `macd`     : 多参数组(每组三个整数)
+#
+# 只用 `1d`: 本机 `/data/data` 里其余周期只有 2023-06 的 6 天样本,
+# 落不进 2024 起的窗口, 会产生"跳过"噪音而覆盖不到任何策略。
+[data]
+type = "binance"
+dir = "/data/data"
+symbol = ["BTCUSDT", "ETHUSDT"]
+timeframe = ["1d"]
+start_date = "2024-01-01"
+end_date = "2026-09-30"
+
+[backtest]
+initial_balance = 10000.0
+delay_bars = 1
+fee_bps = 2.0
+slippage_bps = 1.0
+
+[output]
+dir = "reports/golden/current"
+detail = true
+fixed_curves = true
+overwrite = true
+
+[[strategy]]
+type = "sma"
+period = { start = 10, end = 30, step = 10 }
+
+[[strategy]]
+type = "bbrk_sma"
+sigma = 2.0
+bblen = 20
+smareg = 30
+
+[[strategy]]
+type = "bbrk_vol"
+sigma = 2.0
+volmult = 1.5
+voln = 20
+bblen = 20
+
+[[strategy]]
+type = "macd"
+groups = [[12, 26, 9], [8, 21, 5]]
