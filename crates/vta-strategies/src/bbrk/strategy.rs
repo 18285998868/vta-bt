@@ -4,6 +4,8 @@ use vector_ta::indicators::bollinger_bands::{
 
 use crate::{Signal, Strategy};
 
+use crate::params::{ParamSet, code};
+
 use super::config::BBRKConfig;
 
 /// BBRK 布林趋势突破(WikiFX-EA口径): flat + close>upper → Buy;
@@ -66,8 +68,12 @@ impl Strategy for BBRKStrategy {
         self.pairs.len()
     }
 
-    fn param_str(&self, idx: usize) -> String {
-        format!("sigma={},bblen={}", self.pairs[idx].0, self.pairs[idx].1)
+    fn param_set(&self, idx: usize) -> ParamSet {
+        let (s, b) = self.pairs[idx];
+        ParamSet::builder(code::sigma_pair(s, b as f64))
+            .kv("sigma", s)
+            .kv("bblen", b)
+            .build()
     }
 
     fn generate_signals_full(

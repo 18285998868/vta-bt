@@ -4,6 +4,8 @@ use vector_ta::indicators::bollinger_bands::{
 
 use crate::{Signal, Strategy};
 
+use crate::params::{ParamSet, code};
+
 use super::config::BbrkSmaEmaConfig;
 
 /// BBRK+SMA regime门：flat + close突破 **且** regime一致
@@ -141,9 +143,15 @@ impl Strategy for BbrkSmaEmaStrategy {
         self.pairs.len()
     }
 
-    fn param_str(&self, idx: usize) -> String {
-        let (s, b, l) = self.pairs[idx];
-        format!("sigma={s},bblen={b},smareg={l}")
+    fn param_set(&self, idx: usize) -> ParamSet {
+        let (s, b, t) = self.pairs[idx];
+        let text = format!("sigma={s},bblen={b},smareg={t}");
+        ParamSet::builder(code::sigma_chain(s, &[b.to_string(), t.to_string()], &text))
+            .text(text)
+            .kv("sigma", s)
+            .kv("bblen", b)
+            .kv("smareg", t)
+            .build()
     }
 
     fn generate_signals_full(

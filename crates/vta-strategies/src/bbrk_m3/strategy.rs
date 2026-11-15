@@ -4,6 +4,8 @@ use vector_ta::indicators::bollinger_bands::{
 
 use crate::{Signal, Strategy, money_flow_index, pct_b};
 
+use crate::params::{ParamSet, code};
+
 use super::config::BbrkM3Config;
 
 /// 形态回看窗（预注册固定 10 根，不调参，防 P2）。
@@ -141,8 +143,12 @@ impl Strategy for BbrkM3Strategy {
         self.pairs.len()
     }
 
-    fn param_str(&self, idx: usize) -> String {
-        format!("sigma={},bblen={}", self.pairs[idx].0, self.pairs[idx].1)
+    fn param_set(&self, idx: usize) -> ParamSet {
+        let (s, b) = self.pairs[idx];
+        ParamSet::builder(code::sigma_pair(s, b as f64))
+            .kv("sigma", s)
+            .kv("bblen", b)
+            .build()
     }
 
     fn generate_signals_full(

@@ -2,6 +2,8 @@ use vector_ta::indicators::atr::{AtrInput, AtrParams, atr};
 
 use crate::{Signal, Strategy, price_cross_signal, rolling_highest, rolling_lowest, shift_right_1};
 
+use crate::params::{ParamSet, code};
+
 use super::config::AberrationConfig;
 
 /// Aberration 波动率通道突破(思想级): 上轨=HH(N)+M·ATR(N)，
@@ -29,9 +31,12 @@ impl Strategy for AberrationStrategy {
         self.pairs.len()
     }
 
-    fn param_str(&self, idx: usize) -> String {
+    fn param_set(&self, idx: usize) -> ParamSet {
         let (n, m) = self.pairs[idx];
-        format!("n={n},m={m}")
+        ParamSet::builder(code::n_second(n, m))
+            .kv("n", n)
+            .kv("m", m)
+            .build()
     }
 
     fn generate_signals_full(

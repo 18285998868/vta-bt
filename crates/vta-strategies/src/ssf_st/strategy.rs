@@ -1,5 +1,7 @@
 use crate::{PoleCount, Signal, Strategy, price_cross_signal, supersmoother_3_pole};
 
+use crate::params::{ParamSet, code};
+
 use super::config::SsfStConfig;
 
 /// **SSF ST** 策略实现。
@@ -53,12 +55,19 @@ impl Strategy for SsfStStrategy {
         self.periods.len()
     }
 
-    fn param_str(&self, idx: usize) -> String {
-        format!(
-            "period={},poles={},variant=ssf_st",
-            self.periods[idx],
-            usize::from(self.poles)
-        )
+    fn param_set(&self, idx: usize) -> ParamSet {
+        let p = self.periods[idx];
+        let poles = usize::from(self.poles);
+        let text = format!("period={p},poles={poles},variant=ssf_st");
+        ParamSet::builder(code::packed(&[
+            (p as u64, 20),
+            (poles.saturating_sub(2) as u64, 1),
+        ]))
+        .text(text)
+        .kv("period", p)
+        .kv("poles", poles)
+        .kv("variant", "ssf_st")
+        .build()
     }
 
     fn generate_signals_full(

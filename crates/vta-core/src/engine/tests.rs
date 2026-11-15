@@ -754,7 +754,7 @@ fn close_outcome_uses_stored_fixed_qty() {
     assert_eq!(out.fixed_pnl, crate::money::Amount::from_i64(250));
 }
 
-/// `params` 只能有一个 `;` 分隔符: `params_to_json` 只按首个 `;` 切分。
+/// `params` 只能有一个 `;` 分隔符: `ParamSet::with_suffix` 只按首个 `;` 切分。
 #[test]
 fn apply_to_appends_stop_and_sizing_after_one_separator() {
     let base = "period=20";

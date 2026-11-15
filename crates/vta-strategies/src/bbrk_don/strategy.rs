@@ -4,6 +4,8 @@ use vector_ta::indicators::bollinger_bands::{
 
 use crate::{Signal, Strategy, rolling_highest, rolling_lowest, shift_right_1};
 
+use crate::params::{ParamSet, code};
+
 use super::config::BbrkDonConfig;
 
 /// BBRK+Donchian极值离场：flat + close>upper → Buy；flat + close<lower → Sell；
@@ -115,9 +117,15 @@ impl Strategy for BbrkDonStrategy {
         self.pairs.len()
     }
 
-    fn param_str(&self, idx: usize) -> String {
-        let (s, b, n) = self.pairs[idx];
-        format!("sigma={s},bblen={b},exitn={n}")
+    fn param_set(&self, idx: usize) -> ParamSet {
+        let (s, b, t) = self.pairs[idx];
+        let text = format!("sigma={s},bblen={b},exitn={t}");
+        ParamSet::builder(code::sigma_chain(s, &[b.to_string(), t.to_string()], &text))
+            .text(text)
+            .kv("sigma", s)
+            .kv("bblen", b)
+            .kv("exitn", t)
+            .build()
     }
 
     fn generate_signals_full(

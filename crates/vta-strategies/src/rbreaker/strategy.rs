@@ -1,5 +1,7 @@
 use crate::{DayBar, Signal, Strategy, aggregate_days};
 
+use crate::params::{ParamSet, code};
+
 use super::config::RBreakerConfig;
 
 /// R-Breaker: 前一日 H/L/C 算六价, 空仓突破进、持仓极端反转、止损、UTC 日界平仓。
@@ -155,8 +157,11 @@ impl Strategy for RBreakerStrategy {
         self.stops.len()
     }
 
-    fn param_str(&self, idx: usize) -> String {
-        format!("stop={}", self.stops[idx])
+    fn param_set(&self, idx: usize) -> ParamSet {
+        let stop = self.stops[idx];
+        ParamSet::builder(code::stop_pct(stop))
+            .kv("stop", stop)
+            .build()
     }
 
     fn generate_signals_full(

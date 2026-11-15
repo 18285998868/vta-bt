@@ -3,6 +3,8 @@ use vector_ta::indicators::moving_averages::sma::{SmaInput, SmaParams, sma};
 
 use crate::{Signal, Strategy};
 
+use crate::params::{ParamSet, code};
+
 use super::config::{AtrKind, MaSlopeAtrGateConfig, Params};
 
 /// 均线斜率 / ATR 波动尺度 门控策略。
@@ -81,7 +83,7 @@ pub fn true_range(high: &[f64], low: &[f64], close: &[f64]) -> Vec<f64> {
 /// **SMA 平滑**的真实波幅均值(简单移动平均)。
 ///
 /// 与 `vector_ta::atr` 的 Wilder RMA 不同: 此处是等权滑动平均, 因子研究侧
-/// (`binance-data-reader` 配套脚本)用的就是这一口径, 两者必须对齐才能复现研究结论。
+/// (`binance-core` 配套脚本)用的就是这一口径, 两者必须对齐才能复现研究结论。
 /// 简单移动平均的真实波幅均值(SMA 口径)。
 ///
 /// # Errors
@@ -230,9 +232,25 @@ impl Strategy for MaSlopeAtrGateStrategy {
         self.quints.len()
     }
 
-    fn param_str(&self, idx: usize) -> String {
+    fn param_set(&self, idx: usize) -> ParamSet {
         let (ma, k, a, z, t, kind) = self.quints[idx];
-        format!("ma{ma}_k{k}_atr{a}_{kind}_z{z}_th{t}")
+        let text = format!("ma{ma}_k{k}_atr{a}_{kind}_z{z}_th{t}");
+        ParamSet::builder(code::packed(&[
+            (ma as u64, 11),
+            (k as u64, 11),
+            (a as u64, 9),
+            (u64::from(matches!(kind, AtrKind::Wilder)), 1),
+            (z as u64, 11),
+            (code::scaled(t + 10.0, 1000.0), 15),
+        ]))
+        .text(text)
+        .kv("ma", ma)
+        .kv("k", k)
+        .kv("atr", a)
+        .kv("kind", kind)
+        .kv("z", z)
+        .kv("th", t)
+        .build()
     }
 
     fn generate_signals_full(

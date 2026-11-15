@@ -6,6 +6,8 @@ use vector_ta::indicators::moving_averages::ema::{EmaInput, EmaParams, ema};
 
 use crate::{Signal, Strategy};
 
+use crate::params::{ParamSet, code};
+
 use super::config::BbrkTtmConfig;
 
 /// Keltner 基准（与 `keltner` 策略同口径：EMA20 + k·ATR14）。
@@ -166,9 +168,19 @@ impl Strategy for BbrkTtmStrategy {
         self.pairs.len()
     }
 
-    fn param_str(&self, idx: usize) -> String {
+    fn param_set(&self, idx: usize) -> ParamSet {
         let (s, b, k, n) = self.pairs[idx];
-        format!("sigma={s},bblen={b},kc={k},ttmn={n}")
+        ParamSet::builder(code::packed(&[
+            (code::scaled(s, 1000.0), 14),
+            (b as u64, 12),
+            (code::scaled(k, 1000.0), 13),
+            (n as u64, 7),
+        ]))
+        .kv("sigma", s)
+        .kv("bblen", b)
+        .kv("kc", k)
+        .kv("ttmn", n)
+        .build()
     }
 
     fn generate_signals_full(

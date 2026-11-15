@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use vta_core::engine;
+use vta_strategies::ParamSet;
 use vta_strategies::build::StrategyJob;
 
 use super::fingerprint::*;
@@ -39,7 +40,7 @@ impl ComboCtx {
         symbol: &str,
         tf: &str,
         strategy: &dyn vta_strategies::Strategy,
-        params: &str,
+        params: &ParamSet,
         mut metrics: engine::SummaryMetrics,
         bars_used: usize,
         status: RunStatus,
@@ -53,9 +54,9 @@ impl ComboCtx {
             symbol: symbol.to_string(),
             timeframe: tf.to_string(),
             strategy: strategy.name().to_string(),
-            params: params.to_string(),
-            strategy_params: vta_strategies::params::strategy_params_value(params),
-            strategy_params_json: vta_strategies::params::params_to_json(params),
+            params: params.text().to_string(),
+            strategy_params: params.code(),
+            strategy_params_json: params.json(),
             metrics,
             delay_bars: self.exec.delay_u32(),
             fee_bps: self.exec.fee_rate * 10_000.0,
@@ -86,7 +87,7 @@ impl ComboCtx {
         symbol: &str,
         tf: &str,
         strategy: &dyn vta_strategies::Strategy,
-        params: &str,
+        params: &ParamSet,
         bars_used: usize,
         bh_pnl: vta_core::money::Amount,
         bh_ret: f64,
@@ -217,11 +218,10 @@ impl ParamEval<'_> {
         outcome: vta_strategies::ParamOutcome,
     ) -> vta_core::error::Result<ParamRun> {
         let strategy = self.job.strategy.as_ref();
-        // 一次分配: params 列、detail 行与日志共用同一字符串。
-        let params = self
-            .job
-            .stop
-            .apply_to(&strategy.param_str(i), &self.job.sizing);
+        // 文本 / JSON / 整数编码同源: base 参数一次构造, 止损后缀只追加。
+        let params = strategy
+            .param_set(i)
+            .with_suffix(&self.job.stop, &self.job.sizing);
         let opts = engine::SimOptions {
             initial_cash: self.ctx.balance,
             bars_per_year: self.bpy,
@@ -252,7 +252,7 @@ impl ParamEval<'_> {
                             symbol: self.symbol.to_string(),
                             timeframe: self.tf.to_string(),
                             strategy: strategy.name().to_string(),
-                            params,
+                            params: params.text().to_string(),
                             status,
                             trades: sim.trades,
                             equity_curve: sim.equity_curve,
@@ -279,8 +279,9 @@ impl ParamEval<'_> {
             }
             vta_strategies::ParamOutcome::Skipped(reason) => {
                 tracing::warn!(
-                    "  [{}] 参数档位 {params} 不可计算: {reason}(记为 invalid, 继续)",
+                    "  [{}] 参数档位 {} 不可计算: {reason}(记为 invalid, 继续)",
                     strategy.name(),
+                    params.text(),
                 );
                 Ok(ParamRun {
                     row: self.ctx.invalid_row(

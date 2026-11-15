@@ -42,7 +42,7 @@ cargo fmt --all -- --check
 
 ## 修复记录
 
-1. `strategy_params_value("macd_12_26_9")` 仍未命中白名单, 保留为 C3/C6 待修缺陷(既有行为, 本次不修)。
+1. `strategy_params_value("macd_12_26_9")` 在 C2 时仍未命中白名单, 已在 C3 随 62 行编码改造一并修复(见 `docs/invariants.md` 第 6 条)。
 2. 路径依赖加 `version = "0.1.0"`, 否则 `cargo deny check bans` 报 wildcard dependency。
 3. 删除搬运残留 `vta-report/src/parquet/params.rs`(未挂到模块树, 与 `vta-strategies/src/params.rs` 重复)。
 4. rustdoc 内链改为公开可达路径(如 `crate::engine::ExecConfig`), 不链接私有子模块。

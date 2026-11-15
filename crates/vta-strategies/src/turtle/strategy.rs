@@ -1,5 +1,7 @@
 use crate::{Signal, Strategy, rolling_highest, rolling_lowest, shift_right_1};
 
+use crate::params::{ParamSet, code};
+
 use super::config::TurtleConfig;
 
 /// 海龟 Donchian: 入场通道突破进(flat), 出场通道反穿出(持有)。
@@ -96,9 +98,12 @@ impl Strategy for TurtleStrategy {
         self.pairs.len()
     }
 
-    fn param_str(&self, idx: usize) -> String {
+    fn param_set(&self, idx: usize) -> ParamSet {
         let (e, x) = self.pairs[idx];
-        format!("entry={e},exit={x}")
+        ParamSet::builder(code::hi_lo(e, x))
+            .kv("entry", e)
+            .kv("exit", x)
+            .build()
     }
 
     fn generate_signals_full(

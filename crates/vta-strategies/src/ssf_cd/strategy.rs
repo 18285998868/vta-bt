@@ -2,6 +2,8 @@ use crate::{
     PoleCount, Signal, Strategy, candle_direction_filter, price_cross_signal, supersmoother_3_pole,
 };
 
+use crate::params::{ParamSet, code};
+
 use super::config::SsfCdConfig;
 
 /// `ssf` + K 线方向过滤。开仓额外要求当根 K 线方向与信号一致:
@@ -33,12 +35,19 @@ impl Strategy for SsfCdStrategy {
         self.periods.len()
     }
 
-    fn param_str(&self, idx: usize) -> String {
-        format!(
-            "period={},poles={},variant=ssf_cd",
-            self.periods[idx],
-            usize::from(self.poles)
-        )
+    fn param_set(&self, idx: usize) -> ParamSet {
+        let p = self.periods[idx];
+        let poles = usize::from(self.poles);
+        let text = format!("period={p},poles={poles},variant=ssf_cd");
+        ParamSet::builder(code::packed(&[
+            (p as u64, 20),
+            (poles.saturating_sub(2) as u64, 1),
+        ]))
+        .text(text)
+        .kv("period", p)
+        .kv("poles", poles)
+        .kv("variant", "ssf_cd")
+        .build()
     }
 
     fn generate_signals_full(

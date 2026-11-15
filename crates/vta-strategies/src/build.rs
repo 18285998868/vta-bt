@@ -8,20 +8,16 @@ use vta_core::engine::StopConfig;
 /// # Errors
 /// 任一策略在 `0..param_count()` 内出现下列任一情况时返回
 /// [`AppError::Msg`](vta_core::error::AppError::Msg):
-/// - `param_str(i)` 重复(网格展开有误, 或该策略的 param_str 未覆盖全部维度);
-/// - **`strategy_params_value(param_str(i))` 重复** —— 即 parquet 的
-///   `strategy_params` 整数列在同一策略内塌陷。
+/// - `param_set(i).text()` 重复(网格展开有误, 或该策略的 `ParamSet` 未覆盖全部维度);
+/// - **`param_set(i).code()` 重复** —— 即 parquet 的 `strategy_params` 整数列在
+///   同一策略内塌陷。
 ///
-/// 背景: `strategy_params` 整数列由 `strategy_params_value` 把参数元组压缩而成。
-/// 压缩**有损**: 槽位不够时回退 `fnv1a_32`(u32, 不同参数组可映射到同一值), 且
-/// 即便未走 FNV 回退, 旧式槽位打包(`s*1M + h`)本身也会撞值 —— 例如
-/// `sigma=1.5,bblen=60` 与 `sigma=2,bblen=10` 在 `h<1M` 的旧口径下同值。
-///
-/// 因此**只检查 `param_str` 字符串唯一是不够的**: 字符串可以两两不同, 压缩后的
-/// 整数却撞在一起, 而报告排序/去重用的正是整数列。行主键实为
-/// `(symbol, timeframe, strategy, params)` 四元组, 故撞值不构成数据丢失, 但会让
-/// 按参数排序与 top-N 选取错乱且**完全静默**。两层都查, 把静默损坏变成构建期硬失败。
-/// 代价是 O(N) 次 HashSet 插入(N ≤ 数万, 微秒级), 只在每次启动时跑一次。
+/// 背景: `strategy_params` 整数列由策略产出的 [`ParamSet`](crate::ParamSet) 给出。
+/// 定宽打包在越界时会回退字段哈希, 旧式槽位公式也可能撞值; 因此**只检查文本唯一
+/// 是不够的**: 字符串可以两两不同, 整数却撞在一起, 而报告排序/去重用的正是整数列。
+/// 行主键实为 `(symbol, timeframe, strategy, params)` 四元组, 故撞值不构成数据丢失,
+/// 但会让按参数排序与 top-N 选取错乱且**完全静默**。两层都查, 把静默损坏变成构建期
+/// 硬失败。代价是 O(N) 次 HashSet 插入(N ≤ 数万, 微秒级), 只在每次启动时跑一次。
 pub fn build_strategies_checked(
     configs: &[StrategyConfig],
 ) -> vta_core::error::Result<Vec<Box<dyn Strategy>>> {
@@ -64,10 +60,10 @@ pub fn build_jobs_checked(specs: &[StrategySpec]) -> vta_core::error::Result<Vec
 }
 
 /// 逐策略检查两件事在参数网格内均两两不同:
-/// 1. `param_str` 字符串本身(网格是否展开正确);
-/// 2. `strategy_params_value` 压缩后的整数(报告实际排序/去重所用的值)。
+/// 1. `ParamSet::text` 文本本身(网格是否展开正确);
+/// 2. `ParamSet::code` 整数(报告实际排序/去重所用的值)。
 ///
-/// 第 2 项是**真正会塌陷的一层** —— 字符串唯一并不蕴含压缩后唯一。
+/// 第 2 项是**真正会塌陷的一层** —— 文本唯一并不蕴含编码唯一。
 fn check_param_uniqueness(strategies: &[Box<dyn Strategy>]) -> vta_core::error::Result<()> {
     for st in strategies {
         let n = st.param_count();
@@ -79,12 +75,13 @@ fn check_param_uniqueness(strategies: &[Box<dyn Strategy>]) -> vta_core::error::
 
         let mut dup_str: Option<String> = None;
         for i in 0..n {
-            let p = st.param_str(i);
+            let param = st.param_set(i);
+            let p = param.text().to_string();
             if !seen_str.insert(p.clone()) && dup_str.is_none() {
                 dup_str = Some(p.clone());
             }
-            // 编码层: 同一 strategy 内不同参数串必须映射到不同整数。
-            let v = crate::params::strategy_params_value(&p);
+            // 编码层: 同一 strategy 内不同参数组必须映射到不同整数。
+            let v = param.code();
             if let Some(prev) = seen_val.insert(v, p.clone()) {
                 return Err(vta_core::error::AppError::Msg(format!(
                     "[{}] strategy_params 编码碰撞: 参数组 {prev:?} 与 {p:?} 都编码为 {v} —— \
@@ -96,7 +93,7 @@ fn check_param_uniqueness(strategies: &[Box<dyn Strategy>]) -> vta_core::error::
         }
         if let Some(d) = dup_str {
             return Err(vta_core::error::AppError::Msg(format!(
-                "[{}] 参数串重复: {d:?} —— 参数网格展开有误(或该策略的 param_str 未覆盖全部维度), \
+                "[{}] 参数串重复: {d:?} —— 参数网格展开有误(或该策略的 param_set 未覆盖全部维度), \
                  会导致 parquet 的 strategy_params 列碰撞与选参结果错乱",
                 st.name()
             )));

@@ -1,5 +1,7 @@
 use crate::{Signal, Strategy, rolling_highest, rolling_lowest};
 
+use crate::params::{ParamSet, code};
+
 use super::config::SwingFractalConfig;
 
 /// 摆动点确认标记: `out[i] = true` ⟺ bar `i - right` 被确认为摆动高点。
@@ -177,9 +179,12 @@ impl Strategy for SwingFractalStrategy {
         self.pairs.len()
     }
 
-    fn param_str(&self, idx: usize) -> String {
+    fn param_set(&self, idx: usize) -> ParamSet {
         let (l, r) = self.pairs[idx];
-        format!("left={l},right={r}")
+        ParamSet::builder(code::hi_lo(l, r))
+            .kv("left", l)
+            .kv("right", r)
+            .build()
     }
 
     fn generate_signals_full(

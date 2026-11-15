@@ -5,6 +5,8 @@ use vector_ta::indicators::moving_averages::hma::{HmaInput, HmaParams, hma};
 
 use crate::{Signal, Strategy};
 
+use crate::params::{ParamSet, code};
+
 use super::config::BbrkHmaEmaConfig;
 
 /// BBRK+HMA regime门（EMA基线版：BB中轨ema，其余与 bbrk_hma 逐位一致）：flat + close突破 **且** regime一致
@@ -122,9 +124,15 @@ impl Strategy for BbrkHmaEmaStrategy {
         self.pairs.len()
     }
 
-    fn param_str(&self, idx: usize) -> String {
-        let (s, b, l) = self.pairs[idx];
-        format!("sigma={s},bblen={b},hmalen={l}")
+    fn param_set(&self, idx: usize) -> ParamSet {
+        let (s, b, t) = self.pairs[idx];
+        let text = format!("sigma={s},bblen={b},hmalen={t}");
+        ParamSet::builder(code::sigma_chain(s, &[b.to_string(), t.to_string()], &text))
+            .text(text)
+            .kv("sigma", s)
+            .kv("bblen", b)
+            .kv("hmalen", t)
+            .build()
     }
 
     fn generate_signals_full(

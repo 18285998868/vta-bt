@@ -4,6 +4,8 @@ use vector_ta::indicators::bollinger_bands::{
 
 use crate::{Signal, Strategy};
 
+use crate::params::{ParamSet, code};
+
 use super::config::BbrkHmaV4Config;
 
 /// 变种4：碰上下轨都做空；离场中线。
@@ -85,9 +87,12 @@ impl Strategy for BbrkHmaV4Strategy {
         self.pairs.len()
     }
 
-    fn param_str(&self, idx: usize) -> String {
+    fn param_set(&self, idx: usize) -> ParamSet {
         let (s, b) = self.pairs[idx];
-        format!("sigma={s},bblen={b}")
+        ParamSet::builder(code::sigma_pair(s, b as f64))
+            .kv("sigma", s)
+            .kv("bblen", b)
+            .build()
     }
 
     fn generate_signals_full(

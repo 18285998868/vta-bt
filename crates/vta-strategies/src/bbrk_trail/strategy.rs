@@ -5,6 +5,8 @@ use vector_ta::indicators::bollinger_bands::{
 
 use crate::{Signal, Strategy, rolling_highest, rolling_lowest, shift_right_1};
 
+use crate::params::{ParamSet, code};
+
 use super::config::BbrkTrailConfig;
 
 /// 追踪窗固定值（Chandelier 常用 22 周期，ATR 用 14 经典值）。
@@ -147,9 +149,19 @@ impl Strategy for BbrkTrailStrategy {
         self.pairs.len()
     }
 
-    fn param_str(&self, idx: usize) -> String {
+    fn param_set(&self, idx: usize) -> ParamSet {
         let (s, b, a, k) = self.pairs[idx];
-        format!("sigma={s},bblen={b},atrlen={a},trailk={k}")
+        ParamSet::builder(code::packed(&[
+            (code::scaled(s, 1000.0), 14),
+            (b as u64, 12),
+            (a as u64, 9),
+            (code::scaled(k, 1000.0), 15),
+        ]))
+        .kv("sigma", s)
+        .kv("bblen", b)
+        .kv("atrlen", a)
+        .kv("trailk", k)
+        .build()
     }
 
     fn generate_signals_full(

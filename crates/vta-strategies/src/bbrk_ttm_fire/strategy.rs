@@ -8,6 +8,8 @@ use vector_ta::indicators::moving_averages::sma::{SmaInput, SmaParams, sma};
 
 use crate::{ParamOutcome, Signal, Strategy, rolling_highest, rolling_lowest};
 
+use crate::params::{ParamSet, code};
+
 use super::config::BbrkTtmFireConfig;
 
 /// Keltner 与 v1 同口径（EMA20 + k·ATR14），只改入口。
@@ -194,9 +196,15 @@ impl Strategy for BbrkTtmFireStrategy {
         self.pairs.len()
     }
 
-    fn param_str(&self, idx: usize) -> String {
-        let (s, b, k) = self.pairs[idx];
-        format!("sigma={s},bblen={b},kc={k}")
+    fn param_set(&self, idx: usize) -> ParamSet {
+        let (s, b, t) = self.pairs[idx];
+        let text = format!("sigma={s},bblen={b},kc={t}");
+        ParamSet::builder(code::sigma_chain(s, &[b.to_string(), t.to_string()], &text))
+            .text(text)
+            .kv("sigma", s)
+            .kv("bblen", b)
+            .kv("kc", t)
+            .build()
     }
 
     fn generate_signals_full(

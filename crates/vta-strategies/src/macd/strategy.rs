@@ -2,6 +2,8 @@ use vector_ta::indicators::moving_averages::ema::{EmaInput, EmaParams, ema};
 
 use crate::{Signal, Strategy};
 
+use crate::params::{ParamSet, code};
+
 use super::config::MacdConfig;
 
 /// MACD信号线穿越：`macd=EMAfast−EMAslow`，`sig=EMA(macd, sp)`，严格穿越。
@@ -74,9 +76,19 @@ impl Strategy for MacdStrategy {
         self.triples.len()
     }
 
-    fn param_str(&self, idx: usize) -> String {
+    fn param_set(&self, idx: usize) -> ParamSet {
         let (f, s, g) = self.triples[idx];
-        format!("macd_{f}_{s}_{g}")
+        let text = format!("macd_{f}_{s}_{g}");
+        ParamSet::builder(code::packed(&[
+            (f as u64, 21),
+            (s as u64, 21),
+            (g as u64, 21),
+        ]))
+        .text(text)
+        .kv("fast", f)
+        .kv("slow", s)
+        .kv("signal", g)
+        .build()
     }
 
     fn generate_signals_full(

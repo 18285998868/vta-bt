@@ -36,6 +36,7 @@ pub use config::{
     F64Param, MAX_PERIOD_RANGE, MaGridCfg, PeriodParam, RangeParam, STRATEGY_TAGS, StrategyConfig,
     StrategySpec,
 };
+pub use params::ParamSet;
 pub use shared::{
     CachedBands, DEFAULT_BB_PERIOD, DayBar, MAX_GRID_PREALLOC, PoleCount, aggregate_days,
     bars_per_year, candle_direction_filter, expand_f64_range, grid_prealloc, is_known_timeframe,
@@ -92,9 +93,18 @@ pub trait Strategy: Send + Sync {
     /// 参数网格大小。
     #[must_use]
     fn param_count(&self) -> usize;
-    /// 第 `idx` 组参数的文本形式(报告 `params` 列, 且必须网格内唯一)。
+    /// 第 `idx` 组参数的结构化表示(文本 / JSON / 整数编码同源产出)。
     #[must_use]
-    fn param_str(&self, idx: usize) -> String;
+    fn param_set(&self, idx: usize) -> ParamSet;
+
+    /// 第 `idx` 组参数的文本形式(报告 `params` 列, 且必须网格内唯一)。
+    ///
+    /// 默认实现取 [`ParamSet::text`](crate::ParamSet::text); 需要文本的旧调用方
+    /// (如缓存指纹)无需关心 JSON / 编码。
+    #[must_use]
+    fn param_str(&self, idx: usize) -> String {
+        self.param_set(idx).into_text()
+    }
 
     /// 生成信号。返回 `Err` 表示该参数/数据无法计算 (例如 VWMA 缺少等长 volume),
     /// **不做静默降级** —— 若属"预期内的不可计算", 请返回

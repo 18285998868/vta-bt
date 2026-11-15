@@ -5,6 +5,8 @@ use vector_ta::indicators::moving_averages::zlema::{ZlemaInput, ZlemaParams, zle
 
 use crate::{Signal, Strategy};
 
+use crate::params::{ParamSet, code};
+
 use super::config::BbrkZlemaEmaConfig;
 
 /// BBRK+ZLEMA regime门（EMA基线版对照组：BB中轨ema，门线ZLEMA(L)，检验门线平滑度影响）：flat + close突破 **且** regime一致
@@ -122,9 +124,15 @@ impl Strategy for BbrkZlemaEmaStrategy {
         self.pairs.len()
     }
 
-    fn param_str(&self, idx: usize) -> String {
-        let (s, b, l) = self.pairs[idx];
-        format!("sigma={s},bblen={b},zlemareg={l}")
+    fn param_set(&self, idx: usize) -> ParamSet {
+        let (s, b, t) = self.pairs[idx];
+        let text = format!("sigma={s},bblen={b},zlemareg={t}");
+        ParamSet::builder(code::sigma_chain(s, &[b.to_string(), t.to_string()], &text))
+            .text(text)
+            .kv("sigma", s)
+            .kv("bblen", b)
+            .kv("zlemareg", t)
+            .build()
     }
 
     fn generate_signals_full(

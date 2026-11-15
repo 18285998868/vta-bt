@@ -2,6 +2,8 @@ use vector_ta::indicators::atr::{AtrInput, AtrParams, atr};
 
 use crate::{Signal, Strategy, utc_day_index};
 
+use crate::params::{ParamSet, code};
+
 use super::config::VwapConfig;
 
 /// VWAP拉伸回归。session VWAP按UTC日界重置(典型价加权), ATR14归一偏离度。
@@ -110,8 +112,11 @@ impl Strategy for VwapStrategy {
         self.threshs.len()
     }
 
-    fn param_str(&self, idx: usize) -> String {
-        format!("thresh={}", self.threshs[idx])
+    fn param_set(&self, idx: usize) -> ParamSet {
+        let thresh = self.threshs[idx];
+        ParamSet::builder(code::packed(&[(code::scaled(thresh, 1000.0), 16)]))
+            .kv("thresh", thresh)
+            .build()
     }
 
     fn generate_signals_full(

@@ -7,6 +7,8 @@ use vector_ta::indicators::moving_averages::sma::{SmaInput, SmaParams, sma};
 
 use crate::{Signal, Strategy};
 
+use crate::params::{ParamSet, code};
+
 use super::config::BbrkKdjConfig;
 
 /// KC 与视频默认一致：SMA20 ± 1.5·ATR14（固定，不调参）。
@@ -227,8 +229,12 @@ impl Strategy for BbrkKdjStrategy {
         self.pairs.len()
     }
 
-    fn param_str(&self, idx: usize) -> String {
-        format!("sigma={},bblen={}", self.pairs[idx].0, self.pairs[idx].1)
+    fn param_set(&self, idx: usize) -> ParamSet {
+        let (s, b) = self.pairs[idx];
+        ParamSet::builder(code::sigma_pair(s, b as f64))
+            .kv("sigma", s)
+            .kv("bblen", b)
+            .build()
     }
 
     fn generate_signals_full(

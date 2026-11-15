@@ -1,4 +1,4 @@
-//! 行为冻结: 全部策略的 `param_str` / `strategy_params` 编码 / 信号指纹。
+//! 行为冻结: 全部策略的 `ParamSet` 文本 / `strategy_params` 编码 / 信号指纹。
 //!
 //! # 为什么需要
 //!
@@ -9,7 +9,7 @@
 //!
 //! 本测试把三者冻结成一份可 review 的快照:
 //! - 每个 `StrategyConfig` 变体一条夹具(`tests/golden/strategies.toml`);
-//! - 每档参数一行: `param_str`、编码值、JSON 形态、四组行情的信号指纹。
+//! - 每档参数一行: `param_set` 文本、编码值、JSON 形态、四组行情的信号指纹。
 //!
 //! # 如何更新
 //!
@@ -195,9 +195,10 @@ fn render() -> String {
         let n = st.param_count();
         assert!(n > 0, "{}: 参数网格不应为空", st.name());
         for idx in 0..n {
-            let p = st.param_str(idx);
-            let v = vta_strategies::params::strategy_params_value(&p);
-            let json = vta_strategies::params::params_to_json(&p);
+            let p = st.param_set(idx);
+            let text = p.text();
+            let v = p.code();
+            let json = p.json();
             let mut hashes = Vec::with_capacity(series.len());
             for s in &series {
                 let outcome = st
@@ -207,7 +208,7 @@ fn render() -> String {
                         vta_core::error::AppError::ParamSkipped { reason } => {
                             ParamOutcome::Skipped(reason)
                         }
-                        other => panic!("{}#{idx} ({p}): 非预期错误 {other}", st.name()),
+                        other => panic!("{}#{idx} ({text}): 非预期错误 {other}", st.name()),
                     });
                 hashes.push(outcome_hash(&outcome));
             }
@@ -216,7 +217,7 @@ fn render() -> String {
                 "{}\t{}\t{}\t{}\t{}\t{}",
                 st.name(),
                 idx,
-                p,
+                text,
                 v,
                 json,
                 hashes.join("\t")
@@ -271,6 +272,21 @@ fn fixture_covers_every_variant() {
 #[test]
 fn golden_snapshot_matches() {
     let actual = render();
+    // `strategy_params_json` 必须是**合法 JSON**: 旧解析器在无键参数 + 止损
+    // 后缀时产出过 `{,"k":v}` 这种非法文本, 冻结快照无法暴露该缺陷。
+    for (i, line) in actual.lines().enumerate().skip(1) {
+        let cols: Vec<&str> = line.split('\t').collect();
+        assert_eq!(cols.len(), 9, "第 {} 行列数不符: {line}", i + 1);
+        if let Err(e) = serde_json::from_str::<serde_json::Value>(cols[4]) {
+            panic!(
+                "第 {} 行 params_json 非法: {e}\n  strategy={} params={} json={}",
+                i + 1,
+                cols[0],
+                cols[2],
+                cols[4]
+            );
+        }
+    }
     if std::env::var_os("UPDATE_GOLDEN").is_some() {
         std::fs::write(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/expected.txt"),

@@ -1,5 +1,7 @@
 use crate::{DayBar, Signal, Strategy, aggregate_days};
 
+use crate::params::ParamSet;
+
 use super::config::FialiConfig;
 
 /// 菲阿里四价：上轨=昨日最高，下轨=昨日最低；无持仓突破开仓，
@@ -87,8 +89,8 @@ impl Strategy for FialiStrategy {
         1
     }
 
-    fn param_str(&self, _idx: usize) -> String {
-        "base".to_string()
+    fn param_set(&self, _idx: usize) -> ParamSet {
+        ParamSet::builder(0).text("base").build()
     }
 
     fn generate_signals_full(

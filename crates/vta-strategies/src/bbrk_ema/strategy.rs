@@ -5,6 +5,8 @@ use vector_ta::indicators::moving_averages::ema::{EmaInput, EmaParams, ema};
 
 use crate::{Signal, Strategy};
 
+use crate::params::{ParamSet, code};
+
 use super::config::BbrkEmaConfig;
 
 /// BBRK+EMA regime门：flat + close突破 **且** regime一致
@@ -122,9 +124,15 @@ impl Strategy for BbrkEmaStrategy {
         self.pairs.len()
     }
 
-    fn param_str(&self, idx: usize) -> String {
-        let (s, b, l) = self.pairs[idx];
-        format!("sigma={s},bblen={b},emareg={l}")
+    fn param_set(&self, idx: usize) -> ParamSet {
+        let (s, b, t) = self.pairs[idx];
+        let text = format!("sigma={s},bblen={b},emareg={t}");
+        ParamSet::builder(code::sigma_chain(s, &[b.to_string(), t.to_string()], &text))
+            .text(text)
+            .kv("sigma", s)
+            .kv("bblen", b)
+            .kv("emareg", t)
+            .build()
     }
 
     fn generate_signals_full(

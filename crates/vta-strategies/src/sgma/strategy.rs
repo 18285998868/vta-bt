@@ -2,6 +2,8 @@ use vector_ta::indicators::moving_averages::sgf::{SgfInput, SgfParams, sgf};
 
 use crate::{Signal, Strategy, price_cross_signal};
 
+use crate::params::{ParamSet, code};
+
 use super::config::SgmaConfig;
 
 /// SGMA 策略：价格穿越 Savitzky-Golay endpoint smoother。
@@ -28,9 +30,14 @@ impl Strategy for SgmaStrategy {
         self.pairs.len()
     }
 
-    fn param_str(&self, idx: usize) -> String {
+    fn param_set(&self, idx: usize) -> ParamSet {
         let (p, o) = self.pairs[idx];
-        format!("sgma_p{}_m{}", p, o)
+        let text = format!("sgma_p{p}_m{o}");
+        ParamSet::builder(code::packed(&[(p as u64, 17), (o as u64, 17)]))
+            .text(text)
+            .kv("p", p)
+            .kv("m", o)
+            .build()
     }
 
     fn generate_signals_full(

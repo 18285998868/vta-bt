@@ -5,6 +5,8 @@ use vector_ta::indicators::moving_averages::hma::{HmaInput, HmaParams, hma};
 
 use crate::{Signal, Strategy};
 
+use crate::params::{ParamSet, code};
+
 use super::config::BbrkHmaV1Config;
 
 /// 变种1：HMA之上碰上下轨都做多，HMA之下只按原规则做空；离场中线。
@@ -127,9 +129,15 @@ impl Strategy for BbrkHmaV1Strategy {
         self.triples.len()
     }
 
-    fn param_str(&self, idx: usize) -> String {
-        let (s, b, g) = self.triples[idx];
-        format!("sigma={s},bblen={b},hmalen={g}")
+    fn param_set(&self, idx: usize) -> ParamSet {
+        let (s, b, t) = self.triples[idx];
+        let text = format!("sigma={s},bblen={b},hmalen={t}");
+        ParamSet::builder(code::sigma_chain(s, &[b.to_string(), t.to_string()], &text))
+            .text(text)
+            .kv("sigma", s)
+            .kv("bblen", b)
+            .kv("hmalen", t)
+            .build()
     }
 
     fn generate_signals_full(

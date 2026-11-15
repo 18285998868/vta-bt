@@ -1,4 +1,5 @@
 use crate::config::RangeParam;
+use crate::params::{ParamSet, code};
 use crate::{Signal, Strategy, price_cross_signal};
 use vector_ta::indicators::moving_averages::vwma::{VwmaInput, VwmaParams, vwma};
 
@@ -25,8 +26,12 @@ impl Strategy for VwmaStrategy {
         self.periods.len()
     }
 
-    fn param_str(&self, idx: usize) -> String {
-        format!("vwma_{}", self.periods[idx])
+    fn param_set(&self, idx: usize) -> ParamSet {
+        let p = self.periods[idx];
+        ParamSet::builder(code::period(p))
+            .text(format!("vwma_{p}"))
+            .kv("period", p)
+            .build()
     }
 
     fn generate_signals_full(

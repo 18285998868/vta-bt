@@ -4,6 +4,8 @@ use vector_ta::indicators::bollinger_bands::{
 
 use crate::{Signal, Strategy};
 
+use crate::params::{ParamSet, code};
+
 use super::config::BbrkStrConfig;
 
 /// BBRK+K线强度过滤：flat + close突破 **且** 当根方向一致、实体占比达标
@@ -131,9 +133,15 @@ impl Strategy for BbrkStrStrategy {
         self.pairs.len()
     }
 
-    fn param_str(&self, idx: usize) -> String {
+    fn param_set(&self, idx: usize) -> ParamSet {
         let (s, b, t) = self.pairs[idx];
-        format!("sigma={s},bblen={b},body={t}")
+        let text = format!("sigma={s},bblen={b},body={t}");
+        ParamSet::builder(code::sigma_chain(s, &[b.to_string(), t.to_string()], &text))
+            .text(text)
+            .kv("sigma", s)
+            .kv("bblen", b)
+            .kv("body", t)
+            .build()
     }
 
     fn generate_signals_full(

@@ -2,6 +2,8 @@ use vector_ta::indicators::rsi::{RsiInput, RsiParams, rsi};
 
 use crate::{Signal, Strategy};
 
+use crate::params::{ParamSet, code};
+
 use super::config::RSI2Config;
 
 /// RSI(2) Connors 短线反转: flat + rsi<buy → Buy; flat + rsi>sell → Sell;
@@ -61,9 +63,12 @@ impl Strategy for RSI2Strategy {
         self.pairs.len()
     }
 
-    fn param_str(&self, idx: usize) -> String {
+    fn param_set(&self, idx: usize) -> ParamSet {
         let (b, s) = self.pairs[idx];
-        format!("buy={b},sell={s}")
+        ParamSet::builder(code::buy_sell(b, s))
+            .kv("buy", b)
+            .kv("sell", s)
+            .build()
     }
 
     fn generate_signals_full(

@@ -8,8 +8,8 @@
 //! | `schema` | 单位表与列索引 |
 //! | `read` | 报告/曲线读取、合并 |
 //!
-//! 参数串编码(`param_str` 的逆运算)住在 `vta-strategies`, 因为它必须认识
-//! 各策略的参数形态与均线名单。
+//! 参数编码(`ParamSet`)住在 `vta-strategies`, 因为它必须认识各策略的
+//! 参数形态与均线名单。
 
 mod columns;
 mod detail;

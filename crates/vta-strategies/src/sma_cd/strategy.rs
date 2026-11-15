@@ -1,6 +1,7 @@
 use vector_ta::indicators::moving_averages::sma::{SmaInput, SmaParams, sma};
 
 use crate::config::MaGridCfg;
+use crate::params::{ParamSet, code};
 use crate::{Signal, Strategy, candle_direction_filter, price_cross_signal};
 
 /// `sma` + K 线方向过滤。开仓额外要求当根 K 线方向与信号一致:
@@ -28,8 +29,12 @@ impl Strategy for SmaCdStrategy {
         self.periods.len()
     }
 
-    fn param_str(&self, idx: usize) -> String {
-        format!("period={},variant=sma_cd", self.periods[idx])
+    fn param_set(&self, idx: usize) -> ParamSet {
+        let p = self.periods[idx];
+        ParamSet::builder(code::period(p))
+            .kv("period", p)
+            .kv("variant", "sma_cd")
+            .build()
     }
 
     fn generate_signals_full(

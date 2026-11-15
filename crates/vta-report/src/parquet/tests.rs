@@ -7,7 +7,6 @@ use arrow::datatypes::Field;
 
 use vta_core::RunResult;
 use vta_core::engine::SummaryMetrics;
-use vta_strategies::params::{params_to_json, strategy_params_value};
 
 use super::columns::*;
 use super::report::*;
@@ -386,8 +385,8 @@ fn test_report_carries_bars_used_and_status() {
         timeframe: "1d".into(),
         strategy: "sma".into(),
         params: params.into(),
-        strategy_params: strategy_params_value(params),
-        strategy_params_json: params_to_json(params),
+        strategy_params: 0,
+        strategy_params_json: "{}".into(),
         metrics: SummaryMetrics::default(),
         delay_bars: 1,
         fee_bps: 0.0,

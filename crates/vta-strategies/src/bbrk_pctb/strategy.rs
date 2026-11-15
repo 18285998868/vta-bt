@@ -4,6 +4,8 @@ use vector_ta::indicators::bollinger_bands::{
 
 use crate::{Signal, Strategy};
 
+use crate::params::{ParamSet, code};
+
 use super::config::BbrkPctbConfig;
 
 /// BBRK+%b离场：flat + close>upper → Buy；flat + close<lower → Sell；
@@ -108,9 +110,15 @@ impl Strategy for BbrkPctbStrategy {
         self.pairs.len()
     }
 
-    fn param_str(&self, idx: usize) -> String {
-        let (s, b, e) = self.pairs[idx];
-        format!("sigma={s},bblen={b},exitb={e}")
+    fn param_set(&self, idx: usize) -> ParamSet {
+        let (s, b, t) = self.pairs[idx];
+        let text = format!("sigma={s},bblen={b},exitb={t}");
+        ParamSet::builder(code::sigma_chain(s, &[b.to_string(), t.to_string()], &text))
+            .text(text)
+            .kv("sigma", s)
+            .kv("bblen", b)
+            .kv("exitb", t)
+            .build()
     }
 
     fn generate_signals_full(

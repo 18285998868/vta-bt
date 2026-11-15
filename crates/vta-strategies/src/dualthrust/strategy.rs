@@ -1,5 +1,7 @@
 use crate::{DayBar, Signal, Strategy, aggregate_days};
 
+use crate::params::{ParamSet, code};
+
 use super::config::DualThrustConfig;
 
 /// Dual Thrust: 按 UTC 自然日聚合, 前 N 日算 Range=max(HH−LC,HC−LL),
@@ -107,9 +109,12 @@ impl Strategy for DualThrustStrategy {
         self.pairs.len()
     }
 
-    fn param_str(&self, idx: usize) -> String {
+    fn param_set(&self, idx: usize) -> ParamSet {
         let (n, k) = self.pairs[idx];
-        format!("n={n},k={k}")
+        ParamSet::builder(code::n_second(n, k))
+            .kv("n", n)
+            .kv("k", k)
+            .build()
     }
 
     fn generate_signals_full(

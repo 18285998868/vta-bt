@@ -1,6 +1,8 @@
 use crate::{Signal, Strategy};
 use vector_ta::indicators::moving_averages::ema::{EmaInput, EmaParams, ema};
 
+use crate::params::{ParamSet, code};
+
 use super::config::EmaCrossConfig;
 
 /// 双均线比大小(官方 `docs/tutorials/ema_cross.py` 口径):
@@ -41,9 +43,12 @@ impl Strategy for EmaCrossStrategy {
         self.pairs.len()
     }
 
-    fn param_str(&self, idx: usize) -> String {
+    fn param_set(&self, idx: usize) -> ParamSet {
         let (f, s) = self.pairs[idx];
-        format!("fast={f},slow={s}")
+        ParamSet::builder(code::hi_lo(f, s))
+            .kv("fast", f)
+            .kv("slow", s)
+            .build()
     }
 
     fn generate_signals_full(

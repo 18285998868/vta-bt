@@ -15,8 +15,8 @@ pub struct RunResult {
     pub params: String,
     /// 全部回测指标。
     pub metrics: engine::SummaryMetrics,
-    /// **原样保留**写入时的数值, 合并时不重算(见 `strategy_params_value` 的文档)。
-    /// 0 表示"未记录"(旧缓存文件无此列)。
+    /// **原样保留**写入时的数值, 合并时不重算(与 `params` 文本由策略的
+    /// `ParamSet` 同源产出)。0 表示"未记录"(旧缓存文件无此列)。
     pub strategy_params: u64,
     /// 同上, 人类可读的 JSON 编码原样保留。空串表示未记录。
     pub strategy_params_json: String,

@@ -3,6 +3,8 @@ use vector_ta::indicators::moving_averages::ma::{MaData, ma};
 
 use crate::{ParamOutcome, Signal, Strategy};
 
+use crate::params::{ParamSet, code};
+
 use super::config::MaAtrConfig;
 
 /// 均线 + ATR 通道策略。
@@ -120,9 +122,22 @@ impl Strategy for MaAtrStrategy {
     fn param_count(&self) -> usize {
         self.quints.len()
     }
-    fn param_str(&self, idx: usize) -> String {
+    fn param_set(&self, idx: usize) -> ParamSet {
         let (m, l, k, a) = &self.quints[idx];
-        format!("ma={},len={},mult={},atrlen={}", m, l, k, a)
+        ParamSet::builder(code::packed(&[
+            (
+                code::name_index(&crate::mabb_short::MABB_MA_NAMES, m) as u64,
+                6,
+            ),
+            (*l as u64, 11),
+            (code::scaled(*k, 1000.0), 15),
+            (*a as u64, 9),
+        ]))
+        .kv("ma", m)
+        .kv("len", l)
+        .kv("mult", k)
+        .kv("atrlen", a)
+        .build()
     }
     fn generate_signals_full(
         &self,

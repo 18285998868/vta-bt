@@ -4,6 +4,8 @@ use vector_ta::indicators::bollinger_bands::{
 
 use crate::{Signal, Strategy};
 
+use crate::params::{ParamSet, code};
+
 use super::config::BbrkBbConfig;
 
 /// BBRK中轨对照：决策与 `bbrk_signals` 逐位一致，
@@ -90,9 +92,17 @@ impl Strategy for BbrkBbStrategy {
         self.triples.len()
     }
 
-    fn param_str(&self, idx: usize) -> String {
+    fn param_set(&self, idx: usize) -> ParamSet {
         let (m, l, s) = &self.triples[idx];
-        format!("ma={m},len={l},sigma={s}")
+        ParamSet::builder(code::ma_bb(
+            code::name_index(&crate::bbrk_bb::BB_MA_NAMES, m),
+            *l,
+            Some(*s),
+        ))
+        .kv("ma", m)
+        .kv("len", l)
+        .kv("sigma", s)
+        .build()
     }
 
     fn generate_signals_full(

@@ -52,8 +52,12 @@ impl<C: MaCalculator> Strategy for SingleMaStrategy<C> {
         self.periods.len()
     }
 
-    fn param_str(&self, idx: usize) -> String {
-        format!("{}_{}", C::KEY, self.periods[idx])
+    fn param_set(&self, idx: usize) -> crate::ParamSet {
+        let period = self.periods[idx];
+        crate::ParamSet::builder(crate::params::code::period(period))
+            .text(format!("{}_{}", C::KEY, period))
+            .kv("period", period)
+            .build()
     }
 
     fn generate_signals_full(

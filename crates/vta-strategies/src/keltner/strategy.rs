@@ -3,6 +3,8 @@ use vector_ta::indicators::moving_averages::ema::{EmaInput, EmaParams, ema};
 
 use crate::{Signal, Strategy, price_cross_signal};
 
+use crate::params::{ParamSet, code};
+
 use super::config::KeltnerConfig;
 
 /// 中线 EMA 周期(文档口径 "Keltner(EMA20 ± k·ATR14)" 的 20)。
@@ -81,8 +83,9 @@ impl Strategy for KeltnerStrategy {
         self.mults.len()
     }
 
-    fn param_str(&self, idx: usize) -> String {
-        format!("k={}", self.mults[idx])
+    fn param_set(&self, idx: usize) -> ParamSet {
+        let k = self.mults[idx];
+        ParamSet::builder(code::k_mult(k)).kv("k", k).build()
     }
 
     fn generate_signals_full(

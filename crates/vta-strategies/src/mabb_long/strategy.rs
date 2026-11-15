@@ -4,6 +4,8 @@ use vector_ta::indicators::stddev::{StdDevData, StdDevInput, StdDevParams, stdde
 
 use crate::{ParamOutcome, Signal, Strategy};
 
+use crate::params::{ParamSet, code};
+
 use super::config::MabbLongConfig;
 
 /// 单均线BB多头：close>上轨做多，绝不做空；离场＝追踪止损或中线止盈先到为准。
@@ -207,9 +209,24 @@ impl Strategy for MabbLongStrategy {
         self.quints.len()
     }
 
-    fn param_str(&self, idx: usize) -> String {
+    fn param_set(&self, idx: usize) -> ParamSet {
         let (m, l, s, k, a) = &self.quints[idx];
-        format!("ma={m},len={l},sigma={s},stopk={k},atrlen={a}")
+        ParamSet::builder(code::packed(&[
+            (
+                code::name_index(&crate::mabb_short::MABB_MA_NAMES, m) as u64,
+                6,
+            ),
+            (*l as u64, 12),
+            (code::scaled(*s, 1000.0), 14),
+            (code::scaled(*k, 1000.0), 14),
+            (*a as u64, 9),
+        ]))
+        .kv("ma", m)
+        .kv("len", l)
+        .kv("sigma", s)
+        .kv("stopk", k)
+        .kv("atrlen", a)
+        .build()
     }
 
     fn generate_signals_full(

@@ -3,18 +3,19 @@
 //! 这层检查在生产路径 `run()` 上生效(`build_strategies_checked`), 而它一旦误报
 //! 就会让整轮回测在启动阶段直接退出。故必须用**真实的配置文件**验证:
 //!
-//! 1. 仓库里的三个配置(`sma_100` / `ma_all_1h` / `sma_100` 示例)必须全部通过 ——
-//!    任何 false positive 都是阻断性回归。
-//! 2. 构造一个**真正会塌陷**的网格(同一策略内两个参数组压成同一
-//!    `strategy_params` 整数), 必须被拒绝 —— 否则 Q1 的修复形同虚设。
+//! 1. 仓库里的配置必须全部通过 —— 任何 false positive 都是阻断性回归。
+//! 2. 构造真实的多键网格: 文本与整数编码都不得塌陷。
 //!
-//! 注意第 2 项: `param_str` 字符串在两个参数组之间是**不同**的, 塌陷发生在压缩层。
-//! 这正是只查字符串唯一会漏掉的场景。
+//! 注意第 2 项: 文本不同**不蕴含**整数不同。`ParamSet` 让两者同源产出, 但定宽
+//! 打包越界仍会回退哈希; 唯一性自检必须同时守住两层。
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use vta::config::Config;
 use vta_strategies::build::{build_jobs_checked, build_strategies_checked};
-use vta_strategies::{F64Param, PeriodParam, StrategyConfig};
+use vta_strategies::{
+    F64Param, ParamSet, PeriodParam, PoleCount, RangeParam, StrategyConfig, bbrk_max, ma_atr,
+    ma_slope_atr_gate, mabb_long, mabb_short, macd, sgma, ssf, vwap,
+};
 
 /// 解析仓库内的配置文件。路径相对 `CARGO_MANIFEST_DIR`。
 fn load_repo_config(name: &str) -> Config {
@@ -24,6 +25,22 @@ fn load_repo_config(name: &str) -> Config {
     let text = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("读取 {} 失败: {e}", path.display()));
     toml::from_str(&text).unwrap_or_else(|e| panic!("解析 {} 失败: {e}", path.display()))
+}
+
+fn single(v: usize) -> PeriodParam {
+    PeriodParam::Single(v)
+}
+
+fn range(start: usize, end: usize) -> PeriodParam {
+    PeriodParam::Range(RangeParam {
+        start,
+        end,
+        step: 1,
+    })
+}
+
+fn f64_range(start: f64, end: f64, step: f64) -> F64Param {
+    F64Param::Range(RangeParam { start, end, step })
 }
 
 /// 仓库内的真实配置必须全部通过唯一性自检(防 false positive)。
@@ -43,102 +60,6 @@ fn real_repository_configs_pass_the_uniqueness_check() {
     }
 }
 
-/// 回归: 多参数形态的 `param_str` 不得塌陷成一个 `strategy_params` 值。
-///
-/// 可触发场景(**真实缺陷, 已修**): 编码器的兜底分支对**任何**未识别形态一律
-/// "取末尾数字"。对 `edma_p1_o0` / `sgma_p1_m2` / `atma_u1_d226` / `macd_12_26_9`
-/// 这类含**多个下划线**的串, 末尾数字只编码了最后一个维度, 于是:
-/// - `edma_p1_o0` … `edma_p500_o0` 全部编码为 `0`
-/// - `sgma_p1_m2` … `sgma_p500_m2` 全部编码为 `2`
-/// - `atma_*` 形成 20 组塌陷
-///
-/// 报告的 `strategy_params` 列正是"同策略内按参数大小排序"的依据, 塌陷后排序
-/// 完全失效且**静默**。修复: 仅当串严格形如 `<前缀>_<数字>`(前缀不含下划线)才取
-/// 末尾数字, 其余形态走 FNV(整串哈希)。
-#[test]
-fn multi_underscore_param_forms_do_not_collapse_to_trailing_digits() {
-    // 单参数形态: 末尾数字**就是**身份, 必须仍走原口径(封存数据兼容)。
-    assert_eq!(vta_strategies::params::strategy_params_value("sma_10"), 10);
-    assert_eq!(vta_strategies::params::strategy_params_value("ema_3"), 3);
-    assert_eq!(vta_strategies::params::strategy_params_value("t3_12"), 12);
-
-    for group in [
-        ["edma_p1_o0", "edma_p2_o0", "edma_p500_o0"],
-        ["sgma_p1_m2", "sgma_p2_m2", "sgma_p500_m2"],
-        ["atma_u1_d226", "atma_u26_d226", "atma_u476_d226"],
-        ["macd_12_26_9", "macd_26_9_12", "macd_34_55_13"],
-    ] {
-        let vals: Vec<u64> = group
-            .iter()
-            .map(|p| vta_strategies::params::strategy_params_value(p))
-            .collect();
-        let mut uniq = vals.clone();
-        uniq.sort_unstable();
-        uniq.dedup();
-        assert_eq!(
-            uniq.len(),
-            group.len(),
-            "{group:?} 塌陷成 {vals:?} —— 多参数形态被当成了单参数"
-        );
-        // 旧塌陷值(末尾数字)不得再出现。
-        let trailing: u64 = group[0]
-            .chars()
-            .rev()
-            .take_while(char::is_ascii_digit)
-            .collect::<String>()
-            .chars()
-            .rev()
-            .collect::<String>()
-            .parse()
-            .unwrap();
-        assert!(
-            !vals.contains(&trailing),
-            "{group:?} 中仍出现塌陷值 {trailing}"
-        );
-    }
-}
-
-/// 回归: 多参数形态的 `strategy_params_json` 不得谎报 `period`。
-///
-/// 可触发场景(同一根因, 已修): `params_to_json` 与 `strategy_params_value` 曾
-/// 共用"取末尾数字"的兜底。`edma_p5_o0` 因此被写成 `{"period":"0"}` —— 而它真实
-/// 的 period 是 **5**, 0 是 offset。下游按 period 分组会把整族 EDMA 归错类。
-#[test]
-fn multi_param_json_does_not_mislabelling_period() {
-    use vta_strategies::params::params_to_json;
-    // 单参数形态: 末尾数字就是 period, 保持既有口径。
-    assert_eq!(params_to_json("sma_10"), r#"{"period":"10"}"#);
-    assert_eq!(params_to_json("period=20"), r#"{"period":"20"}"#);
-
-    // 多参数形态: 按原串键名还原, 不再谎称 period。
-    assert_eq!(params_to_json("edma_p5_o0"), r#"{"p":"5","o":"0"}"#);
-    assert_eq!(params_to_json("sgma_p10_m2"), r#"{"p":"10","m":"2"}"#);
-    assert_eq!(params_to_json("atma_u5_d10"), r#"{"u":"5","d":"10"}"#);
-
-    // 关键回归: 旧实现把 offset 当成 period 输出。
-    assert_ne!(
-        params_to_json("edma_p5_o0"),
-        r#"{"period":"0"}"#,
-        "edma_p5_o0 的 period 是 5, 不得被写成 0"
-    );
-
-    // 全部产出必须是合法 JSON(键名只含 ASCII 字母)。
-    for p in [
-        "edma_p5_o0",
-        "sgma_p10_m2",
-        "atma_u5_d10",
-        "sma_10",
-        "period=20,variant=Three",
-    ] {
-        let j = params_to_json(p);
-        assert!(j.starts_with('{') && j.ends_with('}'), "{p} → {j}");
-        assert!(
-            j.parse::<serde_json::Value>().is_ok(),
-            "{p} 产出非法 JSON: {j}"
-        );
-    }
-}
-
 /// 对照: 合法网格必须通过自检(证明自检不是"见谁杀谁")。
 #[test]
 fn legal_grids_pass_the_check() {
@@ -152,13 +73,172 @@ fn legal_grids_pass_the_check() {
     assert!(ok.is_ok(), "Sma 1..50 是合法网格, 必须通过自检");
 }
 
+/// 收集单条配置的全部参数组, 并断言文本/整数编码两两不同、JSON 合法。
+fn unique_params(config: StrategyConfig, label: &str) -> Vec<ParamSet> {
+    let sts = build_strategies_checked(&[config])
+        .unwrap_or_else(|e| panic!("{label}: 参数网格被唯一性自检拒绝: {e}"));
+    let mut out = Vec::new();
+    for st in &sts {
+        let mut texts = std::collections::HashSet::new();
+        let mut codes = std::collections::HashSet::new();
+        for i in 0..st.param_count() {
+            let p = st.param_set(i);
+            assert!(texts.insert(p.text().to_string()), "{label}: 文本重复");
+            assert!(codes.insert(p.code()), "{label}: 整数编码重复");
+            assert!(
+                p.json().parse::<serde_json::Value>().is_ok(),
+                "{label}: 非法 JSON {}",
+                p.json()
+            );
+            out.push(p);
+        }
+    }
+    out
+}
+
+fn json_keys(p: &ParamSet) -> Vec<&str> {
+    p.pairs().iter().map(|(k, _)| k.as_str()).collect()
+}
+
+/// C3 回归: 定宽打包族必须把**每个声明维度**都编进整数, 且 JSON 键名诚实。
+///
+/// 旧实现要么整串退回 FNV-32, 要么只编码前两维 —— 文本不同、整数相同,
+/// 报告的 `strategy_params` 排序会静默错乱。
+#[test]
+fn c3_encoding_covers_every_declared_dimension() {
+    let macd_params = unique_params(
+        StrategyConfig::Macd(macd::MacdConfig {
+            groups: vec![[12, 26, 9], [26, 9, 12], [34, 55, 13]],
+        }),
+        "macd",
+    );
+    assert_eq!(
+        json_keys(&macd_params[0]),
+        ["fast", "slow", "signal"],
+        "macd JSON 不得把 fast 误标成 period"
+    );
+
+    let sgma_params = unique_params(
+        StrategyConfig::Sgma(sgma::SgmaConfig {
+            period: range(10, 20),
+            poly_order: Some(PeriodParam::Range(RangeParam {
+                start: 1,
+                end: 2,
+                step: 1,
+            })),
+        }),
+        "sgma",
+    );
+    assert_eq!(json_keys(&sgma_params[0]), ["p", "m"]);
+
+    let vwap_params = unique_params(
+        StrategyConfig::Vwap(vwap::VwapConfig {
+            thresh: f64_range(10.0, 30.0, 10.0),
+        }),
+        "vwap",
+    );
+    assert_eq!(vwap_params.len(), 3);
+    assert_eq!(json_keys(&vwap_params[0]), ["thresh"]);
+
+    let fiali_params = unique_params(
+        StrategyConfig::Fiali(vta_strategies::fiali::FialiConfig {}),
+        "fiali",
+    );
+    assert_eq!(fiali_params.len(), 1);
+    assert_eq!(fiali_params[0].text(), "base");
+    assert_eq!(fiali_params[0].code(), 0);
+    assert_eq!(fiali_params[0].json(), "{}");
+
+    let gate_params = unique_params(
+        StrategyConfig::MaSlopeAtrGate(ma_slope_atr_gate::MaSlopeAtrGateConfig {
+            ma: single(100),
+            slope_k: single(20),
+            atr_n: single(14),
+            atr_kind: ma_slope_atr_gate::AtrKind::Sma,
+            z_win: single(60),
+            th: f64_range(-1.0, 1.0, 1.0),
+        }),
+        "ma_slope_atr_gate",
+    );
+    assert_eq!(
+        json_keys(&gate_params[0]),
+        ["ma", "k", "atr", "kind", "z", "th"]
+    );
+
+    // 维度丢失修复: mult/atrlen 必须各自影响编码。
+    let ma_atr_params = unique_params(
+        StrategyConfig::MaAtr(ma_atr::MaAtrConfig {
+            ma: vec!["sma".to_string()],
+            len: single(20),
+            mult: f64_range(1.0, 2.0, 1.0),
+            atrlen: range(7, 14),
+        }),
+        "ma_atr",
+    );
+    // range 的 end 为闭区间: mult 2 档 × atrlen 8 档 = 16。
+    assert_eq!(ma_atr_params.len(), 16);
+    assert_eq!(
+        json_keys(&ma_atr_params[0]),
+        ["ma", "len", "mult", "atrlen"]
+    );
+
+    let mabb_long_params = unique_params(
+        StrategyConfig::MabbLong(mabb_long::MabbLongConfig {
+            ma: vec!["sma".to_string()],
+            bblen: single(20),
+            sigma: f64_range(1.5, 2.5, 1.0),
+            stopk: f64_range(0.0, 1.0, 1.0),
+            atrlen: range(7, 14),
+        }),
+        "mabb_long",
+    );
+    // stopk=0 时 atrlen 去重为单值: sigma 2 × (1 + atrlen 8) = 18。
+    assert_eq!(mabb_long_params.len(), 18);
+    assert_eq!(
+        json_keys(&mabb_long_params[0]),
+        ["ma", "len", "sigma", "stopk", "atrlen"]
+    );
+
+    let mabb_short_params = unique_params(
+        StrategyConfig::MabbShort(mabb_short::MabbShortConfig {
+            ma: vec!["sma".to_string()],
+            bblen: single(20),
+            sigma: f64_range(1.5, 2.5, 1.0),
+            stopk: f64_range(0.0, 1.0, 1.0),
+            atrlen: range(7, 14),
+        }),
+        "mabb_short",
+    );
+    assert_eq!(mabb_short_params.len(), 18);
+
+    let bbrk_max_params = unique_params(
+        StrategyConfig::BbrkMax(bbrk_max::BbrkMaxConfig {
+            ma: vec!["sma".to_string(), "hma".to_string()],
+            malen: single(100),
+            bblen: range(20, 22),
+        }),
+        "bbrk_max",
+    );
+    assert_eq!(bbrk_max_params.len(), 6, "bblen 必须参与网格");
+    assert_eq!(json_keys(&bbrk_max_params[0]), ["ma", "malen", "bblen"]);
+
+    let ssf_params = unique_params(
+        StrategyConfig::Ssf(ssf::SsfConfig {
+            period: range(10, 20),
+            poles: PoleCount::Two,
+        }),
+        "ssf",
+    );
+    assert_eq!(json_keys(&ssf_params[0]), ["period", "poles", "variant"]);
+}
+
 /// 编码层自检覆盖多种多键形态: 任一形态塌陷都必须被拒。
 ///
-/// 这些都是 `strategy_params_value` 已知的"多键折叠"形态。逐一验证其编码唯一,
+/// 这些都是 `ParamSet::code` 已知的"多键折叠"形态。逐一验证其编码唯一,
 /// 防止将来扩网格时无意撞值却被漏过。
 #[test]
 fn known_multi_key_encodings_stay_unique_on_realistic_grids() {
-    // BBMR / BBRK_VOL 等的真实网格形状(取自 config.example.toml 的量级)。
+    // BBRK_VOL 等的真实网格形状(取自 config.example.toml 的量级)。
     for sc in [
         StrategyConfig::BbrkVol(vta_strategies::bbrk_vol::BbrkVolConfig {
             sigma: F64Param::Range(vta_strategies::RangeParam {
@@ -190,15 +270,15 @@ fn known_multi_key_encodings_stay_unique_on_realistic_grids() {
     ] {
         let sts = build_strategies_checked(&[sc]).expect("这些网格应当通过编码唯一性自检");
         for st in &sts {
-            let n = st.param_count();
             let mut vals = std::collections::HashSet::new();
-            for i in 0..n {
-                let p = st.param_str(i);
-                let v = vta_strategies::params::strategy_params_value(&p);
+            for i in 0..st.param_count() {
+                let p = st.param_set(i);
                 assert!(
-                    vals.insert(v),
-                    "[{}] 参数 {p:?} 编码 {v} 与前面的参数撞值",
-                    st.name()
+                    vals.insert(p.code()),
+                    "[{}] 参数 {:?} 编码 {} 与前面的参数撞值",
+                    st.name(),
+                    p.text(),
+                    p.code()
                 );
             }
         }

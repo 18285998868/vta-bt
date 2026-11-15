@@ -2,6 +2,8 @@ use vector_ta::indicators::moving_averages::sma::{SmaInput, SmaParams, sma};
 
 use crate::{Signal, Strategy, rolling_highest, rolling_lowest, shift_right_1};
 
+use crate::params::{ParamSet, code};
+
 use super::config::{ClenowConfig, ClenowParams, TrendMode};
 
 /// Clenow 混合趋势: 双均线 regime + 唐奇安突破。
@@ -137,16 +139,31 @@ impl Strategy for ClenowStrategy {
         self.combos.len()
     }
 
-    fn param_str(&self, idx: usize) -> String {
+    fn param_set(&self, idx: usize) -> ParamSet {
         let p = self.combos[idx];
-        format!(
+        let text = format!(
             "entry={},exit={},fast={},slow={},mode={}",
             p.entry,
             p.exit,
             p.fast,
             p.slow,
             p.mode.label()
-        )
+        );
+        ParamSet::builder(code::clenow(
+            p.entry,
+            p.exit,
+            p.fast,
+            p.slow,
+            matches!(p.mode, TrendMode::LongShort),
+            &text,
+        ))
+        .text(text)
+        .kv("entry", p.entry)
+        .kv("exit", p.exit)
+        .kv("fast", p.fast)
+        .kv("slow", p.slow)
+        .kv("mode", p.mode.label())
+        .build()
     }
 
     fn generate_signals_full(

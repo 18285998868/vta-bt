@@ -4,6 +4,8 @@ use vector_ta::indicators::bollinger_bands::{
 
 use crate::{ParamOutcome, Signal, Strategy};
 
+use crate::params::{ParamSet, code};
+
 use super::config::BbrkRexConfig;
 
 /// BBRK+振幅扩张过滤：flat + close突破 **且** 方向一致 **且**
@@ -168,9 +170,19 @@ impl Strategy for BbrkRexStrategy {
         self.pairs.len()
     }
 
-    fn param_str(&self, idx: usize) -> String {
+    fn param_set(&self, idx: usize) -> ParamSet {
         let (s, l, n, m) = self.pairs[idx];
-        format!("sigma={s},bblen={l},rexn={n},rexmult={m}")
+        ParamSet::builder(code::packed(&[
+            (code::scaled(s, 1000.0), 14),
+            (l as u64, 12),
+            (n as u64, 8),
+            (code::scaled(m, 1000.0), 15),
+        ]))
+        .kv("sigma", s)
+        .kv("bblen", l)
+        .kv("rexn", n)
+        .kv("rexmult", m)
+        .build()
     }
 
     fn generate_signals_full(

@@ -1,5 +1,7 @@
 use crate::{Signal, Strategy, utc_day_index};
 
+use crate::params::{ParamSet, code};
+
 use super::config::VwapTrendConfig;
 
 /// 24h滚动窗（毫秒）。连续VWAP = 过去24h成交量加权均价，与TF无关。
@@ -203,8 +205,11 @@ impl Strategy for VwapTrendStrategy {
         self.modes.len()
     }
 
-    fn param_str(&self, idx: usize) -> String {
-        format!("reset={}", self.modes[idx])
+    fn param_set(&self, idx: usize) -> ParamSet {
+        let mode = self.modes[idx];
+        ParamSet::builder(code::period(mode as usize))
+            .kv("reset", mode)
+            .build()
     }
 
     fn generate_signals_full(

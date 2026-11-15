@@ -536,8 +536,8 @@ fn merge_reports_failures_instead_of_silently_dropping() {
         strategy: "sma".into(),
         params: "period=20".into(),
         metrics: engine::SummaryMetrics::default(),
-        strategy_params: vta_strategies::params::strategy_params_value("period=20"),
-        strategy_params_json: vta_strategies::params::params_to_json("period=20"),
+        strategy_params: 20,
+        strategy_params_json: "{\"period\":\"20\"}".to_string(),
         bars_used: 300,
         status: RunStatus::Ok,
         delay_bars: 1,
@@ -828,7 +828,7 @@ fn invalid_row_is_marked_invalid_and_keeps_equity_consistent() {
         "BTCUSDT",
         "1d",
         &*s,
-        "period=20",
+        &s.param_set(0),
         300,
         vta_core::money::Amount::from_i64(1),
         0.1,
@@ -949,11 +949,12 @@ fn run_row_is_the_single_construction_point() {
         sharpe_ratio: 1.25,
         ..engine::SummaryMetrics::default()
     };
+    let params = s.param_set(0);
     let r = ctx.run_row(
         "BTCUSDT",
         "1d",
         &*s,
-        "period=20",
+        &params,
         m,
         300,
         RunStatus::NoSignals,
@@ -971,11 +972,8 @@ fn run_row_is_the_single_construction_point() {
     assert!((r.metrics.fee_bps - r.fee_bps).abs() < 1e-12);
     assert!((r.metrics.slippage_bps - r.slippage_bps).abs() < 1e-12);
     // params 派生的两列也在此处统一
-    assert_eq!(
-        r.strategy_params,
-        vta_strategies::params::strategy_params_value("period=20")
-    );
-    assert_eq!(r.strategy_params_json, "{\"period\":\"20\"}");
+    assert_eq!(r.strategy_params, params.code());
+    assert_eq!(r.strategy_params_json, params.json());
     // L5 两列
     assert_eq!(r.bars_used, 300);
     assert_eq!(r.status, RunStatus::NoSignals);
