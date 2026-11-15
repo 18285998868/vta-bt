@@ -5,7 +5,7 @@ use vector_ta::indicators::bollinger_bands::{
 
 use crate::{Signal, Strategy, rolling_highest, rolling_lowest, shift_right_1};
 
-use crate::params::{ParamSet, code};
+use crate::params::ParamSet;
 
 use super::config::BbrkTrailConfig;
 
@@ -150,18 +150,7 @@ impl Strategy for BbrkTrailStrategy {
     }
 
     fn param_set(&self, idx: usize) -> ParamSet {
-        let (s, b, a, k) = self.pairs[idx];
-        ParamSet::builder(code::packed(&[
-            (code::scaled(s, 1000.0), 14),
-            (b as u64, 12),
-            (a as u64, 9),
-            (code::scaled(k, 1000.0), 15),
-        ]))
-        .kv("sigma", s)
-        .kv("bblen", b)
-        .kv("atrlen", a)
-        .kv("trailk", k)
-        .build()
+        BbrkTrailConfig::param_set(&self.pairs[idx])
     }
 
     fn generate_signals_full(

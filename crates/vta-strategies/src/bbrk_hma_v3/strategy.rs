@@ -4,7 +4,7 @@ use vector_ta::indicators::bollinger_bands::{
 
 use crate::{Signal, Strategy};
 
-use crate::params::{ParamSet, code};
+use crate::params::ParamSet;
 
 use super::config::BbrkHmaV3Config;
 
@@ -88,11 +88,7 @@ impl Strategy for BbrkHmaV3Strategy {
     }
 
     fn param_set(&self, idx: usize) -> ParamSet {
-        let (s, b) = self.pairs[idx];
-        ParamSet::builder(code::sigma_pair(s, b as f64))
-            .kv("sigma", s)
-            .kv("bblen", b)
-            .build()
+        BbrkHmaV3Config::param_set(&self.pairs[idx])
     }
 
     fn generate_signals_full(

@@ -3,7 +3,7 @@ use vector_ta::indicators::moving_averages::ma::{MaData, ma};
 
 use crate::{ParamOutcome, Signal, Strategy};
 
-use crate::params::{ParamSet, code};
+use crate::params::ParamSet;
 
 use super::config::MaAtrConfig;
 
@@ -123,21 +123,7 @@ impl Strategy for MaAtrStrategy {
         self.quints.len()
     }
     fn param_set(&self, idx: usize) -> ParamSet {
-        let (m, l, k, a) = &self.quints[idx];
-        ParamSet::builder(code::packed(&[
-            (
-                code::name_index(&crate::mabb_short::MABB_MA_NAMES, m) as u64,
-                6,
-            ),
-            (*l as u64, 11),
-            (code::scaled(*k, 1000.0), 15),
-            (*a as u64, 9),
-        ]))
-        .kv("ma", m)
-        .kv("len", l)
-        .kv("mult", k)
-        .kv("atrlen", a)
-        .build()
+        MaAtrConfig::param_set(&self.quints[idx])
     }
     fn generate_signals_full(
         &self,

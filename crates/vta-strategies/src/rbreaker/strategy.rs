@@ -1,6 +1,6 @@
 use crate::{DayBar, Signal, Strategy, aggregate_days};
 
-use crate::params::{ParamSet, code};
+use crate::params::ParamSet;
 
 use super::config::RBreakerConfig;
 
@@ -158,10 +158,7 @@ impl Strategy for RBreakerStrategy {
     }
 
     fn param_set(&self, idx: usize) -> ParamSet {
-        let stop = self.stops[idx];
-        ParamSet::builder(code::stop_pct(stop))
-            .kv("stop", stop)
-            .build()
+        RBreakerConfig::param_set(&self.stops[idx])
     }
 
     fn generate_signals_full(

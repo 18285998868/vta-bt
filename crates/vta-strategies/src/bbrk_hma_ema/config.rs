@@ -1,68 +1,26 @@
-use serde::Deserialize;
-use vta_core::error::AppError;
-
 use crate::config::{F64Param, PeriodParam};
+use crate::grid::grid_config;
+use crate::params::code;
 
-/// BBRK+HMA regime门（入场验证#6）：SMA门嫌滞后，换 Hull 均线
-/// （平滑+低滞后，vector-ta 现成指标直接用）。
-/// close > HMA(L) 只允许多头，close < HMA(L) 只允许空头，相等不开仓。
-/// L{50,100,200,400} × σ3档 = 12组+BBRK对照，与 SMA 版逐位可比。
-/// 离场保持中线。
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct BbrkHmaEmaConfig {
-    /// 布林带标准差倍数(通道宽度)。
-    pub sigma: F64Param,
-    /// HMA regime 周期。
-    pub hmalen: PeriodParam,
-    /// BB 周期(缺省 20＝旧串语义: 此前该策略把 BB 周期写死为 20)。
-    #[serde(default = "default_bblen")]
-    pub bblen: PeriodParam,
-}
-
-fn default_bblen() -> PeriodParam {
-    PeriodParam::Single(20)
-}
-
-impl BbrkHmaEmaConfig {
-    /// 展开后的参数组合(按策略的笛卡尔积顺序)。
-    #[must_use]
-    pub fn pairs(&self) -> Vec<(f64, usize, usize)> {
-        let ss = self.sigma.values();
-        let bs = self.bblen.values();
-        let ls = self.hmalen.values();
-        // 网格规模 = 各维度长度之积(可预知), 一次分配到位(`mem-with-capacity`)。
-        // 乘积的 `saturating_mul` 与封顶逻辑集中在 `grid_prealloc` 一处
-        // (笛卡尔积理论上无界, 普通 `*` 在 debug 下会溢出 panic)。
-        let cap = crate::grid_prealloc(&[ss.len(), bs.len(), ls.len()]);
-        let mut out = Vec::with_capacity(cap);
-        for &s in &ss {
-            for &b in &bs {
-                for &l in &ls {
-                    out.push((s, b, l));
-                }
-            }
-        }
-        out
+grid_config! {
+    /// BBRK+HMA regime门（入场验证#6）：SMA门嫌滞后，换 Hull 均线
+    /// （平滑+低滞后，vector-ta 现成指标直接用）。
+    /// close > HMA(L) 只允许多头，close < HMA(L) 只允许空头，相等不开仓。
+    /// L{50,100,200,400} × σ3档 = 12组+BBRK对照，与 SMA 版逐位可比。
+    /// 离场保持中线。
+    pub struct BbrkHmaEmaConfig;
+    fields {
+        /// 布林带标准差倍数(通道宽度)。
+        sigma: F64Param as f64, key "sigma", label "bbrk_hma_ema.sigma", range (0.1, 10.0);
+        /// BB 周期(缺省 20＝旧串语义: 此前该策略把 BB 周期写死为 20)。
+        bblen: PeriodParam as usize, key "bblen", label "bbrk_hma_ema.bblen", range (2, 2000), default "crate::config::default_bblen";
+        /// HMA regime 周期。
+        hmalen: PeriodParam as usize, key "hmalen", label "bbrk_hma_ema.hmalen", range (2, 2000);
     }
-}
-
-impl BbrkHmaEmaConfig {
-    /// 语义校验(原集中在 `config.rs::Config::validate` 的 match 中,
-    /// 已下沉到本类型; 分派处只保留一行调用)。
-    /// 语义校验: 范围、步长与网格非空性。
-    ///
-    /// # Errors
-    /// 任一参数越界或展开为空时返回 `AppError`(vta_core::error::AppError)。
-    pub fn validate(&self) -> vta_core::error::Result<()> {
-        self.sigma.validate_range("bbrk_hma_ema.sigma", 0.1, 10.0)?;
-        self.bblen.validate_range("bbrk_hma_ema.bblen", 2, 2000)?;
-        self.hmalen.validate_range("bbrk_hma_ema.hmalen", 2, 2000)?;
-        if self.pairs().is_empty() {
-            return Err(AppError::Msg("bbrk_hma_ema 参数组合为空".into()));
-        }
-        Ok(())
-    }
+    expand pairs;
+    code |text| code::sigma_chain(sigma, &[bblen.to_string(), hmalen.to_string()], text);
+    filter true;
+    empty "bbrk_hma_ema 参数组合为空";
 }
 
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]

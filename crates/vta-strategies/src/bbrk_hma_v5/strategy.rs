@@ -5,7 +5,7 @@ use vector_ta::indicators::moving_averages::hma::{HmaInput, HmaParams, hma};
 
 use crate::{Signal, Strategy};
 
-use crate::params::{ParamSet, code};
+use crate::params::ParamSet;
 
 use super::config::BbrkHmaV5Config;
 
@@ -130,14 +130,7 @@ impl Strategy for BbrkHmaV5Strategy {
     }
 
     fn param_set(&self, idx: usize) -> ParamSet {
-        let (s, b, t) = self.triples[idx];
-        let text = format!("sigma={s},bblen={b},hmalen={t}");
-        ParamSet::builder(code::sigma_chain(s, &[b.to_string(), t.to_string()], &text))
-            .text(text)
-            .kv("sigma", s)
-            .kv("bblen", b)
-            .kv("hmalen", t)
-            .build()
+        BbrkHmaV5Config::param_set(&self.triples[idx])
     }
 
     fn generate_signals_full(

@@ -3,7 +3,7 @@ use vector_ta::indicators::moving_averages::sma::{SmaInput, SmaParams, sma};
 
 use crate::{Signal, Strategy, price_cross_signal};
 
-use crate::params::{ParamSet, code};
+use crate::params::ParamSet;
 
 use super::config::ATRBandConfig;
 
@@ -84,8 +84,7 @@ impl Strategy for ATRBandStrategy {
     }
 
     fn param_set(&self, idx: usize) -> ParamSet {
-        let k = self.mults[idx];
-        ParamSet::builder(code::k_mult(k)).kv("k", k).build()
+        ATRBandConfig::param_set(&self.mults[idx])
     }
 
     fn generate_signals_full(

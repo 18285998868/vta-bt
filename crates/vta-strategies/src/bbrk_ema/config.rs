@@ -1,69 +1,27 @@
-use serde::Deserialize;
-use vta_core::error::AppError;
-
 use crate::config::{F64Param, PeriodParam};
+use crate::grid::grid_config;
+use crate::params::code;
 
-/// BBRK+EMA regime门：SMA门同形，regime线换 EMA（vector-ta 现成指标）。
-/// close > EMA(L) 只允许多头，close < EMA(L) 只允许空头；
-/// close == SMA(L) 不开仓。L{50,100,200,400} × σ3档 = 12组+BBRK对照。
-/// BB周期bblen（缺省20＝旧串语义）。
-/// 离场保持中线。EMA(L) NaN/预热不足 → 拦。
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct BbrkEmaConfig {
-    /// 布林带标准差倍数(通道宽度)。
-    pub sigma: F64Param,
-    /// BB周期（缺省20＝旧串语义）。
-    #[serde(default = "default_bblen")]
-    /// 布林带周期。
-    pub bblen: PeriodParam,
-    /// EMA regime 周期。
-    pub emareg: PeriodParam,
-}
-
-fn default_bblen() -> PeriodParam {
-    PeriodParam::Single(20)
-}
-
-impl BbrkEmaConfig {
-    /// 展开后的参数组合(按策略的笛卡尔积顺序)。
-    #[must_use]
-    pub fn pairs(&self) -> Vec<(f64, usize, usize)> {
-        let ss = self.sigma.values();
-        let bs = self.bblen.values();
-        let ls = self.emareg.values();
-        // 网格规模 = 各维度长度之积(可预知), 一次分配到位(`mem-with-capacity`)。
-        // 乘积的 `saturating_mul` 与封顶逻辑集中在 `grid_prealloc` 一处
-        // (笛卡尔积理论上无界, 普通 `*` 在 debug 下会溢出 panic)。
-        let cap = crate::grid_prealloc(&[ss.len(), bs.len(), ls.len()]);
-        let mut out = Vec::with_capacity(cap);
-        for &s in &ss {
-            for &b in &bs {
-                for &l in &ls {
-                    out.push((s, b, l));
-                }
-            }
-        }
-        out
+grid_config! {
+    /// BBRK+EMA regime门：SMA门同形，regime线换 EMA（vector-ta 现成指标）。
+    /// close > EMA(L) 只允许多头，close < EMA(L) 只允许空头；
+    /// close == SMA(L) 不开仓。L{50,100,200,400} × σ3档 = 12组+BBRK对照。
+    /// BB周期bblen（缺省20＝旧串语义）。
+    /// 离场保持中线。EMA(L) NaN/预热不足 → 拦。
+    pub struct BbrkEmaConfig;
+    fields {
+        /// 布林带标准差倍数(通道宽度)。
+        sigma: F64Param as f64, key "sigma", label "bbrk_ema.sigma", range (0.1, 10.0);
+        /// BB周期（缺省20＝旧串语义）。
+        /// 布林带周期。
+        bblen: PeriodParam as usize, key "bblen", label "bbrk_ema.bblen", range (2, 2000), default "crate::config::default_bblen";
+        /// EMA regime 周期。
+        emareg: PeriodParam as usize, key "emareg", label "bbrk_ema.emareg", range (2, 2000);
     }
-}
-
-impl BbrkEmaConfig {
-    /// 语义校验(原集中在 `config.rs::Config::validate` 的 match 中,
-    /// 已下沉到本类型; 分派处只保留一行调用)。
-    /// 语义校验: 范围、步长与网格非空性。
-    ///
-    /// # Errors
-    /// 任一参数越界或展开为空时返回 `AppError`(vta_core::error::AppError)。
-    pub fn validate(&self) -> vta_core::error::Result<()> {
-        self.sigma.validate_range("bbrk_ema.sigma", 0.1, 10.0)?;
-        self.bblen.validate_range("bbrk_ema.bblen", 2, 2000)?;
-        self.emareg.validate_range("bbrk_ema.emareg", 2, 2000)?;
-        if self.pairs().is_empty() {
-            return Err(AppError::Msg("bbrk_ema 参数组合为空".into()));
-        }
-        Ok(())
-    }
+    expand pairs;
+    code |text| code::sigma_chain(sigma, &[bblen.to_string(), emareg.to_string()], text);
+    filter true;
+    empty "bbrk_ema 参数组合为空";
 }
 
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]

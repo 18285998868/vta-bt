@@ -7,7 +7,7 @@ use vector_ta::indicators::moving_averages::sma::{SmaInput, SmaParams, sma};
 
 use crate::{Signal, Strategy};
 
-use crate::params::{ParamSet, code};
+use crate::params::ParamSet;
 
 use super::config::BbrkKdjConfig;
 
@@ -230,11 +230,7 @@ impl Strategy for BbrkKdjStrategy {
     }
 
     fn param_set(&self, idx: usize) -> ParamSet {
-        let (s, b) = self.pairs[idx];
-        ParamSet::builder(code::sigma_pair(s, b as f64))
-            .kv("sigma", s)
-            .kv("bblen", b)
-            .build()
+        BbrkKdjConfig::param_set(&self.pairs[idx])
     }
 
     fn generate_signals_full(

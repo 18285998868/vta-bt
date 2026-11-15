@@ -17,7 +17,7 @@ use vector_ta::indicators::bollinger_bands::{
 
 use crate::{Signal, Strategy};
 
-use crate::params::{ParamSet, code};
+use crate::params::ParamSet;
 
 use super::config::BbrkMaxConfig;
 
@@ -266,16 +266,7 @@ impl Strategy for BbrkMaxStrategy {
     }
 
     fn param_set(&self, idx: usize) -> ParamSet {
-        let (m, l, b) = &self.pairs[idx];
-        ParamSet::builder(code::packed(&[
-            (code::name_index(&crate::bbrk_max::MA_NAMES, m) as u64, 4),
-            (*l as u64, 12),
-            (*b as u64, 16),
-        ]))
-        .kv("ma", m)
-        .kv("malen", l)
-        .kv("bblen", b)
-        .build()
+        BbrkMaxConfig::param_set(&self.pairs[idx])
     }
 
     fn generate_signals_full(

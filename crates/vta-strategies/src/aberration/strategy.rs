@@ -2,7 +2,7 @@ use vector_ta::indicators::atr::{AtrInput, AtrParams, atr};
 
 use crate::{Signal, Strategy, price_cross_signal, rolling_highest, rolling_lowest, shift_right_1};
 
-use crate::params::{ParamSet, code};
+use crate::params::ParamSet;
 
 use super::config::AberrationConfig;
 
@@ -32,11 +32,7 @@ impl Strategy for AberrationStrategy {
     }
 
     fn param_set(&self, idx: usize) -> ParamSet {
-        let (n, m) = self.pairs[idx];
-        ParamSet::builder(code::n_second(n, m))
-            .kv("n", n)
-            .kv("m", m)
-            .build()
+        AberrationConfig::param_set(&self.pairs[idx])
     }
 
     fn generate_signals_full(

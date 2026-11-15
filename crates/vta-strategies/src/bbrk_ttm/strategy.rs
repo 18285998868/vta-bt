@@ -6,7 +6,7 @@ use vector_ta::indicators::moving_averages::ema::{EmaInput, EmaParams, ema};
 
 use crate::{Signal, Strategy};
 
-use crate::params::{ParamSet, code};
+use crate::params::ParamSet;
 
 use super::config::BbrkTtmConfig;
 
@@ -169,18 +169,7 @@ impl Strategy for BbrkTtmStrategy {
     }
 
     fn param_set(&self, idx: usize) -> ParamSet {
-        let (s, b, k, n) = self.pairs[idx];
-        ParamSet::builder(code::packed(&[
-            (code::scaled(s, 1000.0), 14),
-            (b as u64, 12),
-            (code::scaled(k, 1000.0), 13),
-            (n as u64, 7),
-        ]))
-        .kv("sigma", s)
-        .kv("bblen", b)
-        .kv("kc", k)
-        .kv("ttmn", n)
-        .build()
+        BbrkTtmConfig::param_set(&self.pairs[idx])
     }
 
     fn generate_signals_full(

@@ -1,4 +1,4 @@
-# 关键设计约束（改动前必读，18 条）
+# 关键设计约束（改动前必读，19 条）
 
 这些不是风格偏好，而是踩过坑之后定下来的硬约束。违反它们会**静默产出错误结果**。
 
@@ -308,4 +308,34 @@ MFE/MAE 的取值区间与旧口径一致；变化的是**曲线时点**与由�
 - PBO 只取 `status == ok`、时间列严格递增且与值等长的曲线，按精确时间网格分组，
   选样本数最大的 cohort；不再按 `min(len)` 截断。
 - 索引/文件缺失或 `combo` 不一致时**报错并要求重跑**，不得少读几条继续算 φ。
+
+### 18. 参数网格只允许一处声明（`grid_config!`）
+
+笛卡尔网格策略的字段、展开顺序、范围校验与 `param_set` 必须由
+`crates/vta-strategies/src/grid.rs` 的 `grid_config!` 一次声明生成；
+策略侧只保留一行 `<Config>::param_set(&self.pairs[idx])` 委托。
+
+历史实现把同一张维度表拆在三处：`config.rs` 字段、`pairs()` 嵌套循环、
+`strategy.rs::param_set()` 的键序。漏掉一维时配置能解析、网格少一维，
+启动期的文本/编码唯一性自检也**发现不了**（每个剩余组合仍可唯一）；
+随后 top-N 与参数敏感性分析全部基于不完整的网格。
+
+约束：
+
+- 字段行顺序 = 笛卡尔积顺序 = `params` / JSON 键序；`key` 必须写历史
+  `params` 键名（不必等于 Rust 字段名，如 `atrband` 的 `mult` 键是 `k`）。
+- `filter true;` 表示不过滤；过滤写 `filter (expr);`，在完整笛卡尔积之后
+  执行，语义与手写循环里的 `continue` 相同。
+- 单字段配置用 `expand values;`，返回 `Vec<T>` 而非一元组。
+- 新增策略只改三处：字段表、`registry.rs` 一行、golden 夹具；不得再手写
+  `validate()` / `pairs()` / `param_set()`。
+
+保留手写入口的非笛卡尔网格：`macd`（显式三元组）、`clenow`（日期/模式过滤）、
+`sgma`（可选维度）、`swing_fractal`（自定义 `IntParam`）、`vwap_trend`
+（枚举模式）、`fiali`（无参数）、`mabb_long` / `mabb_short`（`stopk==0`
+去重）、`ma_slope_atr_gate`（派生 `kind`）、`ssf*`（极点数）。迁移这些策略
+需要先给宏增加对应的变换语义，不得把特例塞进 `code` 闭包。
+
+回归门禁：`golden_signals` 与 `./scripts/golden_run.sh --check` 必须零 diff；
+`grid.rs` 自带单元测试锁定展开顺序、默认值、文本/JSON/编码同源与空网格拒绝。
 

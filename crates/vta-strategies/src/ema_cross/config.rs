@@ -1,58 +1,21 @@
-use serde::Deserialize;
-use vta_core::error::AppError;
-
 use crate::config::PeriodParam;
+use crate::grid::grid_config;
+use crate::params::code;
 
-/// 双均线比大小配置(官方 `docs/tutorials/ema_cross.py` 口径)。
-/// fast/slow 各为单值或范围, 实际组合只取 fast<slow(对角绞杀区天然排除)。
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct EmaCrossConfig {
-    /// 快线周期。
-    pub fast: PeriodParam,
-    /// 慢线周期。
-    pub slow: PeriodParam,
-}
-
-impl EmaCrossConfig {
-    /// 有效参数对(至少 1 对, 否则配置无意义)。
-    #[must_use]
-    pub fn pairs(&self) -> Vec<(usize, usize)> {
-        let fasts = self.fast.to_range();
-        let slows = self.slow.to_range();
-        let f: Vec<usize> = (fasts.start..=fasts.end).step_by(fasts.step).collect();
-        let s: Vec<usize> = (slows.start..=slows.end).step_by(slows.step).collect();
-        // 网格规模 = 各维度长度之积(可预知), 一次分配到位(`mem-with-capacity`)。
-        // 乘积的 `saturating_mul` 与封顶逻辑集中在 `grid_prealloc` 一处
-        // (笛卡尔积理论上无界, 普通 `*` 在 debug 下会溢出 panic)。
-        let cap = crate::grid_prealloc(&[f.len(), s.len()]);
-        let mut out = Vec::with_capacity(cap);
-        for &ff in &f {
-            for &ss in &s {
-                if ff < ss {
-                    out.push((ff, ss));
-                }
-            }
-        }
-        out
+grid_config! {
+    /// 双均线比大小配置(官方 `docs/tutorials/ema_cross.py` 口径)。
+    /// fast/slow 各为单值或范围, 实际组合只取 fast<slow(对角绞杀区天然排除)。
+    pub struct EmaCrossConfig;
+    fields {
+        /// 快线周期。
+        fast: PeriodParam as usize, key "fast", label "ema_cross.fast", validate 1;
+        /// 慢线周期。
+        slow: PeriodParam as usize, key "slow", label "ema_cross.slow", validate 1;
     }
-}
-
-impl EmaCrossConfig {
-    /// 语义校验(原集中在 `config.rs::Config::validate` 的 match 中,
-    /// 已下沉到本类型; 分派处只保留一行调用)。
-    /// 语义校验: 范围、步长与网格非空性。
-    ///
-    /// # Errors
-    /// 任一参数越界或展开为空时返回 `AppError`(vta_core::error::AppError)。
-    pub fn validate(&self) -> vta_core::error::Result<()> {
-        self.fast.validate()?;
-        self.slow.validate()?;
-        if self.pairs().is_empty() {
-            return Err(AppError::Msg("ema_cross 无 fast<slow 有效组合".into()));
-        }
-        Ok(())
-    }
+    expand pairs;
+    code |_text| code::hi_lo(fast, slow);
+    filter (fast < slow);
+    empty "ema_cross 无 fast<slow 有效组合";
 }
 
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]

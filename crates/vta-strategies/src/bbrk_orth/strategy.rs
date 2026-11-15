@@ -4,7 +4,7 @@ use vector_ta::indicators::bollinger_bands::{
 
 use crate::{Signal, Strategy, pct_b};
 
-use crate::params::{ParamSet, code};
+use crate::params::ParamSet;
 
 use super::config::BbrkOrthConfig;
 
@@ -124,12 +124,7 @@ impl Strategy for BbrkOrthStrategy {
     }
 
     fn param_set(&self, idx: usize) -> ParamSet {
-        // W 预注册固定, 不进 param_str(parquet 零改动口径)。
-        let (s, b) = self.pairs[idx];
-        ParamSet::builder(code::sigma_pair(s, b as f64))
-            .kv("sigma", s)
-            .kv("bblen", b)
-            .build()
+        BbrkOrthConfig::param_set(&self.pairs[idx])
     }
 
     fn generate_signals_full(

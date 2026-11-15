@@ -1,41 +1,20 @@
-use serde::Deserialize;
-use vta_core::error::AppError;
-
 use crate::config::F64Param;
+use crate::grid::grid_config;
+use crate::params::code;
 
-/// R-Breaker 六价位突破+反转。六价公式固定(枢轴 P=(H+C+L)/3 的 myquant 经典式),
-/// 唯一自由参数为止损百分比(原 50 点为 AG 专用, 改百分比通用化)。
-/// 日内 UTC 日界强制平仓。
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RBreakerConfig {
-    /// 止损百分比。
-    pub stop_pct: F64Param,
-}
-
-impl RBreakerConfig {
-    /// 展开后的取值列表。
-    #[must_use]
-    pub fn values(&self) -> Vec<f64> {
-        self.stop_pct.values()
+grid_config! {
+    /// R-Breaker 六价位突破+反转。六价公式固定(枢轴 P=(H+C+L)/3 的 myquant 经典式),
+    /// 唯一自由参数为止损百分比(原 50 点为 AG 专用, 改百分比通用化)。
+    /// 日内 UTC 日界强制平仓。
+    pub struct RBreakerConfig;
+    fields {
+        /// 止损百分比。
+        stop_pct: F64Param as f64, key "stop", label "rbreaker.stop_pct", range (0.01, 50.0);
     }
-}
-
-impl RBreakerConfig {
-    /// 语义校验(原集中在 `config.rs::Config::validate` 的 match 中,
-    /// 已下沉到本类型; 分派处只保留一行调用)。
-    /// 语义校验: 范围、步长与网格非空性。
-    ///
-    /// # Errors
-    /// 任一参数越界或展开为空时返回 `AppError`(vta_core::error::AppError)。
-    pub fn validate(&self) -> vta_core::error::Result<()> {
-        self.stop_pct
-            .validate_range("rbreaker.stop_pct", 0.01, 50.0)?;
-        if self.values().is_empty() {
-            return Err(AppError::Msg("rbreaker 参数组合为空".into()));
-        }
-        Ok(())
-    }
+    expand values;
+    code |_text| code::stop_pct(stop_pct);
+    filter true;
+    empty "rbreaker 参数组合为空";
 }
 
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]

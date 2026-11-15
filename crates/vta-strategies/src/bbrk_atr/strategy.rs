@@ -5,7 +5,7 @@ use vector_ta::indicators::bollinger_bands::{
 
 use crate::{ParamOutcome, Signal, Strategy};
 
-use crate::params::{ParamSet, code};
+use crate::params::ParamSet;
 
 use super::config::BbrkAtrConfig;
 
@@ -163,20 +163,7 @@ impl Strategy for BbrkAtrStrategy {
     }
 
     fn param_set(&self, idx: usize) -> ParamSet {
-        let (s, l, a1, a2, t) = self.pairs[idx];
-        ParamSet::builder(code::packed(&[
-            (code::scaled(s, 1000.0), 14),
-            (l as u64, 12),
-            (a1 as u64, 9),
-            (a2 as u64, 9),
-            (code::scaled(t, 1000.0), 13),
-        ]))
-        .kv("sigma", s)
-        .kv("bblen", l)
-        .kv("atr1", a1)
-        .kv("atr2", a2)
-        .kv("atrthr", t)
-        .build()
+        BbrkAtrConfig::param_set(&self.pairs[idx])
     }
 
     fn generate_signals_full(

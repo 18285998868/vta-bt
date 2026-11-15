@@ -1,63 +1,25 @@
-use serde::Deserialize;
-use vta_core::error::AppError;
-
 use crate::config::{F64Param, PeriodParam};
+use crate::grid::grid_config;
+use crate::params::code;
 
-/// HMA方向变种1（试点，单参数）：HMA之上，碰上轨**或**碰下轨都做多；
-/// HMA之下保持原规则（下破做空）。离场统一中线（顺势进场的中线离场
-/// 恰是逆势进场的均值回归目标，故不另设离场以隔离入口变量）。
-/// 网格：σ × bblen × hmalen 全 Single（试点单组）。
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct BbrkHmaV1Config {
-    /// 布林带标准差倍数(通道宽度)。
-    pub sigma: F64Param,
-    /// 布林带周期。
-    pub bblen: PeriodParam,
-    /// HMA regime 周期。
-    pub hmalen: PeriodParam,
-}
-
-impl BbrkHmaV1Config {
-    /// 展开后的三元参数组合。
-    #[must_use]
-    pub fn triples(&self) -> Vec<(f64, usize, usize)> {
-        // 网格规模 = 各维度长度之积(可预知), 一次分配到位(`mem-with-capacity`)。
-        // 乘积的 `saturating_mul` 与封顶逻辑集中在 `grid_prealloc` 一处
-        // (笛卡尔积理论上无界, 普通 `*` 在 debug 下会溢出 panic)。
-        let cap = crate::grid_prealloc(&[
-            self.sigma.values().len(),
-            self.bblen.values().len(),
-            self.hmalen.values().len(),
-        ]);
-        let mut out = Vec::with_capacity(cap);
-        for &s in &self.sigma.values() {
-            for &b in &self.bblen.values() {
-                for &g in &self.hmalen.values() {
-                    out.push((s, b, g));
-                }
-            }
-        }
-        out
+grid_config! {
+    /// HMA方向变种1（试点，单参数）：HMA之上，碰上轨**或**碰下轨都做多；
+    /// HMA之下保持原规则（下破做空）。离场统一中线（顺势进场的中线离场
+    /// 恰是逆势进场的均值回归目标，故不另设离场以隔离入口变量）。
+    /// 网格：σ × bblen × hmalen 全 Single（试点单组）。
+    pub struct BbrkHmaV1Config;
+    fields {
+        /// 布林带标准差倍数(通道宽度)。
+        sigma: F64Param as f64, key "sigma", label "bbrk_hma_v1.sigma", range (0.1, 10.0);
+        /// 布林带周期。
+        bblen: PeriodParam as usize, key "bblen", label "bbrk_hma_v1.bblen", range (2, 2000);
+        /// HMA regime 周期。
+        hmalen: PeriodParam as usize, key "hmalen", label "bbrk_hma_v1.hmalen", range (2, 2000);
     }
-}
-
-impl BbrkHmaV1Config {
-    /// 语义校验(原集中在 `config.rs::Config::validate` 的 match 中,
-    /// 已下沉到本类型; 分派处只保留一行调用)。
-    /// 语义校验: 范围、步长与网格非空性。
-    ///
-    /// # Errors
-    /// 任一参数越界或展开为空时返回 `AppError`(vta_core::error::AppError)。
-    pub fn validate(&self) -> vta_core::error::Result<()> {
-        self.sigma.validate_range("bbrk_hma_v1.sigma", 0.1, 10.0)?;
-        self.bblen.validate_range("bbrk_hma_v1.bblen", 2, 2000)?;
-        self.hmalen.validate_range("bbrk_hma_v1.hmalen", 2, 2000)?;
-        if self.triples().is_empty() {
-            return Err(AppError::Msg("bbrk_hma_v1 参数组合为空".into()));
-        }
-        Ok(())
-    }
+    expand triples;
+    code |text| code::sigma_chain(sigma, &[bblen.to_string(), hmalen.to_string()], text);
+    filter true;
+    empty "bbrk_hma_v1 参数组合为空";
 }
 
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]

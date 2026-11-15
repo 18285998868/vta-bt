@@ -1,68 +1,26 @@
-use serde::Deserialize;
-use vta_core::error::AppError;
-
 use crate::config::{F64Param, PeriodParam};
+use crate::grid::grid_config;
+use crate::params::code;
 
-/// BBRK+%b离场(@2)：进场与 BBRK 相同（BB20σ突破），
-/// 离场改 %b 阈值（多头 %b < exitb 即走，空头 %b > 1−exitb 即走；
-/// %b=(close−lower)/(upper−lower)，上轨=1/下轨=0/中线=0.5）。
-/// exitb=0.5 恒等于中线离场（内置健全性检查，与 BBRK 逐位一致）。
-/// σ × exitb 笛卡尔积。
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct BbrkPctbConfig {
-    /// 布林带标准差倍数(通道宽度)。
-    pub sigma: F64Param,
-    /// BB 周期(缺省 20＝旧串语义: 此前该策略把 BB 周期写死为 20)。
-    #[serde(default = "default_bblen")]
-    pub bblen: PeriodParam,
-    /// 离场缓冲(价格差)。
-    pub exitb: F64Param,
-}
-
-fn default_bblen() -> PeriodParam {
-    PeriodParam::Single(20)
-}
-
-impl BbrkPctbConfig {
-    /// 展开后的参数组合(按策略的笛卡尔积顺序)。
-    #[must_use]
-    pub fn pairs(&self) -> Vec<(f64, usize, f64)> {
-        let ss = self.sigma.values();
-        let bs = self.bblen.values();
-        let es = self.exitb.values();
-        // 网格规模 = 各维度长度之积(可预知), 一次分配到位(`mem-with-capacity`)。
-        // 乘积的 `saturating_mul` 与封顶逻辑集中在 `grid_prealloc` 一处
-        // (笛卡尔积理论上无界, 普通 `*` 在 debug 下会溢出 panic)。
-        let cap = crate::grid_prealloc(&[ss.len(), bs.len(), es.len()]);
-        let mut out = Vec::with_capacity(cap);
-        for &s in &ss {
-            for &b in &bs {
-                for &e in &es {
-                    out.push((s, b, e));
-                }
-            }
-        }
-        out
+grid_config! {
+    /// BBRK+%b离场(@2)：进场与 BBRK 相同（BB20σ突破），
+    /// 离场改 %b 阈值（多头 %b < exitb 即走，空头 %b > 1−exitb 即走；
+    /// %b=(close−lower)/(upper−lower)，上轨=1/下轨=0/中线=0.5）。
+    /// exitb=0.5 恒等于中线离场（内置健全性检查，与 BBRK 逐位一致）。
+    /// σ × exitb 笛卡尔积。
+    pub struct BbrkPctbConfig;
+    fields {
+        /// 布林带标准差倍数(通道宽度)。
+        sigma: F64Param as f64, key "sigma", label "bbrk_pctb.sigma", range (0.1, 10.0);
+        /// BB 周期(缺省 20＝旧串语义: 此前该策略把 BB 周期写死为 20)。
+        bblen: PeriodParam as usize, key "bblen", label "bbrk_pctb.bblen", range (2, 2000), default "crate::config::default_bblen";
+        /// 离场缓冲(价格差)。
+        exitb: F64Param as f64, key "exitb", label "bbrk_pctb.exitb", range (0.0, 1.0);
     }
-}
-
-impl BbrkPctbConfig {
-    /// 语义校验(原集中在 `config.rs::Config::validate` 的 match 中,
-    /// 已下沉到本类型; 分派处只保留一行调用)。
-    /// 语义校验: 范围、步长与网格非空性。
-    ///
-    /// # Errors
-    /// 任一参数越界或展开为空时返回 `AppError`(vta_core::error::AppError)。
-    pub fn validate(&self) -> vta_core::error::Result<()> {
-        self.sigma.validate_range("bbrk_pctb.sigma", 0.1, 10.0)?;
-        self.bblen.validate_range("bbrk_pctb.bblen", 2, 2000)?;
-        self.exitb.validate_range("bbrk_pctb.exitb", 0.0, 1.0)?;
-        if self.pairs().is_empty() {
-            return Err(AppError::Msg("bbrk_pctb 参数组合为空".into()));
-        }
-        Ok(())
-    }
+    expand pairs;
+    code |text| code::sigma_chain(sigma, &[bblen.to_string(), exitb.to_string()], text);
+    filter true;
+    empty "bbrk_pctb 参数组合为空";
 }
 
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]

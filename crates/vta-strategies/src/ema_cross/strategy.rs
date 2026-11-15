@@ -1,7 +1,7 @@
 use crate::{Signal, Strategy};
 use vector_ta::indicators::moving_averages::ema::{EmaInput, EmaParams, ema};
 
-use crate::params::{ParamSet, code};
+use crate::params::ParamSet;
 
 use super::config::EmaCrossConfig;
 
@@ -44,11 +44,7 @@ impl Strategy for EmaCrossStrategy {
     }
 
     fn param_set(&self, idx: usize) -> ParamSet {
-        let (f, s) = self.pairs[idx];
-        ParamSet::builder(code::hi_lo(f, s))
-            .kv("fast", f)
-            .kv("slow", s)
-            .build()
+        EmaCrossConfig::param_set(&self.pairs[idx])
     }
 
     fn generate_signals_full(

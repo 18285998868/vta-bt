@@ -1,6 +1,6 @@
 use crate::{Signal, Strategy, rolling_highest, rolling_lowest, shift_right_1};
 
-use crate::params::{ParamSet, code};
+use crate::params::ParamSet;
 
 use super::config::TurtleConfig;
 
@@ -99,11 +99,7 @@ impl Strategy for TurtleStrategy {
     }
 
     fn param_set(&self, idx: usize) -> ParamSet {
-        let (e, x) = self.pairs[idx];
-        ParamSet::builder(code::hi_lo(e, x))
-            .kv("entry", e)
-            .kv("exit", x)
-            .build()
+        TurtleConfig::param_set(&self.pairs[idx])
     }
 
     fn generate_signals_full(

@@ -1,38 +1,18 @@
-use serde::Deserialize;
-use vta_core::error::AppError;
-
 use crate::config::F64Param;
+use crate::grid::grid_config;
+use crate::params::code;
 
-/// ATR 通道突破(中线 SMA20 + ATR14 固定，变 k)。穿越翻仓。
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ATRBandConfig {
-    /// 阈值倍数。
-    pub mult: F64Param,
-}
-
-impl ATRBandConfig {
-    /// 展开后的取值列表。
-    #[must_use]
-    pub fn values(&self) -> Vec<f64> {
-        self.mult.values()
+grid_config! {
+    /// ATR 通道突破(中线 SMA20 + ATR14 固定，变 k)。穿越翻仓。
+    pub struct ATRBandConfig;
+    fields {
+        /// 阈值倍数。
+        mult: F64Param as f64, key "k", label "atrband.mult", range (0.1, 20.0);
     }
-}
-
-impl ATRBandConfig {
-    /// 语义校验(原集中在 `config.rs::Config::validate` 的 match 中,
-    /// 已下沉到本类型; 分派处只保留一行调用)。
-    /// 语义校验: 范围、步长与网格非空性。
-    ///
-    /// # Errors
-    /// 任一参数越界或展开为空时返回 `AppError`(vta_core::error::AppError)。
-    pub fn validate(&self) -> vta_core::error::Result<()> {
-        self.mult.validate_range("atrband.mult", 0.1, 20.0)?;
-        if self.values().is_empty() {
-            return Err(AppError::Msg("atrband 参数组合为空".into()));
-        }
-        Ok(())
-    }
+    expand values;
+    code |_text| code::k_mult(mult);
+    filter true;
+    empty "atrband 参数组合为空";
 }
 
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]

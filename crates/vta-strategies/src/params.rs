@@ -59,6 +59,11 @@ impl ParamSet {
         }
     }
 
+    /// 直接由三部分拼装; 只供声明式网格宏在算完编码后使用。
+    pub(crate) fn from_parts(text: String, pairs: Vec<(String, String)>, code: u64) -> ParamSet {
+        ParamSet { text, pairs, code }
+    }
+
     /// 冻结的 `params` 列文本。
     #[must_use]
     pub fn text(&self) -> &str {
@@ -153,6 +158,13 @@ impl ParamSetBuilder {
     /// 完成构造。
     #[must_use]
     pub fn build(self) -> ParamSet {
+        let code = self.code;
+        let (text, pairs) = self.into_parts();
+        ParamSet { text, pairs, code }
+    }
+
+    /// 拆出最终文本与键值, 供声明式网格在计算编码前取文本。
+    pub(crate) fn into_parts(self) -> (String, Vec<(String, String)>) {
         let text = self.text.unwrap_or_else(|| {
             let mut out = String::new();
             for (i, (k, v)) in self.pairs.iter().enumerate() {
@@ -165,11 +177,7 @@ impl ParamSetBuilder {
             }
             out
         });
-        ParamSet {
-            text,
-            pairs: self.pairs,
-            code: self.code,
-        }
+        (text, self.pairs)
     }
 }
 

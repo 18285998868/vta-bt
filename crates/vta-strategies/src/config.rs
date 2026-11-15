@@ -229,6 +229,31 @@ impl PeriodParam {
 /// 不封顶会把内存吃光。
 pub const MAX_PERIOD_RANGE: usize = 100_000;
 
+/// 布林带周期的缺省值(20 根): 声明式网格的 `#[serde(default = ...)]` 入口。
+pub(crate) fn default_bblen() -> PeriodParam {
+    PeriodParam::Single(20)
+}
+
+/// ADX 周期的缺省值(14 根)。
+pub(crate) fn default_adxlen() -> PeriodParam {
+    PeriodParam::Single(14)
+}
+
+/// ATR 周期的缺省值(14 根)。
+pub(crate) fn default_atrlen() -> PeriodParam {
+    PeriodParam::Single(14)
+}
+
+/// 快 ATR 周期的缺省值(5 根)。
+pub(crate) fn default_atr1() -> PeriodParam {
+    PeriodParam::Single(5)
+}
+
+/// 慢 ATR 周期的缺省值(20 根)。
+pub(crate) fn default_atr2() -> PeriodParam {
+    PeriodParam::Single(20)
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 /// 范围参数 `{ start, end, step }`。

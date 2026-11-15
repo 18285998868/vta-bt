@@ -2,7 +2,7 @@ use vector_ta::indicators::rsi::{RsiInput, RsiParams, rsi};
 
 use crate::{Signal, Strategy};
 
-use crate::params::{ParamSet, code};
+use crate::params::ParamSet;
 
 use super::config::RSI2Config;
 
@@ -64,11 +64,7 @@ impl Strategy for RSI2Strategy {
     }
 
     fn param_set(&self, idx: usize) -> ParamSet {
-        let (b, s) = self.pairs[idx];
-        ParamSet::builder(code::buy_sell(b, s))
-            .kv("buy", b)
-            .kv("sell", s)
-            .build()
+        RSI2Config::param_set(&self.pairs[idx])
     }
 
     fn generate_signals_full(

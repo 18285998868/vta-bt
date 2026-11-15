@@ -8,7 +8,7 @@ use vector_ta::indicators::moving_averages::sma::{SmaInput, SmaParams, sma};
 
 use crate::{ParamOutcome, Signal, Strategy, rolling_highest, rolling_lowest};
 
-use crate::params::{ParamSet, code};
+use crate::params::ParamSet;
 
 use super::config::BbrkTtmFireConfig;
 
@@ -197,14 +197,7 @@ impl Strategy for BbrkTtmFireStrategy {
     }
 
     fn param_set(&self, idx: usize) -> ParamSet {
-        let (s, b, t) = self.pairs[idx];
-        let text = format!("sigma={s},bblen={b},kc={t}");
-        ParamSet::builder(code::sigma_chain(s, &[b.to_string(), t.to_string()], &text))
-            .text(text)
-            .kv("sigma", s)
-            .kv("bblen", b)
-            .kv("kc", t)
-            .build()
+        BbrkTtmFireConfig::param_set(&self.pairs[idx])
     }
 
     fn generate_signals_full(

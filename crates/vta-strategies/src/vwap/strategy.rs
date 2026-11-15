@@ -2,7 +2,7 @@ use vector_ta::indicators::atr::{AtrInput, AtrParams, atr};
 
 use crate::{Signal, Strategy, utc_day_index};
 
-use crate::params::{ParamSet, code};
+use crate::params::ParamSet;
 
 use super::config::VwapConfig;
 
@@ -113,10 +113,7 @@ impl Strategy for VwapStrategy {
     }
 
     fn param_set(&self, idx: usize) -> ParamSet {
-        let thresh = self.threshs[idx];
-        ParamSet::builder(code::packed(&[(code::scaled(thresh, 1000.0), 16)]))
-            .kv("thresh", thresh)
-            .build()
+        VwapConfig::param_set(&self.threshs[idx])
     }
 
     fn generate_signals_full(

@@ -1,69 +1,27 @@
-use serde::Deserialize;
-use vta_core::error::AppError;
-
 use crate::config::{F64Param, PeriodParam};
+use crate::grid::grid_config;
+use crate::params::code;
 
-/// BBRK+K线强度过滤（入场验证#1）：进场仍 BB20σ突破，叠加当根K线
-/// 实体占比 `|close−open|/(high−low) >= thr` 且方向一致
-/// （多头要求 close>open，空头 close<open）。
-/// 与已证伪的方向过滤（SMA_CD，恒等变换）同源可比：若保留率>95%
-/// 即第三次恒等陷阱，直接判死。σ × thr 笛卡尔积，thr 取 {0.3,0.5,0.7}。
-/// 离场保持中线（隔离进场效应）。
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct BbrkStrConfig {
-    /// 布林带标准差倍数(通道宽度)。
-    pub sigma: F64Param,
-    /// BB 周期(缺省 20＝旧串语义: 此前该策略把 BB 周期写死为 20)。
-    #[serde(default = "default_bblen")]
-    pub bblen: PeriodParam,
-    /// K 线实体比例阈值。
-    pub body: F64Param,
-}
-
-fn default_bblen() -> PeriodParam {
-    PeriodParam::Single(20)
-}
-
-impl BbrkStrConfig {
-    /// 展开后的参数组合(按策略的笛卡尔积顺序)。
-    #[must_use]
-    pub fn pairs(&self) -> Vec<(f64, usize, f64)> {
-        let ss = self.sigma.values();
-        let bs = self.bblen.values();
-        let ts = self.body.values();
-        // 网格规模 = 各维度长度之积(可预知), 一次分配到位(`mem-with-capacity`)。
-        // 乘积的 `saturating_mul` 与封顶逻辑集中在 `grid_prealloc` 一处
-        // (笛卡尔积理论上无界, 普通 `*` 在 debug 下会溢出 panic)。
-        let cap = crate::grid_prealloc(&[ss.len(), bs.len(), ts.len()]);
-        let mut out = Vec::with_capacity(cap);
-        for &s in &ss {
-            for &b in &bs {
-                for &t in &ts {
-                    out.push((s, b, t));
-                }
-            }
-        }
-        out
+grid_config! {
+    /// BBRK+K线强度过滤（入场验证#1）：进场仍 BB20σ突破，叠加当根K线
+    /// 实体占比 `|close−open|/(high−low) >= thr` 且方向一致
+    /// （多头要求 close>open，空头 close<open）。
+    /// 与已证伪的方向过滤（SMA_CD，恒等变换）同源可比：若保留率>95%
+    /// 即第三次恒等陷阱，直接判死。σ × thr 笛卡尔积，thr 取 {0.3,0.5,0.7}。
+    /// 离场保持中线（隔离进场效应）。
+    pub struct BbrkStrConfig;
+    fields {
+        /// 布林带标准差倍数(通道宽度)。
+        sigma: F64Param as f64, key "sigma", label "bbrk_str.sigma", range (0.1, 10.0);
+        /// BB 周期(缺省 20＝旧串语义: 此前该策略把 BB 周期写死为 20)。
+        bblen: PeriodParam as usize, key "bblen", label "bbrk_str.bblen", range (2, 2000), default "crate::config::default_bblen";
+        /// K 线实体比例阈值。
+        body: F64Param as f64, key "body", label "bbrk_str.body", range (0.0, 1.0);
     }
-}
-
-impl BbrkStrConfig {
-    /// 语义校验(原集中在 `config.rs::Config::validate` 的 match 中,
-    /// 已下沉到本类型; 分派处只保留一行调用)。
-    /// 语义校验: 范围、步长与网格非空性。
-    ///
-    /// # Errors
-    /// 任一参数越界或展开为空时返回 `AppError`(vta_core::error::AppError)。
-    pub fn validate(&self) -> vta_core::error::Result<()> {
-        self.sigma.validate_range("bbrk_str.sigma", 0.1, 10.0)?;
-        self.bblen.validate_range("bbrk_str.bblen", 2, 2000)?;
-        self.body.validate_range("bbrk_str.body", 0.0, 1.0)?;
-        if self.pairs().is_empty() {
-            return Err(AppError::Msg("bbrk_str 参数组合为空".into()));
-        }
-        Ok(())
-    }
+    expand pairs;
+    code |text| code::sigma_chain(sigma, &[bblen.to_string(), body.to_string()], text);
+    filter true;
+    empty "bbrk_str 参数组合为空";
 }
 
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]

@@ -4,7 +4,7 @@ use vector_ta::indicators::bollinger_bands::{
 
 use crate::{Signal, Strategy};
 
-use crate::params::{ParamSet, code};
+use crate::params::ParamSet;
 
 use super::config::BbrkVolEmaConfig;
 
@@ -165,18 +165,7 @@ impl Strategy for BbrkVolEmaStrategy {
     }
 
     fn param_set(&self, idx: usize) -> ParamSet {
-        let (s, b, n, m) = self.pairs[idx];
-        ParamSet::builder(code::packed(&[
-            (code::scaled(s, 1000.0), 14),
-            (b as u64, 12),
-            (n as u64, 9),
-            (code::scaled(m, 1000.0), 15),
-        ]))
-        .kv("sigma", s)
-        .kv("bblen", b)
-        .kv("voln", n)
-        .kv("volmult", m)
-        .build()
+        BbrkVolEmaConfig::param_set(&self.pairs[idx])
     }
 
     fn generate_signals_full(

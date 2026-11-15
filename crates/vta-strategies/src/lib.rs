@@ -8,6 +8,7 @@
 /// 由 `StrategyConfig` 构建策略实例, 并做参数网格唯一性自检。
 pub mod build;
 pub mod config;
+mod grid;
 pub mod params;
 mod registry;
 /// 跨策略共用的信号类型、工具函数与周期年化表(不对外公开)。

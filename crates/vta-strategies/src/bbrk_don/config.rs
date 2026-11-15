@@ -1,69 +1,27 @@
-use serde::Deserialize;
-use vta_core::error::AppError;
-
 use crate::config::{F64Param, PeriodParam};
+use crate::grid::grid_config;
+use crate::params::code;
 
-/// BBRK+Donchian极值离场(@2)：进场与 BBRK 相同（BB突破，纯突破无方向门），
-/// 离场改过去 N 根极值（多头 close 跌破近N根最低low即走，空头镜像，
-/// 均不含当根，Donchian 经典口径）。中线不再离场。
-/// BB周期bblen（缺省20＝旧串语义）。
-/// σ × len × N 笛卡尔积；N 取整使用。
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct BbrkDonConfig {
-    /// 布林带标准差倍数(通道宽度)。
-    pub sigma: F64Param,
-    /// BB周期（缺省20＝旧串语义）。
-    #[serde(default = "default_bblen")]
-    /// 布林带周期。
-    pub bblen: PeriodParam,
-    /// 离场计数(bar 数)。
-    pub exitn: PeriodParam,
-}
-
-fn default_bblen() -> PeriodParam {
-    PeriodParam::Single(20)
-}
-
-impl BbrkDonConfig {
-    /// 展开后的参数组合(按策略的笛卡尔积顺序)。
-    #[must_use]
-    pub fn pairs(&self) -> Vec<(f64, usize, usize)> {
-        let ss = self.sigma.values();
-        let bs = self.bblen.values();
-        let ns = self.exitn.values();
-        // 网格规模 = 各维度长度之积(可预知), 一次分配到位(`mem-with-capacity`)。
-        // 乘积的 `saturating_mul` 与封顶逻辑集中在 `grid_prealloc` 一处
-        // (笛卡尔积理论上无界, 普通 `*` 在 debug 下会溢出 panic)。
-        let cap = crate::grid_prealloc(&[ss.len(), bs.len(), ns.len()]);
-        let mut out = Vec::with_capacity(cap);
-        for &s in &ss {
-            for &b in &bs {
-                for &n in &ns {
-                    out.push((s, b, n));
-                }
-            }
-        }
-        out
+grid_config! {
+    /// BBRK+Donchian极值离场(@2)：进场与 BBRK 相同（BB突破，纯突破无方向门），
+    /// 离场改过去 N 根极值（多头 close 跌破近N根最低low即走，空头镜像，
+    /// 均不含当根，Donchian 经典口径）。中线不再离场。
+    /// BB周期bblen（缺省20＝旧串语义）。
+    /// σ × len × N 笛卡尔积；N 取整使用。
+    pub struct BbrkDonConfig;
+    fields {
+        /// 布林带标准差倍数(通道宽度)。
+        sigma: F64Param as f64, key "sigma", label "bbrk_don.sigma", range (0.1, 10.0);
+        /// BB周期（缺省20＝旧串语义）。
+        /// 布林带周期。
+        bblen: PeriodParam as usize, key "bblen", label "bbrk_don.bblen", range (2, 2000), default "crate::config::default_bblen";
+        /// 离场计数(bar 数)。
+        exitn: PeriodParam as usize, key "exitn", label "bbrk_don.exitn", range (2, 100);
     }
-}
-
-impl BbrkDonConfig {
-    /// 语义校验(原集中在 `config.rs::Config::validate` 的 match 中,
-    /// 已下沉到本类型; 分派处只保留一行调用)。
-    /// 语义校验: 范围、步长与网格非空性。
-    ///
-    /// # Errors
-    /// 任一参数越界或展开为空时返回 `AppError`(vta_core::error::AppError)。
-    pub fn validate(&self) -> vta_core::error::Result<()> {
-        self.sigma.validate_range("bbrk_don.sigma", 0.1, 10.0)?;
-        self.bblen.validate_range("bbrk_don.bblen", 2, 2000)?;
-        self.exitn.validate_range("bbrk_don.exitn", 2, 100)?;
-        if self.pairs().is_empty() {
-            return Err(AppError::Msg("bbrk_don 参数组合为空".into()));
-        }
-        Ok(())
-    }
+    expand pairs;
+    code |text| code::sigma_chain(sigma, &[bblen.to_string(), exitn.to_string()], text);
+    filter true;
+    empty "bbrk_don 参数组合为空";
 }
 
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]

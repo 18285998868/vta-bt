@@ -4,7 +4,7 @@ use vector_ta::indicators::bollinger_bands::{
 
 use crate::{Signal, Strategy};
 
-use crate::params::{ParamSet, code};
+use crate::params::ParamSet;
 
 use super::config::BbrkBbConfig;
 
@@ -93,16 +93,7 @@ impl Strategy for BbrkBbStrategy {
     }
 
     fn param_set(&self, idx: usize) -> ParamSet {
-        let (m, l, s) = &self.triples[idx];
-        ParamSet::builder(code::ma_bb(
-            code::name_index(&crate::bbrk_bb::BB_MA_NAMES, m),
-            *l,
-            Some(*s),
-        ))
-        .kv("ma", m)
-        .kv("len", l)
-        .kv("sigma", s)
-        .build()
+        BbrkBbConfig::param_set(&self.triples[idx])
     }
 
     fn generate_signals_full(

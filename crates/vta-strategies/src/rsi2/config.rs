@@ -1,54 +1,21 @@
-use serde::Deserialize;
-use vta_core::error::AppError;
-
 use crate::config::F64Param;
+use crate::grid::grid_config;
+use crate::params::code;
 
-/// RSI(2) Connors 短线反转。buy/sell 笛卡尔积(经典 (10,90)/(5,95) 及交叉对，
-/// 预注册在内)。离场：多头 RSI>50 / 空头 RSI<50(均值回归过半，Step2 锁定)。
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RSI2Config {
-    /// 超卖阈值(RSI 量纲)。
-    pub buy: F64Param,
-    /// 超买阈值(RSI 量纲)。
-    pub sell: F64Param,
-}
-
-impl RSI2Config {
-    /// 展开后的参数组合(按策略的笛卡尔积顺序)。
-    #[must_use]
-    pub fn pairs(&self) -> Vec<(f64, f64)> {
-        let bs = self.buy.values();
-        let ss = self.sell.values();
-        // 网格规模 = 各维度长度之积(可预知), 一次分配到位(`mem-with-capacity`)。
-        // 乘积的 `saturating_mul` 与封顶逻辑集中在 `grid_prealloc` 一处
-        // (笛卡尔积理论上无界, 普通 `*` 在 debug 下会溢出 panic)。
-        let cap = crate::grid_prealloc(&[bs.len(), ss.len()]);
-        let mut out = Vec::with_capacity(cap);
-        for &b in &bs {
-            for &s in &ss {
-                out.push((b, s));
-            }
-        }
-        out
+grid_config! {
+    /// RSI(2) Connors 短线反转。buy/sell 笛卡尔积(经典 (10,90)/(5,95) 及交叉对，
+    /// 预注册在内)。离场：多头 RSI>50 / 空头 RSI<50(均值回归过半，Step2 锁定)。
+    pub struct RSI2Config;
+    fields {
+        /// 超卖阈值(RSI 量纲)。
+        buy: F64Param as f64, key "buy", label "rsi2.buy", range (0.0, 100.0);
+        /// 超买阈值(RSI 量纲)。
+        sell: F64Param as f64, key "sell", label "rsi2.sell", range (0.0, 100.0);
     }
-}
-
-impl RSI2Config {
-    /// 语义校验(原集中在 `config.rs::Config::validate` 的 match 中,
-    /// 已下沉到本类型; 分派处只保留一行调用)。
-    /// 语义校验: 范围、步长与网格非空性。
-    ///
-    /// # Errors
-    /// 任一参数越界或展开为空时返回 `AppError`(vta_core::error::AppError)。
-    pub fn validate(&self) -> vta_core::error::Result<()> {
-        self.buy.validate_range("rsi2.buy", 0.0, 100.0)?;
-        self.sell.validate_range("rsi2.sell", 0.0, 100.0)?;
-        if self.pairs().is_empty() {
-            return Err(AppError::Msg("rsi2 参数组合为空".into()));
-        }
-        Ok(())
-    }
+    expand pairs;
+    code |_text| code::buy_sell(buy, sell);
+    filter true;
+    empty "rsi2 参数组合为空";
 }
 
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]

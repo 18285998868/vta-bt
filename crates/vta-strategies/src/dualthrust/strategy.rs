@@ -1,6 +1,6 @@
 use crate::{DayBar, Signal, Strategy, aggregate_days};
 
-use crate::params::{ParamSet, code};
+use crate::params::ParamSet;
 
 use super::config::DualThrustConfig;
 
@@ -110,11 +110,7 @@ impl Strategy for DualThrustStrategy {
     }
 
     fn param_set(&self, idx: usize) -> ParamSet {
-        let (n, k) = self.pairs[idx];
-        ParamSet::builder(code::n_second(n, k))
-            .kv("n", n)
-            .kv("k", k)
-            .build()
+        DualThrustConfig::param_set(&self.pairs[idx])
     }
 
     fn generate_signals_full(
