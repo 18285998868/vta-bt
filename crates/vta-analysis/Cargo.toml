@@ -1,0 +1,23 @@
+[package]
+name = "vta-analysis"
+description = "vta 报告的只读分析层: 对账、描述性统计、回撤、交易结构、PSR/DSR/MinTRL 与平稳 bootstrap"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme = false
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+vta-core = { version = "0.1.0", path = "../vta-core" }
+vta-report = { version = "0.1.0", path = "../vta-report" }
+vta-pbo = { version = "0.1.0", path = "../vta-pbo" }
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rand = { workspace = true }
+libm = { workspace = true }
+tracing = { workspace = true }

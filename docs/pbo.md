@@ -16,7 +16,7 @@
 cargo run --release -- --pbo /path/to/reports_XXX
 ```
 
-- 与 `-c` 二选一；T×N 常驻内存，1m×500 级约 24GB——PBO 建议 TF≥30m 或小 N。
+- 与 `-c` / `--analyze` 三选一；T×N 常驻内存，1m×500 级约 24GB——PBO 建议 TF≥30m 或小 N。
 - **只读 `detail/manifest.toml` 索引列出的 fixed 曲线，不再扫目录**；索引缺失/过期
   会直接报错要求重跑，避免上一轮遗留或参数已删除的曲线静默参与 CSCV。
 - 只使用 `status == ok` 的曲线；`no_signals` / `no_trades` / `bankrupt` 显式筛掉并

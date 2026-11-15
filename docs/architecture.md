@@ -41,10 +41,15 @@ crates/
     src/lib.rs         # PboResult / pick_s / block_counts
     src/cscv.rs        # CSCV 核心
     src/report.rs      # --pbo 报告装配
+  vta-analysis/        # 只读报告分析: 对账 + 显著性
+    src/lib.rs         # analyze() / analyze_bundle() / write_report()
+    src/model.rs       # analysis.json schema
+    src/analyze.rs     # 分组、排名、对账、PSR/DSR/BH、PBO
+    src/render.rs      # Markdown / JSON / CSV
   vta-cli/             # 装配层(包名仍是 vta, 二进制名 vta)
-    src/main.rs        # 入口: cli::parse → -c 回测 / --pbo 实算
+    src/main.rs        # 入口: cli::parse → -c 回测 / --pbo 实算 / --analyze 只读分析
     src/lib.rs         # 只做导出: app / cli / config / data
-    src/cli.rs         # clap 4 derive: --config/-c 与 --pbo 互斥; --no-cache 逃生门
+    src/cli.rs         # clap 4 derive: -c / --pbo / --analyze 三选一; --no-cache 逃生门
     src/config/        # 原始 TOML → 校验 → 类型化配置
       load.rs / data.rs / backtest.rs / output.rs
     src/data.rs        # DataSection::for_pair → reader 的 DataConfig; KlineColumns
@@ -63,7 +68,7 @@ tests / examples 跟随所属 crate:
 ## 逻辑编排
 
 ```text
-启动 -> main.rs: cli::parse() 解析 --config/-c(或 --pbo <reports_dir>, 二选一)
+启动 -> main.rs: cli::parse() 解析 --config/-c(或 --pbo <reports_dir>, 或 --analyze <report>, 三选一)
 v
 加载配置 -> config::load_config: TOML 反序列化 → Config(deny_unknown_fields) + validate
 v
@@ -96,8 +101,8 @@ detail 模式 -> write_detail_index(detail/manifest.toml)                # 只�
 
 ### main.rs / cli.rs
 
-- `main`：tracing 初始化（`RUST_LOG`，缺省 info）→ `cli::parse()` → `(config, pbo)` 二选一：`-c` 走回测，`--pbo <reports_dir>` 走 CSCV 实算，否则 `bail`。
-- `cli`：`--config/-c` 与 `--pbo` 互斥必填其一；`--no-cache` 忽略组合缓存。
+- `main`：tracing 初始化（`RUST_LOG`，缺省 info）→ `cli::parse()` → `(config, pbo, analyze)` 三选一：`-c` 走回测，`--pbo <reports_dir>` 走 CSCV 实算，`--analyze <report>` 走只读分析，否则 `bail`。
+- `cli`：`--config/-c`、`--pbo`、`--analyze` 互斥必填其一；分析参数都带 `requires = "analyze"`；`--no-cache` 忽略组合缓存。
 
 ### 加载配置与校验
 
@@ -134,8 +139,8 @@ detail 模式 -> write_detail_index(detail/manifest.toml)                # 只�
 
 ## 完整执行逻辑
 
-- `vta-cli/src/main.rs`：入口；tracing 初始化 → `cli::parse()` → `-c` 回测 / `--pbo` 实算。
-- `vta-cli/src/cli.rs`：clap 4 derive，`--config/-c` 与 `--pbo` 二选一。
+- `vta-cli/src/main.rs`：入口；tracing 初始化 → `cli::parse()` → `-c` 回测 / `--pbo` 实算 / `--analyze` 只读分析。
+- `vta-cli/src/cli.rs`：clap 4 derive，`--config/-c`、`--pbo`、`--analyze` 三选一。
 - `vta-cli/src/config/load.rs`：`load_config` 读文件 → `toml` 解析 → `validate`。
 - `vta-cli/src/config/data.rs`：`for_pair` 多值降单值，供 `DataConfig::load` 使用。
 - `vta-core/src/error.rs`：`AppError`（thiserror）统一错误类型。
@@ -145,3 +150,4 @@ detail 模式 -> write_detail_index(detail/manifest.toml)                # 只�
 - `vta-report/src/parquet/`：`temps/` 单组合写 + `detail/` 明细写 + `read` 校验 + `merge`。
 - `vta-strategies/src/build.rs`：按 `[[strategy]]` 展开参数实例，并把该条的 `stop` 一并带入作业。
 - `vta-pbo/src/`：读 `detail/manifest.toml` 索引 → 筛 `status == ok` / 同时间网格 → 分组 CSCV → 报告。
+- `vta-analysis/src/`：读报告 → 对账 → 分组/排名 → PSR/DSR/MinTRL/bootstrap/BH → Markdown/JSON/CSV。

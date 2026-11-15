@@ -143,44 +143,23 @@ pub fn supersmoother_3_pole(close: &[f64], period: usize) -> Option<Vec<f64>> {
     .map(|out| out.values)
 }
 
-/// 已知周期 → 年化 bar 数。**周期表与 [`bars_per_year`] 的唯一来源**。
-///
-/// 为什么要有这张表: `bars_per_year` 与 `is_known_timeframe` 原先是**两份手工
-/// 同步的清单**(`match` 表 vs `matches!` 表), 改一处忘另一处就会出现
-/// "认识的周期却按 365 年化" 的静默错误 —— Sharpe 错 100~1440 倍且无提示。
-/// 现在两张表都由本表派生。
-const TIMEFRAME_BARS_PER_YEAR: &[(&str, f64)] = &[
-    ("1m", 525_600.0),
-    ("3m", 175_200.0),
-    ("5m", 105_120.0),
-    ("15m", 35_040.0),
-    ("30m", 17_520.0),
-    ("1h", 8_760.0),
-    ("2h", 4_380.0),
-    ("4h", 2_190.0),
-    ("6h", 1_460.0),
-    ("8h", 1_095.0),
-    ("12h", 730.0),
-    ("1d", 365.0),
-    ("1w", 52.0),
-];
-
 /// 年化 bar 数。用于把逐 bar 收益换算成年化夏普/波动率。
 ///
-/// **未列出的周期会静默落到 365, 造成年化结果成倍错误**, 故调用方必须在配置校验阶段
-/// 用 [`is_known_timeframe`] 拦下未知周期。
+/// 周期表的唯一来源已下沉到 [`vta_core::timeframe`], 因为分析层与 PBO 也需要
+/// 同一口径, 而它们不能反向依赖策略实现。包装函数保留是为了不破坏既有
+/// 调用点与 `vta-strategies` 的公开 API。
+///
+/// 未列出的周期会静默落到 365, 故调用方必须在配置校验阶段用
+/// [`is_known_timeframe`] 拦下未知周期。
 #[must_use]
 pub fn bars_per_year(tf: &str) -> f64 {
-    TIMEFRAME_BARS_PER_YEAR
-        .iter()
-        .find(|(name, _)| *name == tf)
-        .map_or(365.0, |(_, bpy)| *bpy)
+    vta_core::timeframe::bars_per_year(tf)
 }
 
 /// `bars_per_year` 是否认识该周期。配置校验用, 避免未知周期静默按 1d 年化。
 #[must_use]
 pub fn is_known_timeframe(tf: &str) -> bool {
-    TIMEFRAME_BARS_PER_YEAR.iter().any(|(name, _)| *name == tf)
+    vta_core::timeframe::is_known_timeframe(tf)
 }
 
 /// 通道右移一根(经典 Donchian/Aberration 口径: 用**前 N 根**的极值与

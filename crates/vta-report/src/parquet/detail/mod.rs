@@ -9,7 +9,8 @@ pub use manifest::{
     write_combo_detail_manifest, write_detail_index,
 };
 pub use read::{
-    EquityCurve, FixedCurve, col_by_name, read_equity_curves, read_fixed_curves,
-    read_fixed_curves_from_manifest,
+    DetailBundle, EquityCurve, FixedCurve, TradeRecord, TradeSet, col_by_name, read_detail_bundle,
+    read_equity_curves, read_equity_curves_from_manifest, read_fixed_curves,
+    read_fixed_curves_from_manifest, read_trades,
 };
 pub use write::write_detail_parquet;

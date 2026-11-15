@@ -1,6 +1,7 @@
-# 虚拟 workspace: 5 个 crate 严格分层, 依赖方向单向向下。
+# 虚拟 workspace: 6 个 crate 严格分层, 依赖方向单向向下。
 #
-#   vta-cli        → {vta-core, vta-strategies, vta-report, vta-pbo}
+#   vta-cli        → {vta-core, vta-strategies, vta-report, vta-pbo, vta-analysis}
+#   vta-analysis   → {vta-core, vta-report, vta-pbo}
 #   vta-pbo        → {vta-core, vta-report, vta-strategies}
 #   vta-strategies → vta-core
 #   vta-report     → vta-core (dev-dependency: vta-strategies, 复用参数编码测试)
@@ -45,6 +46,9 @@ arrow = "60"
 parquet = { version = "60", features = ["arrow"] }
 clap = { version = "4", features = ["derive"] }
 thiserror = "2"
+# 分析层的统计推断: 固定种子的平稳 bootstrap 与高精度 erf。
+rand = "0.9"
+libm = "0.2"
 # 货币金额用定点十进制(不用 f64): 见 `vta-core/src/money.rs` 的口径说明。
 rust_decimal = "1"
 tracing = { version = "0.1", features = ["log"] }

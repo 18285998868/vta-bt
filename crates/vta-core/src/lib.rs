@@ -12,6 +12,7 @@
 //! | [`engine`] | 成交模拟与全部指标 |
 //! | [`signal`] | 策略信号 [`Signal`] |
 //! | [`bars`] | 策略可见的行情视图 [`Bars`] |
+//! | [`timeframe`] | 周期 → 年化 bar 数(引擎/分析/PBO 共用) |
 //! | [`types`] | 报告行与运行状态 |
 //!
 //! ## 源码内容哈希
@@ -30,6 +31,8 @@ pub mod error;
 pub mod money;
 /// 策略信号: 策略与引擎之间的唯一方向契约。
 pub mod signal;
+/// 周期与年化 bar 数: 引擎、分析层与 PBO 的共同口径。
+pub mod timeframe;
 /// 报告行与运行状态的公开类型。
 pub mod types;
 

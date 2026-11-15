@@ -20,6 +20,7 @@ vta-core = { version = "0.1.0", path = "../vta-core" }
 vta-strategies = { version = "0.1.0", path = "../vta-strategies" }
 vta-report = { version = "0.1.0", path = "../vta-report" }
 vta-pbo = { version = "0.1.0", path = "../vta-pbo" }
+vta-analysis = { version = "0.1.0", path = "../vta-analysis" }
 binance-core = { workspace = true }
 dukascopy-core = { workspace = true }
 rayon = { workspace = true }

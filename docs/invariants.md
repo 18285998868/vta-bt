@@ -1,4 +1,4 @@
-# 关键设计约束（改动前必读，19 条）
+# 关键设计约束（改动前必读，20 条）
 
 这些不是风格偏好，而是踩过坑之后定下来的硬约束。违反它们会**静默产出错误结果**。
 
@@ -339,3 +339,8 @@ MFE/MAE 的取值区间与旧口径一致；变化的是**曲线时点**与由�
 回归门禁：`golden_signals` 与 `./scripts/golden_run.sh --check` 必须零 diff；
 `grid.rs` 自带单元测试锁定展开顺序、默认值、文本/JSON/编码同源与空网格拒绝。
 
+### 20. `combo` 不是曲线身份
+
+`detail/manifest.toml` 的 `combo` 是"一轮运行"的缓存 id, 同一轮的所有参数曲线共享它。曲线身份必须用 `(combo, params)` 或 `(symbol, timeframe, strategy, params)`。
+
+历史实现按 `combo` 去重和索引 detail, 导致同一轮 52 条曲线只读进 4 条, 且 equity/trades 被最后一条参数静默覆盖。读取侧按文件名去重, 曲线/成交按 `(combo, params)` 配对, `params` 不一致时直接报错; 新增 detail 消费者不得再以 `combo` 作为唯一键。

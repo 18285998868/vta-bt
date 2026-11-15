@@ -1845,10 +1845,26 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "vta-analysis",
  "vta-core",
  "vta-pbo",
  "vta-report",
  "vta-strategies",
+]
+
+[[package]]
+name = "vta-analysis"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "libm",
+ "rand 0.9.5",
+ "serde",
+ "serde_json",
+ "tracing",
+ "vta-core",
+ "vta-pbo",
+ "vta-report",
 ]
 
 [[package]]

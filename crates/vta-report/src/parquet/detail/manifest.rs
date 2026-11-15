@@ -12,15 +12,15 @@ pub(super) const DETAIL_MANIFEST_VERSION: u32 = 2;
 /// 单个组合的 detail 侧车清单: 记录该组合写出的全部文件及大小。
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(super) struct ComboDetailManifest {
-    version: u32,
-    combo: String,
-    files: Vec<DetailArtifact>,
+    pub(super) version: u32,
+    pub(super) combo: String,
+    pub(super) files: Vec<DetailArtifact>,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(super) struct DetailArtifact {
-    name: String,
-    bytes: u64,
+    pub(super) name: String,
+    pub(super) bytes: u64,
 }
 
 /// `detail/manifest.toml`: 只列**当前一轮**产出且仍有效的 fixed 曲线。

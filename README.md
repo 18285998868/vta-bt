@@ -8,12 +8,14 @@
 > - 并行：rayon（单策略的参数索引按 `(0..n).into_par_iter` 并行，信号生成与回测同为一遍）。
 > - 去重执行：`overwrite = false` 且 `temps/{sym}_{tf}_{stg}_{参数指纹}.parquet` 可读即跳过（仍并入合并）。
 > - 另有 `--pbo` 模式：按（币，周期，策略）分组实算 CSCV（Bailey et al. 2016）。
+> - 另有 `--analyze` 模式：只读报告，输出对账、回撤、交易结构、PSR/DSR/MinTRL 与平稳 bootstrap；口径见 `docs/analysis.md`。
 
 ## 快速开始
 
 ```bash
 cargo run -p vta --release -- -c config/00.smoke.toml   # 冒烟
 cargo run -p vta --release -- --pbo reports            # PBO 实算
+cargo run -p vta --release -- --analyze reports/golden/current --out /tmp/analysis  # 只读分析
 ```
 
 最小配置（字段含义见 `docs/configuration.md`）：
@@ -46,9 +48,9 @@ period = { start = 5, end = 100, step = 5 } # 必填，参数范围；单值可�
 
 | 路径 | 内容 |
 |---|---|
-| `src/` | 回测主 crate，模块布局见 `docs/architecture.md` |
-| `tests/` | 集成测试与文档一致性测试 |
-| `docs/` | 架构、配置、不变量、PBO 与审查记录 |
+| `crates/` | workspace 成员：core / strategies / report / pbo / analysis / cli，布局见 `docs/architecture.md` |
+| `crates/vta-cli/tests/` | 集成测试与文档一致性测试 |
+| `docs/` | 架构、配置、不变量、PBO、分析与审查记录 |
 | `tradingview/` | TradingView 风格本地研究终端（独立 workspace），见 `tradingview/README.md` |
 
 `tradingview/` 自带 `Cargo.toml` / `Cargo.lock`，与根 crate 互不参与对方的 workspace；在各自目录内执行 `cargo` 命令。
@@ -73,6 +75,7 @@ period = { start = 5, end = 100, step = 5 } # 必填，参数范围；单值可�
 | `docs/configuration.md` | 完整配置、持仓期止损、策略出场 |
 | `docs/invariants.md` | 关键设计约束（改动前必读） |
 | `docs/pbo.md` | CSCV / PBO 模式与分块口径 |
+| `docs/analysis.md` | 只读分析层：对账、显著性、bootstrap 与输出字段 |
 | `docs/reviews.md` | 2026-10 代码审查修复记录与设计决策复核 |
 
 ## 命令
@@ -84,6 +87,7 @@ cargo test -p vta
 cargo fmt
 cargo run -p vta --release -- -c config/00.smoke.toml  # 冒烟
 cargo run -p vta --release -- --pbo /path/to/reports  # PBO 实算
+cargo run -p vta --release -- --analyze /path/to/reports --out /tmp/analysis  # 只读分析
 ```
 
 完整门禁见 `scripts/check.sh`，本地与 CI 共用同一入口。
