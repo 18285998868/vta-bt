@@ -1840,14 +1840,68 @@ dependencies = [
  "dukascopy-data-reader",
  "parquet",
  "rayon",
- "rust_decimal",
  "serde",
  "serde_json",
- "thiserror",
  "toml",
  "tracing",
  "tracing-subscriber",
+ "vta-core",
+ "vta-pbo",
+ "vta-report",
+ "vta-strategies",
+]
+
+[[package]]
+name = "vta-core"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "binance-data-reader",
+ "dukascopy-data-reader",
+ "parquet",
+ "rayon",
+ "rust_decimal",
+ "serde",
+ "thiserror",
+ "toml",
+ "tracing",
+]
+
+[[package]]
+name = "vta-pbo"
+version = "0.1.0"
+dependencies = [
+ "tracing",
+ "vta-core",
+ "vta-report",
+ "vta-strategies",
+]
+
+[[package]]
+name = "vta-report"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "parquet",
+ "serde",
+ "serde_json",
+ "toml",
+ "tracing",
+ "vta-core",
+ "vta-strategies",
+]
+
+[[package]]
+name = "vta-strategies"
+version = "0.1.0"
+dependencies = [
+ "rayon",
+ "serde",
+ "serde_json",
+ "toml",
+ "tracing",
  "vector-ta",
+ "vta-core",
 ]
 
 [[package]]

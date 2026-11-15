@@ -1,0 +1,27 @@
+[package]
+name = "vta-core"
+description = "vta 的领域核心: 错误、定点金额、回测引擎、信号与报告行类型"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme = false
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+# 统一错误 `AppError` 聚合了 IO / TOML / Parquet / Arrow / 两个 reader 的错误,
+# 故这些类型必须是 core 的依赖: 下游 crate 共用同一个错误类型, 边界处不需要
+# 二次包装(包装会改变错误链与用户可见文案)。
+toml = { workspace = true }
+arrow = { workspace = true }
+parquet = { workspace = true }
+binance-data-reader = { workspace = true }
+dukascopy-data-reader = { workspace = true }
+rayon = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+rust_decimal = { workspace = true }
+tracing = { workspace = true }

@@ -1,0 +1,18 @@
+[package]
+name = "vta-pbo"
+description = "vta 的 PBO/CSCV 过拟合检验"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme = false
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+vta-core = { version = "0.1.0", path = "../vta-core" }
+vta-report = { version = "0.1.0", path = "../vta-report" }
+vta-strategies = { version = "0.1.0", path = "../vta-strategies" }
+tracing = { workspace = true }

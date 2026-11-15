@@ -74,7 +74,7 @@
 - **D4** 7 个策略的 11 处**盘中止损** → 统一为收盘价判定（这些策略历史结果失效）。
 - **D5** 30+ 个 bar 数参数 `F64Param` → `PeriodParam(usize)`（小数被拒）。
 - **D6** `symbol`/`timeframe` 白名单 + detail 文件名加哈希（消除路径穿越与撞名）。
-- **D7** 新增 `src/money.rs` 的 `Amount`（`rust_decimal` 定点十进制）：
+- **D7** 新增 `crates/vta-core/src/money.rs` 的 `Amount`（`rust_decimal` 定点十进制）：
   钱的账本、指标、报告与 detail 的货币列（`Decimal128(38,8)`）全部脱离 `f64`。
 
 ### 正确性（静默出错类）
@@ -160,7 +160,7 @@
 - **41 个 config 各自手写"预分配封顶"逻辑** → 收敛为 `shared::grid_prealloc`。
 - **3 份逐字节相同的 `pct_b`** → 收敛为 `shared::pct_b`（并统一了第 4 份的口径）。
 - **4 个 `ssf*` 策略的 `validate` 寄居在中央配置模块**（距其类型 4000 行）
-  → 下沉回各自的 `src/strategies/<name>/config.rs`，与另外 60+ 个 config 一致。
+  → 下沉回各自的 `crates/vta-strategies/src/<name>/config.rs`，与另外 60+ 个 config 一致。
 - **18 处硬编码的 BB 周期 `20`** → `shared::DEFAULT_BB_PERIOD`。
   （另有 9 个兄弟策略已把它暴露成 `bblen` 参数 —— 见「设计决策复核」第 3 条。）
 - **`keltner` / `atrband` 的 EMA/SMA 周期与 ATR 长度裸写** → 具名常量
@@ -390,7 +390,7 @@
 
 ### D7. 资金以裸 `f64` 流通，`InitialBalance` 新类型在第一次使用处即被拆掉
 
-**实施**：引入 `src/money.rs` 的 `Amount`（`rust_decimal::Decimal` 定点十进制），
+**实施**：引入 `crates/vta-core/src/money.rs` 的 `Amount`（`rust_decimal::Decimal` 定点十进制），
 把**钱**从 `f64` 里彻底搬出来：
 - `InitialBalance` → `Amount`（不再是"给 f64 套个名字"）；
 - 引擎钱账本（`cash` / `pos_qty` / `fixed_qty` / `fixed_realized` / 逐笔
@@ -402,7 +402,7 @@
 
 **边界（刻意保留 `f64`）**：价格（要参与 `ln`/`sqrt`）、比率（无量纲）、
 权益曲线**序列**（供 `CurveAccum` 与 PBO 的 CSCV 用，需要超越函数）。
-这些在 `src/money.rs` 的模块文档里逐条写明。
+这些在 `crates/vta-core/src/money.rs` 的模块文档里逐条写明。
 
 **代价**：报告与 detail 的**历史文件不兼容**（金额列类型变了）；`simulate` /
 `simulate_detailed` / `buy_hold_pnl` 等公开 API 的签名变了

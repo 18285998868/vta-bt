@@ -1,0 +1,37 @@
+[package]
+# 目录名是 `vta-cli`, 包名保持 `vta`: 二进制名、文档路径与既有用法不变。
+name = "vta"
+description = "向量化的技术指标批量回测框架: (品种 × 周期 × 策略 × 参数网格) → Parquet 报告, 内含 PBO/CSCV 过拟合检验"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license = "MIT"
+# `readme` 在 workspace 根目录, 无法随 crate 打包, 故显式关闭。
+readme = false
+publish = false
+keywords = ["backtest", "quant", "trading", "technical-indicators", "parquet"]
+categories = ["command-line-utilities", "science"]
+
+[lints]
+workspace = true
+
+[dependencies]
+vta-core = { version = "0.1.0", path = "../vta-core" }
+vta-strategies = { version = "0.1.0", path = "../vta-strategies" }
+vta-report = { version = "0.1.0", path = "../vta-report" }
+vta-pbo = { version = "0.1.0", path = "../vta-pbo" }
+binance-data-reader = { workspace = true }
+dukascopy-data-reader = { workspace = true }
+rayon = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true }
+anyhow = { workspace = true }
+toml = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+arrow = { workspace = true }
+parquet = { workspace = true }

@@ -1,0 +1,23 @@
+[package]
+name = "vta-strategies"
+description = "vta 的策略实现、参数网格展开与参数串编码"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme = false
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+vta-core = { version = "0.1.0", path = "../vta-core" }
+vector-ta = { workspace = true }
+serde = { workspace = true }
+rayon = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+toml = { workspace = true }
+serde_json = { workspace = true }

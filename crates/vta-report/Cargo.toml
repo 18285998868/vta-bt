@@ -1,0 +1,24 @@
+[package]
+name = "vta-report"
+description = "vta 的 Parquet 报告层: schema、逐值读写、合并与参数编码"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme = false
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+vta-core = { version = "0.1.0", path = "../vta-core" }
+arrow = { workspace = true }
+parquet = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+vta-strategies = { version = "0.1.0", path = "../vta-strategies" }

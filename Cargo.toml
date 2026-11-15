@@ -1,7 +1,18 @@
+# 虚拟 workspace: 5 个 crate 严格分层, 依赖方向单向向下。
+#
+#   vta-cli        → {vta-core, vta-strategies, vta-report, vta-pbo}
+#   vta-pbo        → {vta-core, vta-report, vta-strategies}
+#   vta-strategies → vta-core
+#   vta-report     → vta-core (dev-dependency: vta-strategies, 复用参数编码测试)
+#
+# `tradingview/` 是独立的 cargo workspace, 必须显式排除, 否则 `cargo metadata`
+# 会把它当成本 workspace 的成员。
 [workspace]
+resolver = "3"
+members = ["crates/*"]
+exclude = ["tradingview"]
 
-[package]
-name = "vta"
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 # **刻意不声明 `rust-version`**: 本项目目标是"永远用最新 stable"(见
@@ -17,21 +28,14 @@ edition = "2024"
 # `u32::is_multiple_of`(1.87 稳定, pbo.rs)。用最新 stable 时两者均可用。
 authors = ["NautilusTrader Developer"]
 license = "MIT"
-# `description` 是 crates.io 发布的**必填项**; `readme` 让包主页有完整说明。
-description = "向量化的技术指标批量回测框架: (品种 × 周期 × 策略 × 参数网格) → Parquet 报告, 内含 PBO/CSCV 过拟合检验"
-readme = "README.md"
-# `tradingview/` 是独立 cargo workspace, 不随本 crate 打包发布。
-exclude = ["tradingview/**"]
-keywords = ["backtest", "quant", "trading", "technical-indicators", "parquet"]
-categories = ["command-line-utilities", "science"]
 
-[dependencies]
-# 注意: 版本统一在 [workspace.dependencies] 管理。`vector-ta` 用 crates.io 0.3.1
-# (0.3.2 未发布), 版本由 Cargo.lock 锁定; 两个 reader 用相对 path 依赖。
+[workspace.dependencies]
+# 指标库用 crates.io 发布版, 版本由 Cargo.lock 锁定; 两个 reader 是 /data 下的
+# 独立仓库, 用相对路径保证同机可复现。
 # 换一个 patch 版本的指标库就可能改变 NaN 前缀长度, 进而改变全部历史回测结果。
-vector-ta = { workspace = true }
-binance-data-reader = { workspace = true }
-dukascopy-data-reader = { workspace = true }
+vector-ta = "0.3.1"
+binance-data-reader = { version = "0.2.0", path = "../binance-data-reader" }
+dukascopy-data-reader = { version = "0.2.0", path = "../dukascopy-data-reader" }
 rayon = "1"
 chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
@@ -41,23 +45,11 @@ arrow = "60"
 parquet = { version = "60", features = ["arrow"] }
 clap = { version = "4", features = ["derive"] }
 thiserror = "2"
-# 货币金额用定点十进制(不用 f64): 见 src/money.rs 的口径说明。
+# 货币金额用定点十进制(不用 f64): 见 `vta-core/src/money.rs` 的口径说明。
 rust_decimal = "1"
 tracing = { version = "0.1", features = ["log"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-
-[lints]
-workspace = true
-
-[dev-dependencies]
 serde_json = "1"
-
-[workspace.dependencies]
-# 指标库用 crates.io 发布版, 版本由 Cargo.lock 锁定; 两个 reader 是 /data 下的
-# 独立仓库, 用相对路径保证同机可复现。
-vector-ta = "0.3.1"
-binance-data-reader = { version = "0.2.0", path = "../binance-data-reader" }
-dukascopy-data-reader = { version = "0.2.0", path = "../dukascopy-data-reader" }
 
 # 统一 lint 门禁: CI 与本地 `cargo clippy -- -D warnings` 行为一致。
 [workspace.lints.rust]

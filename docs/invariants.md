@@ -268,7 +268,7 @@ detail 与非 detail 两条分支共用 `ComboCtx::run_row`; 而"如何求值一
 `Decimal` 是 128 位定点数，金额运算**精确**，且**无法**表示 `NaN`/`Inf`。
 
 **边界（刻意仍是 `f64`）**：价格（要参与 `ln`/`sqrt`）、比率（无量纲）、
-权益曲线**序列**（供 `CurveAccum` 与 PBO 的 CSCV 用）。逐条写在 `src/money.rs`。
+权益曲线**序列**（供 `CurveAccum` 与 PBO 的 CSCV 用）。逐条写在 `crates/vta-core/src/money.rs`。
 
 detail trades 的金额列是 `qty` / `pnl` / `fixed_pnl`。旧列名 `total_return`
 存的其实是**单笔盈亏金额**，与报告里的同名比率列 `total_return` 同名不同量纲，

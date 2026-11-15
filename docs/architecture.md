@@ -3,56 +3,61 @@
 ## 模块布局
 
 ```text
-src/
-  main.rs              # 入口: cli::parse → -c 回测 / --pbo 实算, 二选一; anyhow 收敛
-  lib.rs               # 只做导出: pub mod app/cli/config/data/engine/error/money/output/pbo/strategies
-  cli.rs               # clap 4 derive: --config/-c 与 --pbo 互斥; --no-cache 逃生门
-  money.rs             # Amount(rust_decimal 定点十进制): 钱的唯一类型
-  error.rs             # thiserror AppError(Io/Config/BinanceData/DukascopyData/Parquet/Arrow/Msg)
-  data.rs              # DataSection::for_pair → reader 的 DataConfig; KlineColumns
-  pbo/                 # CSCV 实算 + 报告
-    mod.rs             # PboResult / pick_s / block_counts
-    cscv.rs            # CSCV 核心
-    report.rs          # --pbo 报告装配
-    tests.rs           # 单测
-  app/                 # 编排层
-    run.rs             # run/run_with: 配置 → 作业 → 双层串行取数 → run_combo → merge
-    combo.rs           # run_combo: 缓存判定 / 参数分批并行 / 写盘
-    fingerprint.rs     # 数据指纹 + 源码内容哈希
-    types.rs           # RunResult / RunStatus / DetailResult
-  config/              # 原始 TOML → 校验 → 类型化配置
-    load.rs            # load_config
-    strategy.rs        # StrategyConfig 与参数网格
-    data.rs / backtest.rs / output.rs
-  engine/              # 回测引擎
-    mod.rs             # simulate_ohlcv / simulate_ohlcv_detailed + 兼容包装
-    exec.rs            # ExecConfig / Side
-    stops.rs           # StopConfig / ATR / 保本止损
-    sizing.rs          # SizingConfig / 开仓数量
-    scan.rs            # 信号扫描、成交与平仓结算
-    accum.rs           # 交易/权益曲线在线累计
-    metrics.rs         # 指标计算
-    types.rs           # SummaryMetrics / Trade / SimResult / ExitReason
-  output/
-    parquet/           # Parquet 读写
+crates/
+  vta-core/            # 领域核心: 不依赖任何 vta-* crate
+    src/lib.rs         # source_hash() + 模块导出
+    src/error.rs       # thiserror AppError(Io/Config/BinanceData/DukascopyData/Parquet/Arrow/Msg)
+    src/money.rs       # Amount(rust_decimal 定点十进制): 钱的唯一类型
+    src/signal.rs      # Signal: 策略 → 引擎的唯一方向契约
+    src/bars.rs        # Bars: 六列行情视图
+    src/types.rs       # RunResult / RunStatus / DetailResult
+    src/engine/        # 回测引擎
+      mod.rs           # simulate_ohlcv / simulate_ohlcv_detailed + 兼容包装
+      exec.rs          # ExecConfig / Side
+      stops.rs         # StopConfig / ATR / 保本止损
+      sizing.rs        # SizingConfig / 开仓数量
+      scan.rs          # 信号扫描、成交与平仓结算
+      accum.rs         # 交易/权益曲线在线累计
+      metrics.rs       # 指标计算
+      types.rs         # SummaryMetrics / Trade / SimResult / ExitReason
+    build.rs           # 全部 crate 源码 + 两个 reader + 根 Cargo.lock 的内容哈希
+  vta-strategies/      # 策略实现与参数网格
+    src/lib.rs         # Strategy trait / ParamOutcome / param_skipped
+    src/config.rs      # StrategyConfig / StrategySpec / 参数类型
+    src/params.rs      # param_str 的逆运算: 参数串 JSON 与 u64 编码
+    src/shared.rs      # 指标前缀和 / 通道 / 信号辅助
+    src/single_ma.rs   # 单 MA 策略的泛型 Strategy 实现(MaCalculator)
+    src/build.rs       # build_one 穷尽 match → build_jobs_checked
+    src/<name>/        # 每个策略: config.rs + strategy.rs
+  vta-report/          # Parquet 读写
+    src/lib.rs
+    src/parquet/
       report.rs        # 汇总报告构建与原子写入
       detail/          # 逐笔明细/权益曲线/侧车清单
-        mod.rs
-        write.rs       # 明细与曲线落盘
-        read.rs        # 曲线读取
-        manifest.rs    # 侧车清单与 detail 索引
       read.rs          # 缓存校验读取、合并
-      params.rs        # 参数串规范化与编码
-      columns.rs / schema.rs  # Arrow 列读取辅助 / 单位表
-  strategies/
-    mod.rs             # Strategy trait + shared 再导出
-    shared.rs          # Signal / price_cross_signal / bars_per_year
-    single_ma.rs       # 单 MA 策略的泛型 Strategy 实现(MaCalculator)
-    build.rs           # build_one 穷尽 match → build_jobs_checked
-    <name>/            # 每个策略: config.rs + strategy.rs
+      columns.rs / schema.rs
+  vta-pbo/             # CSCV 实算 + 报告
+    src/lib.rs         # PboResult / pick_s / block_counts
+    src/cscv.rs        # CSCV 核心
+    src/report.rs      # --pbo 报告装配
+  vta-cli/             # 装配层(包名仍是 vta, 二进制名 vta)
+    src/main.rs        # 入口: cli::parse → -c 回测 / --pbo 实算
+    src/lib.rs         # 只做导出: app / cli / config / data
+    src/cli.rs         # clap 4 derive: --config/-c 与 --pbo 互斥; --no-cache 逃生门
+    src/config/        # 原始 TOML → 校验 → 类型化配置
+      load.rs / data.rs / backtest.rs / output.rs
+    src/data.rs        # DataSection::for_pair → reader 的 DataConfig; KlineColumns
+    src/app/           # 编排层
+      run.rs           # run/run_with: 配置 → 作业 → 双层串行取数 → run_combo → merge
+      combo.rs         # run_combo: 缓存判定 / 参数分批并行 / 写盘
+      fingerprint.rs   # 数据指纹 + 源码内容哈希
+tests / examples 跟随所属 crate:
+  vta-cli/tests/{golden_signals,grid_uniqueness,readme_consistency,build_coverage}
+  vta-cli/examples/{adx_lag,p2_bench,parquet_diff}
+  vta-strategies/tests/integration_test.rs
 ```
 
-`tradingview/` 是独立 workspace，不参与根 crate 的构建。
+`tradingview/` 是独立 workspace，已在根 `Cargo.toml` 的 `exclude` 中排除，不参与本 workspace 的构建。
 
 ## 逻辑编排
 
@@ -128,14 +133,14 @@ detail 模式 -> write_detail_index(detail/manifest.toml)                # 只�
 
 ## 完整执行逻辑
 
-- `main.rs`：入口；tracing 初始化 → `cli::parse()` → `-c` 回测 / `--pbo` 实算。
-- `cli.rs`：clap 4 derive，`--config/-c` 与 `--pbo` 二选一。
-- `config/load.rs`：`load_config` 读文件 → `toml` 解析 → `validate`。
-- `config/data.rs`：`for_pair` 多值降单值，供 `DataConfig::load` 使用。
-- `error.rs`：`AppError`（thiserror）统一错误类型。
-- `app/run.rs`：`run_with` 预算目录 → 双层串行 → `pair.load()`（失败跳过）→ `run_combo` → `merge` → `result.parquet` → `detail/manifest.toml`。
-- `app/combo.rs`：单组合缓存判定、分批并行、行构造（`run_row` 唯一构造点）与写盘。
-- `engine/mod.rs`：`simulate` / `simulate_detailed` 与带 high/low 的 `simulate_ohlc*`：信号 → 持仓 → 成交 → 绩效。
-- `output/parquet/`：`temps/` 单组合写 + `detail/` 明细写 + `read` 校验 + `merge`。
-- `strategies/build.rs`：按 `[[strategy]]` 展开参数实例，并把该条的 `stop` 一并带入作业。
-- `pbo/`：读 `detail/manifest.toml` 索引 → 筛 `status == ok` / 同时间网格 → 分组 CSCV → 报告。
+- `vta-cli/src/main.rs`：入口；tracing 初始化 → `cli::parse()` → `-c` 回测 / `--pbo` 实算。
+- `vta-cli/src/cli.rs`：clap 4 derive，`--config/-c` 与 `--pbo` 二选一。
+- `vta-cli/src/config/load.rs`：`load_config` 读文件 → `toml` 解析 → `validate`。
+- `vta-cli/src/config/data.rs`：`for_pair` 多值降单值，供 `DataConfig::load` 使用。
+- `vta-core/src/error.rs`：`AppError`（thiserror）统一错误类型。
+- `vta-cli/src/app/run.rs`：`run_with` 预算目录 → 双层串行 → `pair.load()`（失败跳过）→ `run_combo` → `merge` → `result.parquet` → `detail/manifest.toml`。
+- `vta-cli/src/app/combo.rs`：单组合缓存判定、分批并行、行构造（`run_row` 唯一构造点）与写盘。
+- `vta-core/src/engine/mod.rs`：`simulate` / `simulate_detailed` 与带 high/low 的 `simulate_ohlc*`：信号 → 持仓 → 成交 → 绩效。
+- `vta-report/src/parquet/`：`temps/` 单组合写 + `detail/` 明细写 + `read` 校验 + `merge`。
+- `vta-strategies/src/build.rs`：按 `[[strategy]]` 展开参数实例，并把该条的 `stop` 一并带入作业。
+- `vta-pbo/src/`：读 `detail/manifest.toml` 索引 → 筛 `status == ok` / 同时间网格 → 分组 CSCV → 报告。

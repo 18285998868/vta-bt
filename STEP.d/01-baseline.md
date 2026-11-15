@@ -10,10 +10,10 @@
 
 | 文件 | 作用 |
 |---|---|
-| `tests/golden/strategies.toml` | 81 个 `StrategyConfig` 变体各一条, 网格 2~3 档/维 |
-| `tests/golden/expected.txt` | 273 档参数 × 4 组合成行情的冻结快照 |
-| `tests/golden_signals.rs` | 快照比对 + 变体覆盖兜底 |
-| `examples/parquet_diff.rs` | parquet 逐值比较(schema/行数/f64 bit/Decimal i128) |
+| `crates/vta-cli/tests/golden/strategies.toml` | 81 个 `StrategyConfig` 变体各一条, 网格 2~3 档/维 |
+| `crates/vta-cli/tests/golden/expected.txt` | 273 档参数 × 4 组合成行情的冻结快照 |
+| `crates/vta-cli/tests/golden_signals.rs` | 快照比对 + 变体覆盖兜底 |
+| `crates/vta-cli/examples/parquet_diff.rs` | parquet 逐值比较(schema/行数/f64 bit/Decimal i128) |
 | `scripts/golden_run.sh` | release 冒烟 + 二跑幂等 + 基线比对 |
 | `config.golden.toml` | 1d-only 冒烟负载: sma / bbrk_sma / bbrk_vol / macd |
 
@@ -28,15 +28,15 @@
 2. 重构后验收。
 
 ```bash
-cargo test --test golden_signals
+cargo test -p vta --test golden_signals
 ./scripts/golden_run.sh --check
 ```
 
 3. 确认行为变更有意时, 才允许重写快照。
 
 ```bash
-UPDATE_GOLDEN=1 cargo test --test golden_signals
-git diff tests/golden/expected.txt
+UPDATE_GOLDEN=1 cargo test -p vta --test golden_signals
+git diff crates/vta-cli/tests/golden/expected.txt
 ```
 
 ## 验收
