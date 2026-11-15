@@ -233,50 +233,10 @@ fn render() -> String {
 /// 这条测试就是那道兜底: 变体数 == 夹具条数。
 #[test]
 fn fixture_covers_every_variant() {
-    let src = include_str!("../../vta-strategies/src/config.rs");
-    let body = src
-        .split("pub enum StrategyConfig {")
-        .nth(1)
-        .expect("StrategyConfig 应存在")
-        .split("\n}")
-        .next()
-        .expect("枚举体应可截取");
-
-    // serde 的 `rename_all = "snake_case"` 只在"小写/数字之后的大写"前插下划线,
-    // 显式 `#[serde(rename = "...")]` 优先。
-    let make_snake = |v: &str| -> String {
-        let mut s = String::new();
-        for ch in v.chars() {
-            if ch.is_ascii_uppercase() {
-                if s.chars()
-                    .last()
-                    .is_some_and(|p| p.is_ascii_lowercase() || p.is_ascii_digit())
-                {
-                    s.push('_');
-                }
-                s.push(ch.to_ascii_lowercase());
-            } else {
-                s.push(ch);
-            }
-        }
-        s
-    };
-
-    let mut variants: Vec<String> = Vec::new();
-    let mut pending_rename: Option<String> = None;
-    for line in body.lines() {
-        let t = line.trim();
-        if let Some(rest) = t.strip_prefix("#[serde(rename = \"") {
-            pending_rename = Some(rest.split('"').next().unwrap_or(rest).to_string());
-        }
-        let Some(v) = t.split('(').next() else {
-            continue;
-        };
-        if v.is_empty() || !v.chars().next().is_some_and(char::is_uppercase) {
-            continue;
-        }
-        variants.push(pending_rename.take().unwrap_or_else(|| make_snake(v)));
-    }
+    let mut variants: Vec<String> = vta_strategies::STRATEGY_TAGS
+        .iter()
+        .map(|tag| (*tag).to_string())
+        .collect();
     variants.sort();
 
     let mut have: Vec<String> = FIXTURE

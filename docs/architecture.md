@@ -23,11 +23,12 @@ crates/
     build.rs           # 全部 crate 源码 + 两个 reader + 根 Cargo.lock 的内容哈希
   vta-strategies/      # 策略实现与参数网格
     src/lib.rs         # Strategy trait / ParamOutcome / param_skipped
-    src/config.rs      # StrategyConfig / StrategySpec / 参数类型
+    src/config.rs      # StrategySpec / 参数类型; StrategyConfig 由注册表生成
+    src/registry.rs    # 81 个策略的唯一注册表(变体 / TOML tag / 构造方式)
     src/params.rs      # param_str 的逆运算: 参数串 JSON 与 u64 编码
     src/shared.rs      # 指标前缀和 / 通道 / 信号辅助
     src/single_ma.rs   # 单 MA 策略的泛型 Strategy 实现(MaCalculator)
-    src/build.rs       # build_one 穷尽 match → build_jobs_checked
+    src/build.rs       # 注册表生成 build_one → build_jobs_checked
     src/<name>/        # 每个策略: config.rs + strategy.rs
   vta-report/          # Parquet 读写
     src/lib.rs

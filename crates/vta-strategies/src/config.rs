@@ -2,63 +2,10 @@
 
 use serde::Deserialize;
 
-use crate::aberration::AberrationConfig;
-use crate::atrband::ATRBandConfig;
-use crate::bbmr::BBMRConfig;
-use crate::bbrk::BBRKConfig;
-use crate::bbrk_adx::BbrkAdxConfig;
-use crate::bbrk_atr::BbrkAtrConfig;
-use crate::bbrk_atr_ema::BbrkAtrEmaConfig;
-use crate::bbrk_bb::BbrkBbConfig;
-use crate::bbrk_cross::BbrkCrossConfig;
-use crate::bbrk_don::BbrkDonConfig;
-use crate::bbrk_ema::BbrkEmaConfig;
-use crate::bbrk_hma::BbrkHmaConfig;
-use crate::bbrk_hma_ema::BbrkHmaEmaConfig;
-use crate::bbrk_hma_v1::BbrkHmaV1Config;
-use crate::bbrk_hma_v2::BbrkHmaV2Config;
-use crate::bbrk_hma_v3::BbrkHmaV3Config;
-use crate::bbrk_hma_v4::BbrkHmaV4Config;
-use crate::bbrk_hma_v5::BbrkHmaV5Config;
-use crate::bbrk_kdj::BbrkKdjConfig;
-use crate::bbrk_m2::BbrkM2Config;
-use crate::bbrk_m3::BbrkM3Config;
-use crate::bbrk_max::BbrkMaxConfig;
-use crate::bbrk_orth::BbrkOrthConfig;
-use crate::bbrk_pctb::BbrkPctbConfig;
-use crate::bbrk_rex::BbrkRexConfig;
-use crate::bbrk_sma::BbrkSmaConfig;
-use crate::bbrk_sma_ema::BbrkSmaEmaConfig;
-use crate::bbrk_str::BbrkStrConfig;
-use crate::bbrk_trail::BbrkTrailConfig;
-use crate::bbrk_ttm::BbrkTtmConfig;
-use crate::bbrk_ttm_fire::BbrkTtmFireConfig;
-use crate::bbrk_vol::BbrkVolConfig;
-use crate::bbrk_vol_ema::BbrkVolEmaConfig;
-use crate::bbrk_zlema_ema::BbrkZlemaEmaConfig;
-use crate::clenow::ClenowConfig;
-use crate::dualthrust::DualThrustConfig;
-use crate::ema_cross::EmaCrossConfig;
-use crate::fiali::FialiConfig;
-use crate::keltner::KeltnerConfig;
-use crate::ma_atr::MaAtrConfig;
-use crate::ma_slope_atr_gate::MaSlopeAtrGateConfig;
-use crate::mabb_long::MabbLongConfig;
-use crate::mabb_short::MabbShortConfig;
-use crate::macd::MacdConfig;
-use crate::rbreaker::RBreakerConfig;
-use crate::rsi2::RSI2Config;
-use crate::sgma::SgmaConfig;
-use crate::ssf::SsfConfig;
-use crate::ssf_cd::SsfCdConfig;
-use crate::ssf_st::SsfStConfig;
-use crate::ssf_st_cd::SsfStCdConfig;
-use crate::swing_fractal::SwingFractalConfig;
-use crate::turtle::TurtleConfig;
-use crate::vwap::VwapConfig;
-use crate::vwap_trend::VwapTrendConfig;
 use vta_core::engine::StopConfig;
 use vta_core::error::AppError;
+
+use crate::registry::strategy_table;
 
 /// 一条 `[[strategy]]` 条目: 策略参数 + **该策略专属**的持仓期止损。
 ///
@@ -100,178 +47,41 @@ impl MaGridCfg {
     }
 }
 
-/// 策略配置。以 TOML 的 `type` 标签做**内部标签**判别。
-///
-/// `deny_unknown_fields`: 拼错的键直接报错, 不会被静默忽略。
-#[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum StrategyConfig {
-    /// **Sma** 均线策略: 配置 [`MaGridCfg`]。
-    Sma(MaGridCfg),
-    /// **SmaCd** 均线策略: 配置 [`MaGridCfg`]。
-    SmaCd(MaGridCfg),
-    /// **Ema** 均线策略: 配置 [`MaGridCfg`]。
-    Ema(MaGridCfg),
-    /// **Hma** 均线策略: 配置 [`MaGridCfg`]。
-    Hma(MaGridCfg),
-    /// **Zlma** 均线策略: 配置 [`MaGridCfg`]。
-    Zlma(MaGridCfg),
-    /// **Alma** 均线策略: 配置 [`MaGridCfg`]。
-    Alma(MaGridCfg),
-    /// **Dema** 均线策略: 配置 [`MaGridCfg`]。
-    Dema(MaGridCfg),
-    /// **Fwma** 均线策略: 配置 [`MaGridCfg`]。
-    Fwma(MaGridCfg),
-    /// **Jma** 均线策略: 配置 [`MaGridCfg`]。
-    Jma(MaGridCfg),
-    /// **Kama** 均线策略: 配置 [`MaGridCfg`]。
-    Kama(MaGridCfg),
-    /// **LinReg** 均线策略: 配置 [`MaGridCfg`]。
-    LinReg(MaGridCfg),
-    /// **Pwma** 均线策略: 配置 [`MaGridCfg`]。
-    Pwma(MaGridCfg),
-    /// **SinWma** 均线策略: 配置 [`MaGridCfg`]。
-    SinWma(MaGridCfg),
-    /// **Swma** 均线策略: 配置 [`MaGridCfg`]。
-    Swma(MaGridCfg),
-    /// **Tema** 均线策略: 配置 [`MaGridCfg`]。
-    Tema(MaGridCfg),
-    /// **Tilson** 均线策略: 配置 [`MaGridCfg`]。
-    Tilson(MaGridCfg),
-    /// **Trima** 均线策略: 配置 [`MaGridCfg`]。
-    Trima(MaGridCfg),
-    /// **Wilders** 均线策略: 配置 [`MaGridCfg`]。
-    Wilders(MaGridCfg),
-    /// **Wma** 均线策略: 配置 [`MaGridCfg`]。
-    Wma(MaGridCfg),
-    /// **Smma** 均线策略: 配置 [`MaGridCfg`]。
-    Smma(MaGridCfg),
-    /// **Ehma** 均线策略: 配置 [`MaGridCfg`]。
-    Ehma(MaGridCfg),
-    /// **Frama** 均线策略: 配置 [`MaGridCfg`]。
-    Frama(MaGridCfg),
-    /// **Dma** 均线策略: 配置 [`MaGridCfg`]。
-    Dma(MaGridCfg),
-    /// **Vwma** 均线策略: 配置 [`MaGridCfg`]。
-    Vwma(MaGridCfg),
-    /// **Vidya** 均线策略: 配置 [`MaGridCfg`]。
-    Vidya(MaGridCfg),
-    /// **McGinley** 均线策略: 配置 [`MaGridCfg`]。
-    McGinley(MaGridCfg),
-    /// **Ssf** 策略: 配置 `SsfConfig`。
-    Ssf(SsfConfig),
-    /// **SsfCd** 策略: 配置 `SsfCdConfig`。
-    SsfCd(SsfCdConfig),
-    /// **SsfSt** 策略: 配置 `SsfStConfig`。
-    SsfSt(SsfStConfig),
-    /// **SsfStCd** 策略: 配置 `SsfStCdConfig`。
-    SsfStCd(SsfStCdConfig),
-    /// **SwingFractal** 策略: 配置 `SwingFractalConfig`。 TOML 中写作 `type = "swing_fractal"`。
-    SwingFractal(SwingFractalConfig),
-    /// **Turtle** 策略: 配置 `TurtleConfig`。
-    Turtle(TurtleConfig),
-    /// **Clenow** 策略: 配置 `ClenowConfig`。 TOML 中写作 `type = "clenow"`。
-    Clenow(ClenowConfig),
-    /// **DualThrust** 策略: 配置 `DualThrustConfig`。
-    DualThrust(DualThrustConfig),
-    /// **RBreaker** 策略: 配置 `RBreakerConfig`。
-    RBreaker(RBreakerConfig),
-    /// **Fiali** 策略: 配置 `FialiConfig`。
-    Fiali(FialiConfig),
-    /// **Aberration** 策略: 配置 `AberrationConfig`。
-    Aberration(AberrationConfig),
-    /// **Sgma** 策略: 配置 `SgmaConfig`。
-    Sgma(SgmaConfig),
-    #[serde(rename = "atr_band")]
-    /// **ATRBand** 策略: 配置 `ATRBandConfig`。 TOML 中写作 `type = "atr_band"`。
-    ATRBand(ATRBandConfig),
-    /// **Keltner** 策略: 配置 `KeltnerConfig`。
-    Keltner(KeltnerConfig),
-    #[serde(rename = "bbmr")]
-    /// **BBMR** 策略: 配置 `BBMRConfig`。 TOML 中写作 `type = "bbmr"`。
-    BBMR(BBMRConfig),
-    /// **Bbrk** 策略: 配置 `BBRKConfig`。
-    Bbrk(BBRKConfig),
-    /// **BbrkAdx** 策略: 配置 `BbrkAdxConfig`。
-    BbrkAdx(BbrkAdxConfig),
-    /// **BbrkTrail** 策略: 配置 `BbrkTrailConfig`。
-    BbrkTrail(BbrkTrailConfig),
-    /// **BbrkDon** 策略: 配置 `BbrkDonConfig`。
-    BbrkDon(BbrkDonConfig),
-    /// **BbrkEma** 策略: 配置 `BbrkEmaConfig`。
-    BbrkEma(BbrkEmaConfig),
-    /// **BbrkPctb** 策略: 配置 `BbrkPctbConfig`。
-    BbrkPctb(BbrkPctbConfig),
-    /// **BbrkAtr** 策略: 配置 `BbrkAtrConfig`。
-    BbrkAtr(BbrkAtrConfig),
-    /// **BbrkStr** 策略: 配置 `BbrkStrConfig`。
-    BbrkStr(BbrkStrConfig),
-    /// **BbrkSma** 策略: 配置 `BbrkSmaConfig`。
-    BbrkSma(BbrkSmaConfig),
-    /// **BbrkHma** 策略: 配置 `BbrkHmaConfig`。
-    BbrkHma(BbrkHmaConfig),
-    /// **BbrkMax** 策略: 配置 `BbrkMaxConfig`。
-    BbrkMax(BbrkMaxConfig),
-    /// **BbrkBb** 策略: 配置 `BbrkBbConfig`。
-    BbrkBb(BbrkBbConfig),
-    /// **BbrkVolEma** 策略: 配置 `BbrkVolEmaConfig`。
-    BbrkVolEma(BbrkVolEmaConfig),
-    /// **BbrkAtrEma** 策略: 配置 `BbrkAtrEmaConfig`。
-    BbrkAtrEma(BbrkAtrEmaConfig),
-    /// **BbrkSmaEma** 策略: 配置 `BbrkSmaEmaConfig`。
-    BbrkSmaEma(BbrkSmaEmaConfig),
-    /// **BbrkHmaEma** 策略: 配置 `BbrkHmaEmaConfig`。
-    BbrkHmaEma(BbrkHmaEmaConfig),
-    /// **BbrkHmaV1** 策略: 配置 `BbrkHmaV1Config`。
-    BbrkHmaV1(BbrkHmaV1Config),
-    /// **BbrkHmaV2** 策略: 配置 `BbrkHmaV2Config`。
-    BbrkHmaV2(BbrkHmaV2Config),
-    /// **BbrkHmaV3** 策略: 配置 `BbrkHmaV3Config`。
-    BbrkHmaV3(BbrkHmaV3Config),
-    /// **BbrkHmaV4** 策略: 配置 `BbrkHmaV4Config`。
-    BbrkHmaV4(BbrkHmaV4Config),
-    /// **BbrkHmaV5** 策略: 配置 `BbrkHmaV5Config`。
-    BbrkHmaV5(BbrkHmaV5Config),
-    /// **BbrkZlemaEma** 策略: 配置 `BbrkZlemaEmaConfig`。
-    BbrkZlemaEma(BbrkZlemaEmaConfig),
-    /// **BbrkRex** 策略: 配置 `BbrkRexConfig`。
-    BbrkRex(BbrkRexConfig),
-    /// **BbrkVol** 策略: 配置 `BbrkVolConfig`。
-    BbrkVol(BbrkVolConfig),
-    /// **BbrkTtm** 策略: 配置 `BbrkTtmConfig`。
-    BbrkTtm(BbrkTtmConfig),
-    /// **BbrkTtmFire** 策略: 配置 `BbrkTtmFireConfig`。
-    BbrkTtmFire(BbrkTtmFireConfig),
-    /// **BbrkCross** 策略: 配置 `BbrkCrossConfig`。
-    BbrkCross(BbrkCrossConfig),
-    /// **BbrkKdj** 策略: 配置 `BbrkKdjConfig`。
-    BbrkKdj(BbrkKdjConfig),
-    /// **BbrkM2** 策略: 配置 `BbrkM2Config`。
-    BbrkM2(BbrkM2Config),
-    /// **BbrkM3** 策略: 配置 `BbrkM3Config`。
-    BbrkM3(BbrkM3Config),
-    /// **BbrkOrth** 策略: 配置 `BbrkOrthConfig`。
-    BbrkOrth(BbrkOrthConfig),
-    /// **VwapTrend** 策略: 配置 `VwapTrendConfig`。
-    VwapTrend(VwapTrendConfig),
-    #[serde(rename = "rsi2")]
-    /// **RSI2** 策略: 配置 `RSI2Config`。 TOML 中写作 `type = "rsi2"`。
-    RSI2(RSI2Config),
-    /// **Vwap** 策略: 配置 `VwapConfig`。
-    Vwap(VwapConfig),
-    /// **MabbLong** 策略: 配置 `MabbLongConfig`。
-    MabbLong(MabbLongConfig),
-    /// **MabbShort** 策略: 配置 `MabbShortConfig`。
-    MabbShort(MabbShortConfig),
-    /// **MaAtr** 策略: 配置 `MaAtrConfig`。
-    MaAtr(MaAtrConfig),
-    /// **MaSlopeAtrGate** 策略: 配置 `MaSlopeAtrGateConfig`。
-    MaSlopeAtrGate(MaSlopeAtrGateConfig),
-    /// **Macd** 策略: 配置 `MacdConfig`。
-    Macd(MacdConfig),
-    /// **EmaCross** 策略: 配置 `EmaCrossConfig`。
-    EmaCross(EmaCrossConfig),
+/// 由注册表生成 `StrategyConfig`: 枚举变体、TOML tag 与校验分派同源。
+macro_rules! declare_strategy_config {
+    ($(($module:ident, $tag:literal, $variant:ident, $config_module:ident, $config:ident, $strategy:ident, $kind:ident)),* $(,)?) => {
+        /// 策略配置。以 TOML 的 `type` 标签做**内部标签**判别。
+        ///
+        /// 变体清单由 `registry.rs` 的 `strategy_table!` 生成;
+        /// `deny_unknown_fields`: 拼错的键直接报错, 不会被静默忽略。
+        #[derive(Debug, Clone, Deserialize)]
+        #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+        pub enum StrategyConfig {
+            $(
+                #[doc = concat!("**", stringify!($variant), "** 策略: 配置 `", stringify!($config), "`, TOML `type = \"", $tag, "\"`。")]
+                #[serde(rename = $tag)]
+                $variant(crate::$config_module::$config),
+            )*
+        }
+
+        impl StrategyConfig {
+            /// 策略专属语义校验(参数范围与方向), 分派到各配置类型的 `validate`。
+            ///
+            /// # Errors
+            /// 任一参数非法时返回 `AppError`。
+            pub fn validate(&self) -> vta_core::error::Result<()> {
+                match self {
+                    $(Self::$variant(c) => c.validate(),)*
+                }
+            }
+        }
+
+        /// 全部策略的 TOML `type` 标签, 与 [`StrategyConfig`] 变体一一对应。
+        pub const STRATEGY_TAGS: &[&str] = &[$($tag),*];
+    };
 }
+
+strategy_table!(declare_strategy_config);
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]

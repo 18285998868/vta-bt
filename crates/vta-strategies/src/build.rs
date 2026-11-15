@@ -1,86 +1,6 @@
 use super::Strategy;
-use super::aberration::AberrationStrategy;
-use super::alma::AlmaStrategy;
-use super::atrband::ATRBandStrategy;
-use super::bbmr::BBMRStrategy;
-use super::bbrk::BBRKStrategy;
-use super::bbrk_adx::BbrkAdxStrategy;
-use super::bbrk_atr::BbrkAtrStrategy;
-use super::bbrk_atr_ema::BbrkAtrEmaStrategy;
-use super::bbrk_bb::BbrkBbStrategy;
-use super::bbrk_cross::BbrkCrossStrategy;
-use super::bbrk_don::BbrkDonStrategy;
-use super::bbrk_ema::BbrkEmaStrategy;
-use super::bbrk_hma::BbrkHmaStrategy;
-use super::bbrk_hma_ema::BbrkHmaEmaStrategy;
-use super::bbrk_hma_v1::BbrkHmaV1Strategy;
-use super::bbrk_hma_v2::BbrkHmaV2Strategy;
-use super::bbrk_hma_v3::BbrkHmaV3Strategy;
-use super::bbrk_hma_v4::BbrkHmaV4Strategy;
-use super::bbrk_hma_v5::BbrkHmaV5Strategy;
-use super::bbrk_kdj::BbrkKdjStrategy;
-use super::bbrk_m2::BbrkM2Strategy;
-use super::bbrk_m3::BbrkM3Strategy;
-use super::bbrk_max::BbrkMaxStrategy;
-use super::bbrk_orth::BbrkOrthStrategy;
-use super::bbrk_pctb::BbrkPctbStrategy;
-use super::bbrk_rex::BbrkRexStrategy;
-use super::bbrk_sma::BbrkSmaStrategy;
-use super::bbrk_sma_ema::BbrkSmaEmaStrategy;
-use super::bbrk_str::BbrkStrStrategy;
-use super::bbrk_trail::BbrkTrailStrategy;
-use super::bbrk_ttm::BbrkTtmStrategy;
-use super::bbrk_ttm_fire::BbrkTtmFireStrategy;
-use super::bbrk_vol::BbrkVolStrategy;
-use super::bbrk_vol_ema::BbrkVolEmaStrategy;
-use super::bbrk_zlema_ema::BbrkZlemaEmaStrategy;
-use super::clenow::ClenowStrategy;
-use super::dema::DemaStrategy;
-use super::dma::DmaStrategy;
-use super::dualthrust::DualThrustStrategy;
-use super::ehma::EhmaStrategy;
-use super::ema::EmaStrategy;
-use super::ema_cross::EmaCrossStrategy;
-use super::fiali::FialiStrategy;
-use super::frama::FramaStrategy;
-use super::fwma::FwmaStrategy;
-use super::hma::HmaStrategy;
-use super::jma::JmaStrategy;
-use super::kama::KamaStrategy;
-use super::keltner::KeltnerStrategy;
-use super::linreg::LinRegStrategy;
-use super::ma_atr::MaAtrStrategy;
-use super::ma_slope_atr_gate::MaSlopeAtrGateStrategy;
-use super::mabb_long::MabbLongStrategy;
-use super::mabb_short::MabbShortStrategy;
-use super::macd::MacdStrategy;
-use super::mcginley::McGinleyStrategy;
-use super::pwma::PwmaStrategy;
-use super::rbreaker::RBreakerStrategy;
-use super::rsi2::RSI2Strategy;
-use super::sgma::SgmaStrategy;
-use super::sinwma::SinWmaStrategy;
-use super::sma::SmaStrategy;
-use super::sma_cd::SmaCdStrategy;
-use super::smma::SmmaStrategy;
-use super::ssf::SsfStrategy;
-use super::ssf_cd::SsfCdStrategy;
-use super::ssf_st::SsfStStrategy;
-use super::ssf_st_cd::SsfStCdStrategy;
-use super::swing_fractal::SwingFractalStrategy;
-use super::swma::SwmaStrategy;
-use super::tema::TemaStrategy;
-use super::tilson::TilsonStrategy;
-use super::trima::TrimaStrategy;
-use super::turtle::TurtleStrategy;
-use super::vidya::VidyaStrategy;
-use super::vwap::VwapStrategy;
-use super::vwap_trend::VwapTrendStrategy;
-use super::vwma::VwmaStrategy;
-use super::wilders::WildersStrategy;
-use super::wma::WmaStrategy;
-use super::zlema::ZlemaStrategy;
 use crate::config::{StrategyConfig, StrategySpec};
+use crate::registry::strategy_table;
 use vta_core::engine::StopConfig;
 
 /// 构建全部策略, 并对展开后的参数网格做**唯一性自检**。
@@ -185,105 +105,34 @@ fn check_param_uniqueness(strategies: &[Box<dyn Strategy>]) -> vta_core::error::
     Ok(())
 }
 
-/// 单个 `StrategyConfig` → 策略实例。**唯一的构造入口**。
+/// 由注册表生成**唯一的构造入口**: 每个 `StrategyConfig` 变体恰好一条臂。
 ///
-/// 穷尽 `match`(刻意**不写 `_` 兜底**): 枚举的每一个变体都必须在此接上构造,
-/// 新增变体而忘记接线会在**编译期**失败。
+/// 穷尽 `match`(不写 `_` 兜底)由同一张表保证: 新增变体必然多出一行,
+/// 也就必然同时多出一条构造臂 —— 不存在"配置里写了却不跑"的静默跳过。
 ///
 /// 返回 `Box<dyn Strategy>` 而非 `Option`: 不存在"构建失败"这一状态, 用
 /// `Option` 只会让调用方的 `filter_map` 静默吞掉漏接的变体。
-///
-/// 原实现有三处**手工同步**的变体清单 —— `build_ma!` 宏的 `unreachable!()` 兜底、
-/// `build_strategies` 里的 `matches!` 排除表、以及 60 条 `filter_map` 分支。漏改前两处
-/// 不会报错, 只会**静默跳过**该策略(配置里写了却不跑)。现在只剩这一处, 且由编译器兜底。
-fn build_one(sc: &StrategyConfig) -> Box<dyn Strategy> {
-    match sc {
-        // ---- 单 MA 周期族: config 统一是 MaGridCfg, 只用到 period ----
-        StrategyConfig::Alma(c) => Box::new(AlmaStrategy::new(c.period.to_range())),
-        StrategyConfig::Dema(c) => Box::new(DemaStrategy::new(c.period.to_range())),
-        StrategyConfig::Dma(c) => Box::new(DmaStrategy::new(c.period.to_range())),
-        StrategyConfig::Ehma(c) => Box::new(EhmaStrategy::new(c.period.to_range())),
-        StrategyConfig::Frama(c) => Box::new(FramaStrategy::new(c.period.to_range())),
-        StrategyConfig::Smma(c) => Box::new(SmmaStrategy::new(c.period.to_range())),
-        StrategyConfig::Ema(c) => Box::new(EmaStrategy::new(c.period.to_range())),
-        StrategyConfig::Fwma(c) => Box::new(FwmaStrategy::new(c.period.to_range())),
-        StrategyConfig::Hma(c) => Box::new(HmaStrategy::new(c.period.to_range())),
-        StrategyConfig::Jma(c) => Box::new(JmaStrategy::new(c.period.to_range())),
-        StrategyConfig::Kama(c) => Box::new(KamaStrategy::new(c.period.to_range())),
-        StrategyConfig::LinReg(c) => Box::new(LinRegStrategy::new(c.period.to_range())),
-        StrategyConfig::McGinley(c) => Box::new(McGinleyStrategy::new(c.period.to_range())),
-        StrategyConfig::Pwma(c) => Box::new(PwmaStrategy::new(c.period.to_range())),
-        StrategyConfig::SinWma(c) => Box::new(SinWmaStrategy::new(c.period.to_range())),
-        StrategyConfig::Sma(c) => Box::new(SmaStrategy::new(c.period.to_range())),
-        StrategyConfig::Swma(c) => Box::new(SwmaStrategy::new(c.period.to_range())),
-        StrategyConfig::Tema(c) => Box::new(TemaStrategy::new(c.period.to_range())),
-        StrategyConfig::Tilson(c) => Box::new(TilsonStrategy::new(c.period.to_range())),
-        StrategyConfig::Trima(c) => Box::new(TrimaStrategy::new(c.period.to_range())),
-        StrategyConfig::Vidya(c) => Box::new(VidyaStrategy::new(c.period.to_range())),
-        StrategyConfig::Vwma(c) => Box::new(VwmaStrategy::new(c.period.to_range())),
-        StrategyConfig::Wilders(c) => Box::new(WildersStrategy::new(c.period.to_range())),
-        StrategyConfig::Wma(c) => Box::new(WmaStrategy::new(c.period.to_range())),
-        StrategyConfig::Zlma(c) => Box::new(ZlemaStrategy::new(c.period.to_range())),
-
-        // ---- 其余策略: 各自持有专属 config ----
-        StrategyConfig::Ssf(c) => Box::new(SsfStrategy::new(c.clone())),
-        StrategyConfig::SsfCd(c) => Box::new(SsfCdStrategy::new(c.clone())),
-        StrategyConfig::SmaCd(c) => Box::new(SmaCdStrategy::new(c.clone())),
-        StrategyConfig::SsfSt(c) => Box::new(SsfStStrategy::new(c.clone())),
-        StrategyConfig::SsfStCd(c) => Box::new(SsfStCdStrategy::new(c.clone())),
-        StrategyConfig::SwingFractal(c) => Box::new(SwingFractalStrategy::new(c.clone())),
-        StrategyConfig::EmaCross(c) => Box::new(EmaCrossStrategy::new(c.clone())),
-        StrategyConfig::Turtle(c) => Box::new(TurtleStrategy::new(c.clone())),
-        StrategyConfig::Clenow(c) => Box::new(ClenowStrategy::new(c.clone())),
-        StrategyConfig::DualThrust(c) => Box::new(DualThrustStrategy::new(c.clone())),
-        StrategyConfig::RBreaker(c) => Box::new(RBreakerStrategy::new(c.clone())),
-        StrategyConfig::Fiali(c) => Box::new(FialiStrategy::new(c.clone())),
-        StrategyConfig::Sgma(c) => Box::new(SgmaStrategy::new(c.clone())),
-        StrategyConfig::Aberration(c) => Box::new(AberrationStrategy::new(c.clone())),
-        StrategyConfig::ATRBand(c) => Box::new(ATRBandStrategy::new(c.clone())),
-        StrategyConfig::Keltner(c) => Box::new(KeltnerStrategy::new(c.clone())),
-        StrategyConfig::BBMR(c) => Box::new(BBMRStrategy::new(c.clone())),
-        StrategyConfig::Bbrk(c) => Box::new(BBRKStrategy::new(c.clone())),
-        StrategyConfig::BbrkAdx(c) => Box::new(BbrkAdxStrategy::new(c.clone())),
-        StrategyConfig::BbrkTrail(c) => Box::new(BbrkTrailStrategy::new(c.clone())),
-        StrategyConfig::BbrkDon(c) => Box::new(BbrkDonStrategy::new(c.clone())),
-        StrategyConfig::BbrkEma(c) => Box::new(BbrkEmaStrategy::new(c.clone())),
-        StrategyConfig::BbrkPctb(c) => Box::new(BbrkPctbStrategy::new(c.clone())),
-        StrategyConfig::BbrkAtr(c) => Box::new(BbrkAtrStrategy::new(c.clone())),
-        StrategyConfig::BbrkStr(c) => Box::new(BbrkStrStrategy::new(c.clone())),
-        StrategyConfig::BbrkSma(c) => Box::new(BbrkSmaStrategy::new(c.clone())),
-        StrategyConfig::BbrkHma(c) => Box::new(BbrkHmaStrategy::new(c.clone())),
-        StrategyConfig::BbrkMax(c) => Box::new(BbrkMaxStrategy::new(c.clone())),
-        StrategyConfig::BbrkBb(c) => Box::new(BbrkBbStrategy::new(c.clone())),
-        StrategyConfig::BbrkVolEma(c) => Box::new(BbrkVolEmaStrategy::new(c.clone())),
-        StrategyConfig::BbrkAtrEma(c) => Box::new(BbrkAtrEmaStrategy::new(c.clone())),
-        StrategyConfig::BbrkSmaEma(c) => Box::new(BbrkSmaEmaStrategy::new(c.clone())),
-        StrategyConfig::BbrkHmaEma(c) => Box::new(BbrkHmaEmaStrategy::new(c.clone())),
-        StrategyConfig::BbrkHmaV1(c) => Box::new(BbrkHmaV1Strategy::new(c.clone())),
-        StrategyConfig::BbrkHmaV2(c) => Box::new(BbrkHmaV2Strategy::new(c.clone())),
-        StrategyConfig::BbrkHmaV3(c) => Box::new(BbrkHmaV3Strategy::new(c.clone())),
-        StrategyConfig::BbrkHmaV4(c) => Box::new(BbrkHmaV4Strategy::new(c.clone())),
-        StrategyConfig::BbrkHmaV5(c) => Box::new(BbrkHmaV5Strategy::new(c.clone())),
-        StrategyConfig::BbrkZlemaEma(c) => Box::new(BbrkZlemaEmaStrategy::new(c.clone())),
-        StrategyConfig::BbrkRex(c) => Box::new(BbrkRexStrategy::new(c.clone())),
-        StrategyConfig::BbrkVol(c) => Box::new(BbrkVolStrategy::new(c.clone())),
-        StrategyConfig::BbrkTtm(c) => Box::new(BbrkTtmStrategy::new(c.clone())),
-        StrategyConfig::BbrkTtmFire(c) => Box::new(BbrkTtmFireStrategy::new(c.clone())),
-        StrategyConfig::BbrkCross(c) => Box::new(BbrkCrossStrategy::new(c.clone())),
-        StrategyConfig::BbrkKdj(c) => Box::new(BbrkKdjStrategy::new(c.clone())),
-        StrategyConfig::BbrkM2(c) => Box::new(BbrkM2Strategy::new(c.clone())),
-        StrategyConfig::BbrkM3(c) => Box::new(BbrkM3Strategy::new(c.clone())),
-        StrategyConfig::BbrkOrth(c) => Box::new(BbrkOrthStrategy::new(c.clone())),
-        StrategyConfig::VwapTrend(c) => Box::new(VwapTrendStrategy::new(c.clone())),
-        StrategyConfig::RSI2(c) => Box::new(RSI2Strategy::new(c.clone())),
-        StrategyConfig::MabbLong(c) => Box::new(MabbLongStrategy::new(c.clone())),
-        StrategyConfig::MabbShort(c) => Box::new(MabbShortStrategy::new(c.clone())),
-        StrategyConfig::MaAtr(c) => Box::new(MaAtrStrategy::new(c.clone())),
-        StrategyConfig::MaSlopeAtrGate(c) => Box::new(MaSlopeAtrGateStrategy::new(c.clone())),
-        StrategyConfig::Macd(c) => Box::new(MacdStrategy::new(c.clone())),
-        StrategyConfig::Vwap(c) => Box::new(VwapStrategy::new(c.clone())),
-    }
+macro_rules! declare_build_one {
+    ($(($module:ident, $tag:literal, $variant:ident, $config_module:ident, $config:ident, $strategy:ident, $kind:ident)),* $(,)?) => {
+        fn build_one(sc: &StrategyConfig) -> Box<dyn Strategy> {
+            match sc {
+                $(
+                    StrategyConfig::$variant(c) => {
+                        declare_build_one!(@build $kind, $module, $strategy, c)
+                    }
+                )*
+            }
+        }
+    };
+    (@build period, $module:ident, $strategy:ident, $c:ident) => {
+        Box::new(crate::$module::$strategy::new($c.period.to_range()))
+    };
+    (@build clone, $module:ident, $strategy:ident, $c:ident) => {
+        Box::new(crate::$module::$strategy::new($c.clone()))
+    };
 }
+
+strategy_table!(declare_build_one);
 
 /// 按配置顺序构建策略实例(不含 stop)。
 ///

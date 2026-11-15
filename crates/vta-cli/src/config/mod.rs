@@ -17,7 +17,7 @@ pub use output::OutputConfig;
 use serde::Deserialize;
 
 use vta_core::error::AppError;
-use vta_strategies::{StrategyConfig, StrategySpec};
+use vta_strategies::StrategySpec;
 
 use output::check_path_safe_component;
 
@@ -85,98 +85,12 @@ impl Config {
         if self.strategy.is_empty() {
             return Err(AppError::Msg("strategy 不能为空".into()));
         }
-        // 策略专属校验: **下沉到各 config 的 `validate()`**, 此处只做分派。
-        //
-        // 这个 match **刻意不写 `_` 兜底**: 枚举穷尽性由编译器强制, 新增变体而忘记
-        // 接入 validate 会在**编译期**失败。旧实现用
-        // `_ => period_param().ok_or_else(...)?.validate()` 兜底, 漏改只会**静默**
-        // 少校验(只校验 period), 是隐蔽的正确性陷阱。
         for spec in &self.strategy {
             spec.stop.validate()?;
             spec.sizing.validate()?;
-            match &spec.strategy {
-                StrategyConfig::ATRBand(c) => c.validate()?,
-                StrategyConfig::Aberration(c) => c.validate()?,
-                StrategyConfig::BBMR(c) => c.validate()?,
-                StrategyConfig::Bbrk(c) => c.validate()?,
-                StrategyConfig::BbrkAdx(c) => c.validate()?,
-                StrategyConfig::BbrkAtr(c) => c.validate()?,
-                StrategyConfig::BbrkAtrEma(c) => c.validate()?,
-                StrategyConfig::BbrkBb(c) => c.validate()?,
-                StrategyConfig::BbrkCross(c) => c.validate()?,
-                StrategyConfig::BbrkDon(c) => c.validate()?,
-                StrategyConfig::BbrkEma(c) => c.validate()?,
-                StrategyConfig::BbrkHma(c) => c.validate()?,
-                StrategyConfig::BbrkHmaEma(c) => c.validate()?,
-                StrategyConfig::BbrkHmaV1(c) => c.validate()?,
-                StrategyConfig::BbrkHmaV2(c) => c.validate()?,
-                StrategyConfig::BbrkHmaV3(c) => c.validate()?,
-                StrategyConfig::BbrkHmaV4(c) => c.validate()?,
-                StrategyConfig::BbrkHmaV5(c) => c.validate()?,
-                StrategyConfig::BbrkKdj(c) => c.validate()?,
-                StrategyConfig::BbrkM2(c) => c.validate()?,
-                StrategyConfig::BbrkM3(c) => c.validate()?,
-                StrategyConfig::BbrkMax(c) => c.validate()?,
-                StrategyConfig::BbrkOrth(c) => c.validate()?,
-                StrategyConfig::BbrkPctb(c) => c.validate()?,
-                StrategyConfig::BbrkRex(c) => c.validate()?,
-                StrategyConfig::BbrkSma(c) => c.validate()?,
-                StrategyConfig::BbrkSmaEma(c) => c.validate()?,
-                StrategyConfig::BbrkStr(c) => c.validate()?,
-                StrategyConfig::BbrkTrail(c) => c.validate()?,
-                StrategyConfig::BbrkTtm(c) => c.validate()?,
-                StrategyConfig::BbrkTtmFire(c) => c.validate()?,
-                StrategyConfig::BbrkVol(c) => c.validate()?,
-                StrategyConfig::BbrkVolEma(c) => c.validate()?,
-                StrategyConfig::BbrkZlemaEma(c) => c.validate()?,
-                StrategyConfig::DualThrust(c) => c.validate()?,
-                StrategyConfig::EmaCross(c) => c.validate()?,
-                StrategyConfig::Fiali(c) => c.validate()?,
-                StrategyConfig::Keltner(c) => c.validate()?,
-                StrategyConfig::Alma(c)
-                | StrategyConfig::Dema(c)
-                | StrategyConfig::Dma(c)
-                | StrategyConfig::Ehma(c)
-                | StrategyConfig::Ema(c)
-                | StrategyConfig::Frama(c)
-                | StrategyConfig::Fwma(c)
-                | StrategyConfig::Hma(c)
-                | StrategyConfig::Jma(c)
-                | StrategyConfig::Kama(c)
-                | StrategyConfig::LinReg(c)
-                | StrategyConfig::McGinley(c)
-                | StrategyConfig::Pwma(c)
-                | StrategyConfig::SinWma(c)
-                | StrategyConfig::Sma(c)
-                | StrategyConfig::SmaCd(c)
-                | StrategyConfig::Smma(c)
-                | StrategyConfig::Swma(c)
-                | StrategyConfig::Tema(c)
-                | StrategyConfig::Tilson(c)
-                | StrategyConfig::Trima(c)
-                | StrategyConfig::Vidya(c)
-                | StrategyConfig::Vwma(c)
-                | StrategyConfig::Wilders(c)
-                | StrategyConfig::Wma(c)
-                | StrategyConfig::Zlma(c) => c.validate()?,
-                StrategyConfig::MabbLong(c) => c.validate()?,
-                StrategyConfig::MabbShort(c) => c.validate()?,
-                StrategyConfig::MaAtr(c) => c.validate()?,
-                StrategyConfig::MaSlopeAtrGate(c) => c.validate()?,
-                StrategyConfig::Macd(c) => c.validate()?,
-                StrategyConfig::RBreaker(c) => c.validate()?,
-                StrategyConfig::RSI2(c) => c.validate()?,
-                StrategyConfig::Sgma(c) => c.validate()?,
-                StrategyConfig::SsfCd(c) => c.validate()?,
-                StrategyConfig::Ssf(c) => c.validate()?,
-                StrategyConfig::SsfStCd(c) => c.validate()?,
-                StrategyConfig::SsfSt(c) => c.validate()?,
-                StrategyConfig::SwingFractal(c) => c.validate()?,
-                StrategyConfig::Turtle(c) => c.validate()?,
-                StrategyConfig::Clenow(c) => c.validate()?,
-                StrategyConfig::Vwap(c) => c.validate()?,
-                StrategyConfig::VwapTrend(c) => c.validate()?,
-            }
+            // 策略专属校验: 下沉到 `StrategyConfig::validate`(由注册表生成),
+            // 此处只负责调用 —— 不再维护 81 臂手写分派。
+            spec.strategy.validate()?;
         }
         Ok(())
     }
