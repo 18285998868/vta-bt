@@ -377,7 +377,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
 
 [[package]]
-name = "binance-data-reader"
+name = "binance-core"
 version = "0.2.0"
 dependencies = [
  "chrono",
@@ -712,7 +712,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7454e41ff9012c00d53cf7f475c5e3afa3b91b7c90568495495e8d9bf47a1055"
 
 [[package]]
-name = "dukascopy-data-reader"
+name = "dukascopy-core"
 version = "0.2.0"
 dependencies = [
  "chrono",
@@ -1834,10 +1834,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "arrow",
- "binance-data-reader",
+ "binance-core",
  "chrono",
  "clap",
- "dukascopy-data-reader",
+ "dukascopy-core",
  "parquet",
  "rayon",
  "serde",
@@ -1856,8 +1856,8 @@ name = "vta-core"
 version = "0.1.0"
 dependencies = [
  "arrow",
- "binance-data-reader",
- "dukascopy-data-reader",
+ "binance-core",
+ "dukascopy-core",
  "parquet",
  "rayon",
  "rust_decimal",

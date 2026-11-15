@@ -328,7 +328,7 @@
 
 **实施（方案 ①+③）**：
 - **①** 新增 `build.rs`：对本 crate 的 `src/`、两个 reader 的 `src/`
-  （`binance-data-reader` / `dukascopy-data-reader`）与 `Cargo.lock`（锁定 `vector-ta` 版本）做**内容哈希**（FNV-1a），经
+  （`binance-core` / `dukascopy-core`）与 `Cargo.lock`（锁定 `vector-ta` 版本）做**内容哈希**（FNV-1a），经
   `cargo:rustc-env=VTA_SOURCE_HASH` 注入，指纹混入它。
   用**内容哈希**而非 `git rev-parse` 的理由：monorepo 里改一个无关的兄弟 crate
   不该让缓存全量失效；非 git 检出时 `git` 不可用；**工作区有未提交改动时

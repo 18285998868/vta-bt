@@ -9,7 +9,7 @@
 //! 后重跑, 以为拿到了新结果, 其实拿到的是修复前的。
 //!
 //! 本脚本对**全部 workspace crate 的 `src/`**、**两个 path 依赖的 `src/`**
-//! (`binance-data-reader` / `dukascopy-data-reader`) 与根 `Cargo.lock`
+//! (`binance-core` / `dukascopy-core`) 与根 `Cargo.lock`
 //! (锁定 crates.io 的 `vector-ta` 版本) 做内容哈希 —— 它们同样影响结果
 //! (指标实现住在 `vector-ta` 里, 数据读取住在两个 reader 里), 只哈希本 crate
 //! 是不够的。
@@ -58,8 +58,8 @@ const HASHED_ROOTS: &[&str] = &[
     "../vta-report/src",
     "../vta-pbo/src",
     "../vta-cli/src",
-    "../../../binance-data-reader/src",
-    "../../../dukascopy-data-reader/src",
+    "../../../data-reader/crates/binance-core/src",
+    "../../../data-reader/crates/dukascopy-core/src",
 ];
 
 fn main() {
@@ -122,7 +122,7 @@ fn main() {
 
     for f in &files {
         // 混入**相对路径**: 两个不同目录下的同名文件(`src/config.rs` 与
-        // `../binance-data-reader/src/config.rs`)不得产生相同的字节流。
+        // `../../../data-reader/crates/binance-core/src/config.rs`)不得产生相同的字节流。
         let rel = f
             .strip_prefix(&manifest_dir)
             .unwrap_or(f.as_path())

@@ -79,8 +79,8 @@ impl<'de> Deserialize<'de> for Market {
 
 #[derive(Debug)]
 enum Inner {
-    Binance(binance_data_reader::Config),
-    Dukascopy(dukascopy_data_reader::DataConfig),
+    Binance(binance_core::Config),
+    Dukascopy(dukascopy_core::DataConfig),
 }
 
 /// Parse an optional `YYYY-MM-DD` bound shared by both readers.
@@ -127,17 +127,16 @@ impl DataConfig {
             DataSource::Binance => {
                 let market = market.unwrap_or_default();
                 let reader_market = match market {
-                    Market::Spot => binance_data_reader::Market::Spot,
-                    Market::Um => binance_data_reader::Market::Um,
-                    Market::Cm => binance_data_reader::Market::Cm,
+                    Market::Spot => binance_core::Market::Spot,
+                    Market::Um => binance_core::Market::Um,
+                    Market::Cm => binance_core::Market::Cm,
                 };
-                let interval: binance_data_reader::Interval =
-                    timeframe.parse().map_err(AppError::Msg)?;
+                let interval: binance_core::Interval = timeframe.parse().map_err(AppError::Msg)?;
                 // Binance downloader's `output_dir` is `{dir}/binance`; the
                 // reader appends `data/{market}/{period}/...` on its own.
-                let cfg = binance_data_reader::Config::builder(
+                let cfg = binance_core::Config::builder(
                     dir.join("binance"),
-                    binance_data_reader::Dataset::Klines,
+                    binance_core::Dataset::Klines,
                     symbol,
                 )
                 .market(reader_market)
@@ -150,8 +149,8 @@ impl DataConfig {
                 if market.is_some() {
                     return Err(AppError::Msg("market is only supported for binance".into()));
                 }
-                let timeframe: dukascopy_data_reader::Timeframe = timeframe.parse()?;
-                let cfg = dukascopy_data_reader::DataConfig::new(dir, symbol, timeframe)?
+                let timeframe: dukascopy_core::Timeframe = timeframe.parse()?;
+                let cfg = dukascopy_core::DataConfig::new(dir, symbol, timeframe)?
                     .with_date_range(start, end)?;
                 (Market::Um, Inner::Dukascopy(cfg))
             }
@@ -195,9 +194,7 @@ impl DataConfig {
     #[must_use]
     pub fn timeframe(&self) -> &'static str {
         match &self.inner {
-            Inner::Binance(cfg) => cfg
-                .interval()
-                .map_or("", binance_data_reader::Interval::as_str),
+            Inner::Binance(cfg) => cfg.interval().map_or("", binance_core::Interval::as_str),
             Inner::Dukascopy(cfg) => cfg.timeframe().as_str(),
         }
     }
@@ -226,8 +223,8 @@ impl DataConfig {
     /// reader 的文件级失败或 IO 错误原样上抛。
     pub fn load(&self) -> Result<KlineColumns> {
         match &self.inner {
-            Inner::Binance(cfg) => Ok(binance_data_reader::read(cfg)?.table.try_into()?),
-            Inner::Dukascopy(cfg) => Ok(dukascopy_data_reader::load_columns(cfg)?.into()),
+            Inner::Binance(cfg) => Ok(binance_core::read(cfg)?.table.try_into()?),
+            Inner::Dukascopy(cfg) => Ok(dukascopy_core::load_columns(cfg)?.into()),
         }
     }
 }
@@ -323,31 +320,31 @@ impl KlineColumns {
     }
 }
 
-impl TryFrom<binance_data_reader::Table> for KlineColumns {
+impl TryFrom<binance_core::Table> for KlineColumns {
     type Error = AppError;
 
-    fn try_from(table: binance_data_reader::Table) -> Result<Self> {
+    fn try_from(table: binance_core::Table) -> Result<Self> {
         fn column<'a, T>(
-            table: &'a binance_data_reader::Table,
+            table: &'a binance_core::Table,
             name: &str,
-            get: impl Fn(&'a binance_data_reader::Table, &str) -> Option<&'a [T]>,
+            get: impl Fn(&'a binance_core::Table, &str) -> Option<&'a [T]>,
         ) -> Result<&'a [T]> {
             get(table, name)
                 .ok_or_else(|| AppError::Msg(format!("kline table is missing `{name}` column")))
         }
 
-        let time = column(&table, "open_time", binance_data_reader::Table::i64)?.to_vec();
-        let open = column(&table, "open", binance_data_reader::Table::f64)?.to_vec();
-        let high = column(&table, "high", binance_data_reader::Table::f64)?.to_vec();
-        let low = column(&table, "low", binance_data_reader::Table::f64)?.to_vec();
-        let close = column(&table, "close", binance_data_reader::Table::f64)?.to_vec();
-        let volume = column(&table, "volume", binance_data_reader::Table::f64)?.to_vec();
+        let time = column(&table, "open_time", binance_core::Table::i64)?.to_vec();
+        let open = column(&table, "open", binance_core::Table::f64)?.to_vec();
+        let high = column(&table, "high", binance_core::Table::f64)?.to_vec();
+        let low = column(&table, "low", binance_core::Table::f64)?.to_vec();
+        let close = column(&table, "close", binance_core::Table::f64)?.to_vec();
+        let volume = column(&table, "volume", binance_core::Table::f64)?.to_vec();
         Self::new(time, open, high, low, close, volume)
     }
 }
 
-impl From<dukascopy_data_reader::KlineColumns> for KlineColumns {
-    fn from(cols: dukascopy_data_reader::KlineColumns) -> Self {
+impl From<dukascopy_core::KlineColumns> for KlineColumns {
+    fn from(cols: dukascopy_core::KlineColumns) -> Self {
         let parts = cols.into_parts();
         Self {
             time: parts.time,

@@ -30,12 +30,12 @@ authors = ["NautilusTrader Developer"]
 license = "MIT"
 
 [workspace.dependencies]
-# 指标库用 crates.io 发布版, 版本由 Cargo.lock 锁定; 两个 reader 是 /data 下的
-# 独立仓库, 用相对路径保证同机可复现。
+# 指标库用 crates.io 发布版, 版本由 Cargo.lock 锁定; 两个 reader 是 /data 下
+# `data-reader` workspace 的成员, 用相对路径保证同机可复现。
 # 换一个 patch 版本的指标库就可能改变 NaN 前缀长度, 进而改变全部历史回测结果。
 vector-ta = "0.3.1"
-binance-data-reader = { version = "0.2.0", path = "../binance-data-reader" }
-dukascopy-data-reader = { version = "0.2.0", path = "../dukascopy-data-reader" }
+binance-core = { version = "0.2.0", path = "../data-reader/crates/binance-core" }
+dukascopy-core = { version = "0.2.0", path = "../data-reader/crates/dukascopy-core" }
 rayon = "1"
 chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }

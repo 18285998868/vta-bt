@@ -4,7 +4,7 @@
 
 > 对多种技术分析指标 × 参数组合做向量化批量回测，一次遍历 `品种 × 时间帧 × (指标 × 参数范围)` 的笛卡尔积，输出 Parquet 报告（`result.parquet` 合并结果 + 可选 `detail/` 逐笔交易/权益曲线）。
 >
-> - 数据：自研 `binance-data-reader` / `dukascopy-data-reader`（workspace path 依赖，分别读取两源 K 线）；`dir` 为**数据根目录**（程序按数据源自动追加子路径）。
+> - 数据：自研 `binance-core` / `dukascopy-core`（workspace path 依赖，分别读取两源 K 线）；`dir` 为**数据根目录**（程序按数据源自动追加子路径）。
 > - 并行：rayon（单策略的参数索引按 `(0..n).into_par_iter` 并行，信号生成与回测同为一遍）。
 > - 去重执行：`overwrite = false` 且 `temps/{sym}_{tf}_{stg}_{参数指纹}.parquet` 可读即跳过（仍并入合并）。
 > - 另有 `--pbo` 模式：按（币，周期，策略）分组实算 CSCV（Bailey et al. 2016）。
@@ -57,7 +57,7 @@ period = { start = 5, end = 100, step = 5 } # 必填，参数范围；单值可�
 
 - rust，edition 2024
 - 指标计算：`vector-ta`（crates.io **0.3.1**，0.3.2 尚未发布；版本由 `Cargo.lock` 锁定 —— 换 patch 版本会改变 NaN 前缀长度，进而改变全部历史回测结果）
-- 数据读取：自研 `binance-data-reader` / `dukascopy-data-reader`（workspace path 依赖）
+- 数据读取：自研 `binance-core` / `dukascopy-core`（workspace path 依赖）
 - Rust 版本：**始终使用最新 stable**（`rust-toolchain.toml` 的 `channel = "stable"`，无需人工跟进版本号；刻意不声明 `rust-version` 下限，以免 `clippy::incompatible_msrv` 拦下新 API）
 - 并行：rayon（参数索引 `into_par_iter`）
 - 输出：arrow 60 + parquet 60
