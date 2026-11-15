@@ -13,8 +13,9 @@
 #   ./scripts/check.sh [--ci]
 #
 # Q:
-#   Q1: `cargo fmt --all` 只格式化 workspace 成员; `binance/dukascopy reader` 是
-#       仓库外的 path 依赖, 不是成员, 不会被触碰。
+#   Q1: `cargo fmt --all` 只格式化 workspace 成员; `binance-core` / `dukascopy-core`
+#       是仓库外的 path 依赖, 不是成员, 不会被触碰。C2 起策略模块由宏声明,
+#       rustfmt 无法沿 mod 树发现, 故 STEP 1 另有一次 `find ... rustfmt --check`。
 #   Q2: 工具缺失时直接失败, 不在门禁脚本里自动安装全局工具。
 
 # 直接执行时启用严格模式; 被 source 时不改调用者的 shell 选项
@@ -46,6 +47,9 @@ case ${1-} in
 esac
 
 run cargo fmt --all -- --check
+# `cargo fmt` 只沿 crate 根解析 mod 树; C2 起策略模块由 `strategy_table!`
+# 宏声明, rustfmt 看不到, 81 个策略文件会静默脱离格式门禁。这里显式全查。
+run bash -c 'find crates -name "*.rs" -not -path "*/target/*" -print0 | xargs -0 rustfmt --edition 2024 --check'
 run cargo check --workspace --all-targets --locked
 run cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 run cargo clippy --workspace --all-targets --no-default-features --locked -- -D warnings
