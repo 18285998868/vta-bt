@@ -76,6 +76,7 @@ pub(super) fn build_parquet(
     let mut buy_hold_return = Float64Builder::new();
     let mut bars_used = UInt32Builder::new();
     let mut run_status = StringBuilder::new();
+    let mut direction = StringBuilder::new();
 
     for r in results {
         let m = &r.metrics;
@@ -134,6 +135,7 @@ pub(super) fn build_parquet(
         buy_hold_return.append_value(r.buy_hold_return);
         bars_used.append_value(r.bars_used);
         run_status.append_value(r.status.as_str());
+        direction.append_value(m.direction.as_str());
     }
 
     let cols: Vec<ArrayRef> = vec![
@@ -190,6 +192,7 @@ pub(super) fn build_parquet(
         Arc::new(buy_hold_return.finish()),
         Arc::new(bars_used.finish()),
         Arc::new(run_status.finish()),
+        Arc::new(direction.finish()),
     ];
 
     let fields = vec![
@@ -271,6 +274,10 @@ pub(super) fn build_parquet(
         // 退化结果标记: 见 RunStatus。bars_used 与 status 必须配对解读。
         Field::new("bars_used", DataType::UInt32, false),
         Field::new("status", DataType::Utf8, false),
+        // 方向开关的落盘轨迹: `both` / `long_only` / `short_only`。报告口径
+        // 必须能自证"这一行是哪种方向约束下跑出来的", 否则 long-only 对照
+        // 与多空基线在表里无法区分。
+        Field::new("direction", DataType::Utf8, false),
     ];
 
     let schema = arrow::datatypes::Schema::new(fields);

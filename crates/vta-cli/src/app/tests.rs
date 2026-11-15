@@ -822,6 +822,7 @@ fn invalid_row_is_marked_invalid_and_keeps_equity_consistent() {
         temps_dir: std::path::PathBuf::from("/tmp"),
         detail_dir: std::path::PathBuf::from("/tmp"),
         window: "~".to_string(),
+        trade_start_ms: None,
         exec: vta_core::engine::ExecConfig::default(),
     };
     let r = ctx.invalid_row(
@@ -943,6 +944,7 @@ fn run_row_is_the_single_construction_point() {
         temps_dir: "t".into(),
         detail_dir: "d".into(),
         window: "a~b".into(),
+        trade_start_ms: None,
         exec: engine::ExecConfig::try_from_bps_fill(1, 2.0, 1.0, true).unwrap(),
     };
     let m = engine::SummaryMetrics {
@@ -979,4 +981,28 @@ fn run_row_is_the_single_construction_point() {
     assert_eq!(r.status, RunStatus::NoSignals);
     assert_eq!(r.metrics.sharpe_ratio, 1.25);
     assert!((r.buy_hold_pnl.to_f64() - 123.0).abs() < 1e-12);
+}
+
+#[test]
+fn trade_start_cut_and_engine_start_follow_research_warmup() {
+    let time = [100_i64, 200, 300, 400];
+    assert_eq!(trade_start_cut(&time, None), 0);
+    assert_eq!(trade_start_cut(&time, Some(0)), 0);
+    assert_eq!(trade_start_cut(&time, Some(200)), 1);
+    assert_eq!(trade_start_cut(&time, Some(250)), 2);
+    assert_eq!(trade_start_cut(&time, Some(500)), 4);
+    // 引擎必须多喂一根信号 bar: 起点前一日收盘信号在起点开盘成交。
+    assert_eq!(engine_start(0), 0);
+    assert_eq!(engine_start(1), 0);
+    assert_eq!(engine_start(2), 1);
+}
+
+#[test]
+fn kline_slice_from_keeps_tail_and_clamps() {
+    let c = cols(5);
+    let tail = c.slice_from(2);
+    assert_eq!(tail.len(), 3);
+    assert_eq!(tail.time(), &c.time()[2..]);
+    assert_eq!(tail.close(), &c.close()[2..]);
+    assert_eq!(c.slice_from(99).len(), 0);
 }

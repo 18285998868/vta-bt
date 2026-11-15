@@ -24,7 +24,7 @@ crates/
   vta-strategies/      # 策略实现与参数网格
     src/lib.rs         # Strategy trait / ParamOutcome / param_skipped
     src/config.rs      # StrategySpec / 参数类型; StrategyConfig 由注册表生成
-    src/registry.rs    # 81 个策略的唯一注册表(变体 / TOML tag / 构造方式)
+    src/registry.rs    # 85 个策略的唯一注册表(变体 / TOML tag / 构造方式)
     src/params.rs      # param_str 的逆运算: 参数串 JSON 与 u64 编码
     src/shared.rs      # 指标前缀和 / 通道 / 信号辅助
     src/single_ma.rs   # 单 MA 策略的泛型 Strategy 实现(MaCalculator)

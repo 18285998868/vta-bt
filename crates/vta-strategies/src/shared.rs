@@ -57,6 +57,35 @@ pub fn price_cross_signal(indicator: &[f64], close: &[f64]) -> Vec<Signal> {
     sig
 }
 
+/// pandas `ewm(adjust=False)` 的递归均值, 前 `min_periods-1` 个有效观测输出
+/// `NaN`。
+///
+/// 为什么不用指标库的 EMA: pandas `ewm(span=n, adjust=False, min_periods=n)`
+/// 的种子是**第一个收盘价**, 而多数 TA 库用前 n 根的 SMA 做种子。两者在
+/// 前 n 根之后仍会残留差异, 研究复现(双均线交叉/肯特纳中轨)需要逐位对齐。
+///
+/// `alpha` 由调用方给出: EMA 传 `2/(span+1)`, Wilder RMA 传 `1/period`。
+/// 非有限值按 pandas 的缺失值处理(跳过并保持状态)。
+pub(crate) fn ewm_adjust_false(values: &[f64], alpha: f64, min_periods: usize) -> Vec<f64> {
+    let mut out = vec![f64::NAN; values.len()];
+    let mut state: Option<f64> = None;
+    let mut seen = 0usize;
+    for (i, &x) in values.iter().enumerate() {
+        if !x.is_finite() {
+            continue;
+        }
+        state = Some(match state {
+            None => x,
+            Some(prev) => alpha.mul_add(x, (1.0 - alpha) * prev),
+        });
+        seen += 1;
+        if seen >= min_periods {
+            out[i] = state.unwrap_or(f64::NAN);
+        }
+    }
+    out
+}
+
 /// K 线方向过滤: 多头信号要求 `close > open`, 空头信号要求 `close < open`。
 ///
 /// 用于 `ssf_cd` / `ssf_st_cd`: 趋势跟踪在震荡市反复假突破, 要求当根 K 线方向与

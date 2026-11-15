@@ -1,6 +1,6 @@
 //! # vta-strategies — 策略实现与参数网格
 //!
-//! 81 个策略各一个模块, 统一的 [`Strategy`] trait 与逐档 [`ParamOutcome`]
+//! 85 个策略各一个模块, 统一的 [`Strategy`] trait 与逐档 [`ParamOutcome`]
 //! 契约; 参数类型与网格展开在 [`config`], 参数串编码在 [`params`]。
 //!
 //! 本 crate 只依赖 `vta-core`(引擎/信号/金额), 不依赖 CLI 与 Parquet 层。

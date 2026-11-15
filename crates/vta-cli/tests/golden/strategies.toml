@@ -255,6 +255,17 @@ type = "keltner"
 mult = { start = 1.5, end = 2.5, step = 0.5 }
 
 [[strategy]]
+type = "keltner_mid"
+n = { start = 20, end = 30, step = 10 }
+k = 2.0
+atrlen = 10
+
+[[strategy]]
+type = "boll_mid_long"
+n = { start = 20, end = 50, step = 30 }
+k = 2.0
+
+[[strategy]]
 type = "lin_reg"
 period = { start = 10, end = 30, step = 10 }
 
@@ -293,6 +304,12 @@ atrlen = 14
 [[strategy]]
 type = "macd"
 groups = [[12, 26, 9]]
+
+[[strategy]]
+type = "ma_cross"
+ma = ["sma", "ema"]
+fast = { start = 10, end = 20, step = 10 }
+slow = { start = 30, end = 40, step = 10 }
 
 [[strategy]]
 type = "mc_ginley"
@@ -371,6 +388,11 @@ period = { start = 10, end = 30, step = 10 }
 
 [[strategy]]
 type = "turtle"
+entry = { start = 20, end = 55, step = 35 }
+exit = { start = 10, end = 20, step = 10 }
+
+[[strategy]]
+type = "donchian_long"
 entry = { start = 20, end = 55, step = 35 }
 exit = { start = 10, end = 20, step = 10 }
 

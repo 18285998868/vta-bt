@@ -2,8 +2,10 @@
 
 use std::num::NonZeroUsize;
 
+use chrono::NaiveDate;
 use serde::Deserialize;
 
+use vta_core::engine::Direction;
 use vta_core::error::AppError;
 
 /// 初始资金: **严格正**, 且是**定点十进制金额**。
@@ -101,6 +103,10 @@ pub(super) struct RawBacktestConfig {
     slippage_bps: f64,
     #[serde(default)]
     fill_bar_price: FillBarPrice,
+    #[serde(default)]
+    direction: Direction,
+    #[serde(default)]
+    trade_start: Option<String>,
 }
 
 /// 回测执行配置。**字段类型保证值合法**, 无需事后 `validate()`:
@@ -120,12 +126,36 @@ pub struct BacktestConfig {
     pub slippage_bps: SlippageBps,
     /// fill bar 的成交价: "open"(默认, 次根开盘)或 "close"(次根收盘)。
     pub fill_bar_price: FillBarPrice,
+    /// 允许开仓的方向: `both`(默认) / `long_only` / `short_only`。
+    ///
+    /// 这是**引擎层**的过滤, 与策略参数无关: 被禁方向的开仓信号按 `Hold`
+    /// 处理(不反手、不平仓), `Close` / `ExitLong` / `ExitShort` 不受影响。
+    /// 同一组多空信号因此可以用配置切换到 long-only 口径做对照。
+    pub direction: Direction,
+    /// 交易起点(含): 此日期之前的 bar 只用于预热指标/策略状态, 不产生成交。
+    ///
+    /// 与 `[data].start_date` 的区别: `start_date` 是**数据加载**边界, 指标会
+    /// 从该日冷启动; `trade_start` 保留更早的数据做暖机, 回测从该日正式开始,
+    /// 起始日空仓。研究脚本"全历史算指标 + start 日重置状态"的口径即此语义。
+    /// 缺省 `None` 保持旧行为。
+    pub trade_start: Option<NaiveDate>,
 }
 
 impl TryFrom<RawBacktestConfig> for BacktestConfig {
     type Error = AppError;
 
     fn try_from(r: RawBacktestConfig) -> vta_core::error::Result<Self> {
+        let trade_start = r
+            .trade_start
+            .as_deref()
+            .map(|raw| {
+                NaiveDate::parse_from_str(raw.trim(), "%Y-%m-%d").map_err(|_| {
+                    AppError::Msg(format!(
+                        "backtest.trade_start 须为 YYYY-MM-DD, 当前为 {raw:?}"
+                    ))
+                })
+            })
+            .transpose()?;
         Ok(Self {
             initial_balance: InitialBalance::try_from(r.initial_balance)?,
             delay_bars: NonZeroUsize::new(r.delay_bars).ok_or_else(|| {
@@ -136,6 +166,8 @@ impl TryFrom<RawBacktestConfig> for BacktestConfig {
             fee_bps: FeeBps::try_from(r.fee_bps)?,
             slippage_bps: SlippageBps::try_from(r.slippage_bps)?,
             fill_bar_price: r.fill_bar_price,
+            direction: r.direction,
+            trade_start,
         })
     }
 }

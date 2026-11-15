@@ -62,10 +62,20 @@ pub fn run_with(config_path: &std::path::Path, opts: RunOptions) -> vta_core::er
     let fixed_curves = config.output.as_ref().is_some_and(|o| o.fixed_curves);
     let overwrite = config.output.as_ref().is_some_and(|o| o.overwrite);
     let balance = config.backtest.initial_balance.amount();
+    let trade_start_ms = config
+        .backtest
+        .trade_start
+        .and_then(|d| d.and_hms_opt(0, 0, 0))
+        .map(|dt| dt.and_utc().timestamp_millis());
     let window = format!(
-        "{}~{}",
+        "{}~{}@{}",
         config.data.start_date.as_deref().unwrap_or(""),
-        config.data.end_date.as_deref().unwrap_or("")
+        config.data.end_date.as_deref().unwrap_or(""),
+        config
+            .backtest
+            .trade_start
+            .map(|d| d.to_string())
+            .unwrap_or_default()
     );
 
     let symbols = config.data.symbols();
@@ -110,12 +120,14 @@ pub fn run_with(config_path: &std::path::Path, opts: RunOptions) -> vta_core::er
         temps_dir: temps_dir.clone(),
         detail_dir: detail_dir.clone(),
         window: window.clone(),
+        trade_start_ms,
         exec: vta_core::engine::ExecConfig::try_from_bps_fill(
             config.backtest.delay_bars.get(),
             config.backtest.fee_bps.get(),
             config.backtest.slippage_bps.get(),
             config.backtest.fill_bar_price == config::FillBarPrice::Close,
-        )?,
+        )?
+        .with_direction(config.backtest.direction),
     };
 
     tracing::info!("\n{}", "=".repeat(70));

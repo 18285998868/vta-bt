@@ -91,6 +91,57 @@ fn test_buy_and_hold() {
     assert_eq!(m.num_trades, 1);
 }
 
+/// `Direction` 过滤只作用于**开仓方向**: 被禁方向的 `Buy`/`Sell` 保持当前
+/// 目标, `Close`/`ExitLong`/`ExitShort` 照常平仓。
+#[test]
+fn direction_filter_is_enforced_by_the_target_state_machine() {
+    use Direction::{Both, LongOnly, ShortOnly};
+    assert_eq!(next_target(Side::Flat, Signal::Sell, LongOnly), Side::Flat);
+    assert_eq!(next_target(Side::Long, Signal::Sell, LongOnly), Side::Long);
+    assert_eq!(next_target(Side::Long, Signal::Close, LongOnly), Side::Flat);
+    assert_eq!(
+        next_target(Side::Short, Signal::Buy, ShortOnly),
+        Side::Short
+    );
+    assert_eq!(next_target(Side::Flat, Signal::Buy, ShortOnly), Side::Flat);
+    assert_eq!(
+        next_target(Side::Short, Signal::ExitShort, ShortOnly),
+        Side::Flat
+    );
+    // `Both` 逐位保持旧行为: 信号即目标。
+    assert_eq!(next_target(Side::Long, Signal::Sell, Both), Side::Short);
+    assert_eq!(next_target(Side::Flat, Signal::Buy, Both), Side::Long);
+}
+
+/// 端到端: 同一组信号在 `long_only` 下不会反手做空。
+#[test]
+fn long_only_never_flips_into_a_short() {
+    let close: Vec<f64> = (0..60).map(|i| 100.0 + i as f64).collect();
+    let mut sig = vec![Signal::Hold; 60];
+    sig[0] = Signal::Buy;
+    sig[10] = Signal::Sell;
+    let run = |exec: ExecConfig| {
+        simulate(
+            &close,
+            &close,
+            &sig,
+            crate::money::Amount::from_i64(1000),
+            252.0,
+            &exec,
+        )
+        .expect("合法回测必须成功")
+    };
+    let both = run(ExecConfig::default());
+    let long_only = run(ExecConfig::default().with_direction(Direction::LongOnly));
+    // 多空: Buy 开多 → Sell 反手(平多+开空) → 末根强平 = 2 笔已平仓交易。
+    assert_eq!(both.num_trades, 2);
+    // 多头: Sell 被忽略, 只保留开多与末根强平。
+    assert_eq!(long_only.num_trades, 1);
+    assert_eq!(long_only.direction, Direction::LongOnly);
+    assert_eq!(both.direction, Direction::Both);
+    assert!(long_only.total_return > both.total_return);
+}
+
 #[test]
 fn test_default_exec_fills_at_next_bar_open() {
     // 默认口径 = delay 1 + fill bar 开盘价: bar0 信号在 bar1 开盘成交,
@@ -1466,10 +1517,22 @@ fn run_stop(
 
 #[test]
 fn exit_long_and_exit_short_only_close_matching_side() {
-    assert_eq!(next_target(Side::Long, Signal::ExitLong), Side::Flat);
-    assert_eq!(next_target(Side::Short, Signal::ExitLong), Side::Short);
-    assert_eq!(next_target(Side::Short, Signal::ExitShort), Side::Flat);
-    assert_eq!(next_target(Side::Long, Signal::ExitShort), Side::Long);
+    assert_eq!(
+        next_target(Side::Long, Signal::ExitLong, Direction::Both),
+        Side::Flat
+    );
+    assert_eq!(
+        next_target(Side::Short, Signal::ExitLong, Direction::Both),
+        Side::Short
+    );
+    assert_eq!(
+        next_target(Side::Short, Signal::ExitShort, Direction::Both),
+        Side::Flat
+    );
+    assert_eq!(
+        next_target(Side::Long, Signal::ExitShort, Direction::Both),
+        Side::Long
+    );
 
     let open = [100.0; 5];
     let signals = [

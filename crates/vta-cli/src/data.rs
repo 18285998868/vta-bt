@@ -318,6 +318,23 @@ impl KlineColumns {
     pub fn is_empty(&self) -> bool {
         self.close.is_empty()
     }
+
+    /// 从 `start` 起截取(含 `start`); 越界时返回空列。
+    ///
+    /// 用于 `trade_start` 预热: 指标在完整历史上计算, 回测只喂入起点(及
+    /// 前一根信号 bar), 引擎从空仓开始。
+    #[must_use]
+    pub fn slice_from(&self, start: usize) -> Self {
+        let start = start.min(self.len());
+        Self {
+            time: self.time[start..].to_vec(),
+            open: self.open[start..].to_vec(),
+            high: self.high[start..].to_vec(),
+            low: self.low[start..].to_vec(),
+            close: self.close[start..].to_vec(),
+            volume: self.volume[start..].to_vec(),
+        }
+    }
 }
 
 impl TryFrom<binance_core::Table> for KlineColumns {

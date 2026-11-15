@@ -25,7 +25,7 @@ mod types;
 mod tests;
 
 pub use accum::{CurveAccum, CurveStats, bar_log_returns};
-pub use exec::{ExecConfig, Side};
+pub use exec::{Direction, ExecConfig, Side};
 pub use metrics::buy_hold_pnl;
 pub use sizing::SizingConfig;
 pub use stops::{AtrStopConfig, BreakevenConfig, StopConfig};

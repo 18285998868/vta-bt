@@ -460,6 +460,48 @@ fn stop_exit_counts_roundtrip_through_parquet() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// 方向开关必须随结果落盘并原样读回: 报告若不能自证 `long_only`, long-only
+/// 对照与多空基线在表里就无法区分(同一 strategy/params 会有两行)。
+#[test]
+fn direction_column_roundtrips_through_parquet() {
+    let r = RunResult {
+        symbol: "BTCUSDT".into(),
+        timeframe: "1d".into(),
+        strategy: "turtle".into(),
+        params: "entry=20,exit=10".into(),
+        strategy_params: 20,
+        strategy_params_json: "{\"entry\":\"20\",\"exit\":\"10\"}".into(),
+        metrics: SummaryMetrics {
+            direction: vta_core::engine::Direction::LongOnly,
+            ..SummaryMetrics::default()
+        },
+        delay_bars: 1,
+        fee_bps: 0.0,
+        slippage_bps: 0.0,
+        fill_close: false,
+        buy_hold_pnl: vta_core::money::Amount::ZERO,
+        buy_hold_return: 0.0,
+        bars_used: 300,
+        status: vta_core::RunStatus::Ok,
+    };
+    let dir = std::env::temp_dir().join(format!("vta-direction-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = dir.join("r.parquet");
+    write_parquet(
+        &p,
+        std::slice::from_ref(&r),
+        vta_core::money::Amount::from_i64(10_000),
+    )
+    .unwrap();
+    let back = read_parquet(&p).unwrap();
+    assert_eq!(
+        back[0].metrics.direction,
+        vta_core::engine::Direction::LongOnly
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// O6: `strategy_params` / `strategy_params_json` 必须**原样往返**。
 ///
 /// 原实现在合并时从 `params` 重新推导两个列。若编码规则与写盘时不一致

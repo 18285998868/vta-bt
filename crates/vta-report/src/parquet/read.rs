@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use arrow::record_batch::RecordBatch;
 
 use vta_core::RunResult;
-use vta_core::engine::SummaryMetrics;
+use vta_core::engine::{Direction, SummaryMetrics};
 use vta_core::error::Result;
 
 use super::columns::*;
@@ -174,6 +174,20 @@ pub fn read_parquet(path: &Path) -> Result<Vec<RunResult>> {
                 .collect::<Vec<_>>(),
             None => vec![vta_core::RunStatus::default(); n],
         };
+        // 方向开关是后加的列: 旧缓存文件没有它 → `both`(旧行为)。
+        let direction = match ci.opt("direction") {
+            Some(i) => str_col(&batch, i, path)?
+                .iter()
+                .map(|s| match s.as_str() {
+                    "long_only" => Direction::LongOnly,
+                    "short_only" => Direction::ShortOnly,
+                    // `both` 与未来版本的未知取值都保守落 `Both`: 方向是执行
+                    // 口径, 未知值不能臆断成某个受限方向。
+                    _ => Direction::Both,
+                })
+                .collect::<Vec<_>>(),
+            None => vec![Direction::Both; n],
+        };
 
         for i in 0..n {
             all.push(RunResult {
@@ -234,6 +248,7 @@ pub fn read_parquet(path: &Path) -> Result<Vec<RunResult>> {
                     fixed_max_drawdown_pct: fixed_max_dd[i] * 100.0,
                     fixed_expectancy_bps: fixed_expectancy_bps[i],
                     fixed_profit_factor: fixed_profit_factor[i],
+                    direction: direction[i],
                 },
             });
         }

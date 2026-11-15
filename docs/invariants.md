@@ -52,7 +52,7 @@
 | `Bars` / `Count` | bar 数 / 整数计数 | `avg_hold_bars` / `trades`、`stop_loss_exits`、`trailing_stop_exits`、`strategy_stop_exits`、`bars_used`、`delay_bars`、`consecutive_*` |
 | `PerYear` | 次 / 年 | `turnover_per_year` |
 | `BasisPoints` | 基点 | `fee_bps`、`slippage_bps`、`fixed_expectancy_bps` |
-| `Dimensionless` | 无量纲非比率 | `sharpe`、`sortino`、`profit_factor`、`calmar`、`skewness`、`kurtosis`、`p_value` … |
+| `Dimensionless` | 无量纲非比率 | `sharpe`、`sortino`、`profit_factor`、`calmar`、`skewness`、`kurtosis`、`p_value`、`direction` … |
 
 **已修正的单位错配**：`max_drawdown` 一直是小数，而 `fixed_max_drawdown_pct`
 原本也是百分数 —— 两条腿并排对比时 fixed 腿会凭空大 100 倍。现已统一为小数并改名

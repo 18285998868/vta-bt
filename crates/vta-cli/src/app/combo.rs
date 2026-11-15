@@ -25,6 +25,8 @@ pub(super) struct ComboCtx {
     pub(super) detail_dir: PathBuf,
     /// 数据窗口标识 (start_date/end_date), 纳入缓存指纹以区分不同数据区间。
     pub(super) window: String,
+    /// 交易起点(UTC 毫秒); `None` = 数据首根即开始交易。
+    pub(super) trade_start_ms: Option<i64>,
     pub(super) exec: vta_core::engine::ExecConfig,
 }
 
@@ -361,6 +363,24 @@ fn gib(bytes: u64) -> String {
     }
 }
 
+/// `trade_start` 对应的首个 bar 下标(含); 无配置时返回 0。
+///
+/// 时间列是 bar 开盘时间(UTC 毫秒)。找不到(数据全部早于起点)时返回
+/// `time.len()`; 调用方据此拒绝该组合, 而不是拿一个空窗口算出 0 收益。
+pub(super) fn trade_start_cut(time: &[i64], trade_start_ms: Option<i64>) -> usize {
+    trade_start_ms.map_or(0, |t0| time.partition_point(|&t| t < t0))
+}
+
+/// 引擎起点: 交易起点前一根(若存在)。
+///
+/// 研究口径是 `close(t)` 出信号、`open(t+1)` 成交。`trade_start` 当天的
+/// 持仓只能来自前一天收盘的信号, 因此必须把 `t-1` 这根**信号 bar** 喂给
+/// 引擎; 引擎从该根空仓起步, 信号在起点开盘成交。若从起点当根才开始,
+/// 会漏掉起点前一日上穿/下穿造成的建仓/离场。
+pub(super) fn engine_start(cut: usize) -> usize {
+    cut.saturating_sub(1)
+}
+
 /// 执行单个 (symbol, timeframe, strategy) 组合:
 /// 1. 若 overwrite=false 且缓存文件(含参数指纹)已存在且可读, 直接返回(跳过)
 /// 2. 该策略的 n 个参数并行执行 信号生成+回测; detail 模式收集 trades/equity_curve
@@ -458,9 +478,25 @@ pub(super) fn run_combo(
         vta_report::invalidate_combo_detail_manifest(&combo_path)?;
     }
 
-    let (bh_pnl, bh_ret) = engine::buy_hold_pnl(cols.close(), ctx.balance)?;
+    // `trade_start` 之前的数据只用于指标/状态预热; 引擎从起点前一根开始,
+    // 使起点前一日收盘信号能在起点开盘成交。`report_offset` 是这一段
+    // "信号预热 bar" 的长度(0 或 1), 用于基准与 bars_used 口径。
+    let full = cols;
+    let cut = trade_start_cut(full.time(), ctx.trade_start_ms);
+    if cut >= full.len() && ctx.trade_start_ms.is_some() {
+        return Err(vta_core::error::AppError::Msg(format!(
+            "[{symbol}/{tf}] backtest.trade_start 晚于数据末根, 无交易区间"
+        )));
+    }
+    let start_at = engine_start(cut);
+    let report_offset = cut - start_at;
+    let sliced = (start_at > 0).then(|| full.slice_from(start_at));
+    let cols = sliced.as_ref().unwrap_or(full);
+
+    let (bh_pnl, bh_ret) = engine::buy_hold_pnl(&cols.close()[report_offset..], ctx.balance)?;
     // detail 与非 detail 的峰值估算单位不同(曲线 vs 信号), 但预算与分块公式一致。
-    let plan = ChunkPlan::new(strategy.name(), ctx.detail, cols.len(), n)?;
+    // 信号仍在完整历史上生成, 故按完整 bar 数估峰值。
+    let plan = ChunkPlan::new(strategy.name(), ctx.detail, full.len(), n)?;
     plan.log(strategy.name(), n, ctx.detail);
 
     let eval = ParamEval {
@@ -471,7 +507,7 @@ pub(super) fn run_combo(
         ohlcv: engine::Ohlcv::new(cols.open(), cols.high(), cols.low(), cols.close()),
         time: cols.time(),
         bpy,
-        bars_used: cols.len(),
+        bars_used: cols.len().saturating_sub(report_offset),
         bh_pnl,
         bh_ret,
     };
@@ -482,16 +518,32 @@ pub(super) fn run_combo(
         let end = (start + plan.chunk).min(n);
         let batch = strategy.generate_signals_batch(
             vta_strategies::Bars::new(
-                cols.open(),
-                cols.high(),
-                cols.low(),
-                cols.close(),
-                cols.volume(),
-                cols.time(),
+                full.open(),
+                full.high(),
+                full.low(),
+                full.close(),
+                full.volume(),
+                full.time(),
             ),
             start..end,
         )?;
         check_batch_len(strategy.name(), batch.len(), end - start)?;
+        // 预热段信号只用于确定起点前一根的目标: 起点前一根的信号由引擎在
+        // 起点开盘执行, 更早的信号必须丢弃(起点当天从空仓开始)。
+        let batch: Vec<vta_strategies::ParamOutcome> = if start_at > 0 {
+            batch
+                .into_iter()
+                .map(|outcome| match outcome {
+                    vta_strategies::ParamOutcome::Signals(mut signals) => {
+                        signals.drain(..start_at.min(signals.len()));
+                        vta_strategies::ParamOutcome::Signals(signals)
+                    }
+                    skipped => skipped,
+                })
+                .collect()
+        } else {
+            batch
+        };
         // 每档独立: `Skipped` = 该档不可计算(记 Invalid, **继续**跑),
         // `Signals` = 正常回测。
         let evaluated = batch

@@ -33,6 +33,10 @@ initial_balance = 10000.0
 # delay_bars = 1
 # 可选, fill bar 的成交价, 默认 "open"(次根开盘); "close" 为次根收盘(多等一根 bar 内漂移)
 # fill_bar_price = "close"
+# 可选, 允许开仓的方向, 默认 "both"; "long_only" 时 Sell 视为 Hold(不反手)
+# direction = "long_only"
+# 可选, 交易起点(YYYY-MM-DD); 之前的 bar 只预热指标, 不成交。默认: None
+# trade_start = "2020-10-01"
 # 可选, 单边佣金(bp), 默认 0。如 taker 2bp 填 2.0, maker 零费填 0
 # fee_bps = 2.0
 # 可选, 单边逆向滑点(bp), 默认 0。买入抬价、卖出压价, 与佣金叠加扣除
@@ -60,6 +64,9 @@ overwrite = false
 # 支持的策略类型:
 #   sma, ema, dema, tema, hma, zlma, alma, fwma, jma,
 #   ema_cross(双均线: fast/slow 双范围, 只取 fast<slow)
+#   ma_cross(双均线交叉, 只做多: ma/fast/slow), keltner_mid(EMA 中轨 ± k·ATR)
+#   donchian_long(唐奇安通道突破, 只做多: entry/exit)
+#   boll_mid_long(布林带突破, 只做多: n/k, ddof=0, 中轨离场)
 #   kama, lin_reg, mc_ginley, pwma, sin_wma, swma,
 #   tilson, trima, vidya, vwma, wilders, wma, ssf, ssf_st
 #

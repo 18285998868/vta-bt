@@ -2,7 +2,52 @@
 
 use std::num::NonZeroUsize;
 
+use serde::Deserialize;
+
 use crate::Signal;
+
+/// 允许开仓的方向。
+///
+/// 策略信号本身仍可给出 `Buy` / `Sell`; 本开关在**引擎**层过滤目标方向:
+/// 被禁方向的开仓信号视为 `Hold`(不反手、不平仓), `Close` / `ExitLong` /
+/// `ExitShort` 不受影响。默认 `Both` 保持旧行为逐位不变。
+///
+/// 为什么放在引擎而不是策略: 研究口径常需要把同一组多空信号跑成 long-only
+/// 对照(或 short-only 互补研究)。若由每个策略各自删掉一支信号, 同一策略的
+/// 多空行为就无法用配置切换, 而且每个策略都要重复实现一遍过滤。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Direction {
+    /// 多空都可开(默认, 旧行为)。
+    #[default]
+    Both,
+    /// 只允许开多; `Sell` 视为 `Hold`。
+    LongOnly,
+    /// 只允许开空; `Buy` 视为 `Hold`。
+    ShortOnly,
+}
+
+impl Direction {
+    /// 报告列 `direction` 的冻结文本。
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Both => "both",
+            Self::LongOnly => "long_only",
+            Self::ShortOnly => "short_only",
+        }
+    }
+
+    /// `side` 是否允许作为目标持仓方向(平仓方向不受限)。
+    #[must_use]
+    pub const fn allows(self, side: Side) -> bool {
+        match self {
+            Self::Both => true,
+            Self::LongOnly => !matches!(side, Side::Short),
+            Self::ShortOnly => !matches!(side, Side::Long),
+        }
+    }
+}
 
 /// 成交执行假设。`delay_bars = 1` 为推荐口径(信号次根 fill bar 成交,
 /// `fill_close=false` 取开盘, `fill_close=true` 取收盘)。费率按单边名义扣除。
@@ -21,6 +66,8 @@ pub struct ExecConfig {
     pub slip_rate: f64,
     /// fill bar 取收盘(true)还是开盘(false, 默认)。
     pub fill_close: bool,
+    /// 允许开仓的方向; 默认 `Both` 保持旧行为。
+    pub direction: Direction,
 }
 
 impl Default for ExecConfig {
@@ -31,6 +78,7 @@ impl Default for ExecConfig {
             fee_rate: 0.0,
             slip_rate: 0.0,
             fill_close: false,
+            direction: Direction::Both,
         }
     }
 }
@@ -73,10 +121,18 @@ impl ExecConfig {
             fee_rate: fee_bps / 10_000.0,
             slip_rate: slippage_bps / 10_000.0,
             fill_close,
+            direction: Direction::Both,
         };
         // 费率本身有限不代表 `rate * 10_000` 有限; 后者会写进报告的 bps 列。
         config.validate_rates()?;
         Ok(config)
+    }
+
+    /// 设置允许开仓的方向(链式构造, 默认 `Both`)。
+    #[must_use]
+    pub const fn with_direction(mut self, direction: Direction) -> Self {
+        self.direction = direction;
+        self
     }
 
     /// [`Self::try_from_bps_fill`] 的 infallible 版本(固定 `fill_close = false`)。

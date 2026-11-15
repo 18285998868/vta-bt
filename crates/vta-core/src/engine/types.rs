@@ -1,6 +1,6 @@
 //! 引擎的公开数据类型: 指标、交易与求值结果。
 
-use super::exec::{ExecConfig, Side};
+use super::exec::{Direction, ExecConfig, Side};
 
 /// 单次求值的全部回测指标。
 ///
@@ -98,6 +98,8 @@ pub struct SummaryMetrics {
     pub fee_bps: f64,
     /// 执行口径: 单边逆向滑点(bp)。
     pub slippage_bps: f64,
+    /// 执行口径: 允许开仓的方向(`both` / `long_only` / `short_only`)。
+    pub direction: Direction,
     /// fixed 腿总收益率(小数, 固定名义不复利)。研究报告引用此值, 而非复利 total_return。
     pub fixed_total_return: f64,
     /// fixed 腿年化夏普(与 sharpe_ratio 同公式, 曲线为 fixed 盯市)。
@@ -123,6 +125,7 @@ impl SummaryMetrics {
         self.delay_bars = exec.delay_u32();
         self.fee_bps = exec.fee_rate * 10_000.0;
         self.slippage_bps = exec.slip_rate * 10_000.0;
+        self.direction = exec.direction;
     }
 }
 

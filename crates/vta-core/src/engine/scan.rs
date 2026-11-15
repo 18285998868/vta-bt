@@ -3,7 +3,7 @@
 use crate::Signal;
 
 use super::accum::{CurveAccum, TradeAccum};
-use super::exec::{ExecConfig, Side};
+use super::exec::{Direction, ExecConfig, Side};
 use super::sizing::{SizingConfig, entry_qty};
 use super::stops::{
     AtrStopConfig, StopConfig, atr_at_entry, stop_exit_price, tighter_stop, wilder_atr,
@@ -19,15 +19,17 @@ use super::types::{ExitReason, Trade};
 ///
 /// 状态机是**前缀累积**的, 故逐 bar 增量维护与先物化再索引**逐位等价**。
 #[inline]
-pub(super) fn next_target(prev: Side, sig: Signal) -> Side {
-    match sig {
+pub(super) fn next_target(prev: Side, sig: Signal, direction: Direction) -> Side {
+    let next = match sig {
         Signal::Buy => Side::Long,
         Signal::Sell => Side::Short,
         Signal::Close => Side::Flat,
         Signal::ExitLong if prev == Side::Long => Side::Flat,
         Signal::ExitShort if prev == Side::Short => Side::Flat,
         Signal::ExitLong | Signal::ExitShort | Signal::Hold => prev,
-    }
+    };
+    // 被禁方向的开仓信号按 Hold 处理: 保持当前目标, 不反手也不平仓。
+    if direction.allows(next) { next } else { prev }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -746,7 +748,7 @@ pub(super) fn scan_trades(
         }
 
         // 4) 本 bar 的信号只影响 `i + delay` 的成交, 先算出新目标并排队。
-        target = next_target(target, signals[i]);
+        target = next_target(target, signals[i], exec.direction);
         pending.push_back(target);
     }
 

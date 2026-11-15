@@ -2,6 +2,7 @@
 
 use super::backtest::*;
 use super::*;
+use vta_core::engine::Direction;
 use vta_strategies::{PeriodParam, RangeParam};
 
 fn make_toml(balance: f64, symbol: bool, strategy: bool) -> String {
@@ -382,6 +383,53 @@ fn fill_bar_price_accepts_close_and_rejects_unknown() {
     assert_eq!(cfg.backtest.fill_bar_price, FillBarPrice::Close);
     let bad = toml.replace("\"close\"", "\"mid\"");
     assert!(toml::from_str::<Config>(&bad).is_err());
+}
+
+#[test]
+fn direction_defaults_to_both_and_accepts_known_values() {
+    let mk = |extra: &str| {
+        format!(
+            "[data]\ntype = \"binance\"\ndir = \"/tmp\"\nsymbol = \"BTCUSDT\"\ntimeframe = \"1d\"\n\n\
+             [backtest]\ninitial_balance = 10000.0\n{extra}\n\
+             [[strategy]]\ntype = \"sma\"\nperiod = 20\n"
+        )
+    };
+    let cfg: Config = toml::from_str(&mk("")).unwrap();
+    assert_eq!(cfg.backtest.direction, Direction::Both);
+
+    for (text, want) in [
+        ("long_only", Direction::LongOnly),
+        ("short_only", Direction::ShortOnly),
+        ("both", Direction::Both),
+    ] {
+        let cfg: Config = toml::from_str(&mk(&format!("direction = \"{text}\""))).unwrap();
+        assert_eq!(cfg.backtest.direction, want);
+        assert_eq!(cfg.backtest.direction.as_str(), text);
+    }
+
+    // 拼错的方向必须报错, 不能静默落回 `both`。
+    assert!(toml::from_str::<Config>(&mk("direction = \"long\"")).is_err());
+}
+
+#[test]
+fn trade_start_defaults_to_none_and_rejects_non_date() {
+    let mk = |extra: &str| {
+        format!(
+            "[data]\ntype = \"binance\"\ndir = \"/tmp\"\nsymbol = \"BTCUSDT\"\ntimeframe = \"1d\"\n\n\
+             [backtest]\ninitial_balance = 10000.0\n{extra}\n\
+             [[strategy]]\ntype = \"sma\"\nperiod = 20\n"
+        )
+    };
+    let cfg: Config = toml::from_str(&mk("")).unwrap();
+    assert_eq!(cfg.backtest.trade_start, None);
+
+    let cfg: Config = toml::from_str(&mk("trade_start = \"2020-10-01\"")).unwrap();
+    assert_eq!(
+        cfg.backtest.trade_start.map(|d| d.to_string()).as_deref(),
+        Some("2020-10-01")
+    );
+    assert!(toml::from_str::<Config>(&mk("trade_start = \"2020-13-01\"")).is_err());
+    assert!(toml::from_str::<Config>(&mk("trade_start = \"20201001\"")).is_err());
 }
 
 fn make_stop_toml(stop_body: &str) -> String {

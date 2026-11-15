@@ -357,6 +357,8 @@ pub(super) fn compute_metrics(
         delay_bars: 0,
         fee_bps: 0.0,
         slippage_bps: 0.0,
+        // 方向同理, 由 `apply_exec` 回填; 裸 `compute` 不知道执行配置。
+        direction: super::exec::Direction::Both,
         fixed_total_return: fx_st.total_return,
         fixed_sharpe_ratio: fx_st.sharpe,
         fixed_max_drawdown_pct: fx_st.max_dd * 100.0,

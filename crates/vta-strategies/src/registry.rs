@@ -43,6 +43,7 @@ macro_rules! strategy_table {
             (ssf_st_cd, "ssf_st_cd", SsfStCd, ssf_st_cd, SsfStCdConfig, SsfStCdStrategy, clone),
             (swing_fractal, "swing_fractal", SwingFractal, swing_fractal, SwingFractalConfig, SwingFractalStrategy, clone),
             (turtle, "turtle", Turtle, turtle, TurtleConfig, TurtleStrategy, clone),
+            (donchian_long, "donchian_long", DonchianLong, donchian_long, DonchianLongConfig, DonchianLongStrategy, clone),
             (clenow, "clenow", Clenow, clenow, ClenowConfig, ClenowStrategy, clone),
             (dualthrust, "dual_thrust", DualThrust, dualthrust, DualThrustConfig, DualThrustStrategy, clone),
             (rbreaker, "r_breaker", RBreaker, rbreaker, RBreakerConfig, RBreakerStrategy, clone),
@@ -92,6 +93,9 @@ macro_rules! strategy_table {
             (ma_slope_atr_gate, "ma_slope_atr_gate", MaSlopeAtrGate, ma_slope_atr_gate, MaSlopeAtrGateConfig, MaSlopeAtrGateStrategy, clone),
             (macd, "macd", Macd, macd, MacdConfig, MacdStrategy, clone),
             (ema_cross, "ema_cross", EmaCross, ema_cross, EmaCrossConfig, EmaCrossStrategy, clone),
+            (ma_cross, "ma_cross", MaCross, ma_cross, MaCrossConfig, MaCrossStrategy, clone),
+            (keltner_mid, "keltner_mid", KeltnerMid, keltner_mid, KeltnerMidConfig, KeltnerMidStrategy, clone),
+            (boll_mid_long, "boll_mid_long", BollMidLong, boll_mid_long, BollMidLongConfig, BollMidLongStrategy, clone),
         }
     };
 }

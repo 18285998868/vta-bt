@@ -48,7 +48,7 @@ esac
 
 run cargo fmt --all -- --check
 # `cargo fmt` 只沿 crate 根解析 mod 树; C2 起策略模块由 `strategy_table!`
-# 宏声明, rustfmt 看不到, 81 个策略文件会静默脱离格式门禁。这里显式全查。
+# 宏声明, rustfmt 看不到, 85 个策略文件会静默脱离格式门禁。这里显式全查。
 run bash -c 'find crates -name "*.rs" -not -path "*/target/*" -print0 | xargs -0 rustfmt --edition 2024 --check'
 run cargo check --workspace --all-targets --locked
 run cargo clippy --workspace --all-targets --all-features --locked -- -D warnings

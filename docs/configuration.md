@@ -13,6 +13,8 @@ timeframe = "1d" # 必填，单值或数组
 initial_balance = 10000.0 # 必填，>0
 # delay_bars: 可选, 默认 1, **必须 >= 1**(0 是前视乐观口径, 反序列化期即被拒)
 # fill_bar_price: 可选, "open"(默认) | "close"
+# direction: 可选, "both"(默认) | "long_only" | "short_only"; 只过滤开仓方向
+# trade_start: 可选, "YYYY-MM-DD"; 该日之前的 bar 只用于指标/状态预热, 不成交
 # fee_bps / slippage_bps: 可选, 默认 0, 非负且有限
 [output]
 dir = "reports/vta" # 可选，默认 "reports"
@@ -32,6 +34,33 @@ period = { start = 5, end = 100, step = 5 } # 范围或单值
 
 - 未知键拒收；读写/解析失败带文件路径。
 - 全量示例见 `config.example.toml`；`config.ma_all_1h.toml` / `config.sma_100.toml` 为常用组合；`scripts/` 下有定稿配置。
+
+### 方向开关（引擎级 `direction`）
+
+`direction` 是**执行口径**，不是策略参数：策略仍按自己的规则产出 `Buy` / `Sell`，
+引擎在信号 → 目标持仓的状态机里过滤**开仓方向**。
+
+- `both`（默认）：旧行为，多空都可开，结果逐位不变。
+- `long_only`：`Sell` 视为 `Hold`（不反手、不平仓）；`Buy`、`Close`、
+  `ExitLong`、`ExitShort` 不受影响。
+- `short_only`：`Buy` 视为 `Hold`；其余同上。
+- 需要“跌破均线就平仓”的多头策略应在策略层产出 `Close`，而不是依赖本开关
+  把 `Sell` 转成平仓 —— 本开关不会替策略做离场决策。
+- 报告新增 `direction` 列（`both` / `long_only` / `short_only`），缓存指纹
+  包含该值：同一策略同参数下切方向必然重算，不会命中旧缓存。
+
+### 交易起点（`trade_start`）
+
+`trade_start` 把「数据加载边界」和「交易起点」分开，用于复现研究口径的
+**全历史预热 + 起点空仓**：
+
+- `[data].start_date` 控制**加载**：指标从该日冷启动。
+- `[backtest].trade_start` 只控制**成交**：更早的 bar 仍参与指标/策略状态
+  计算，但引擎从起点当根空仓开始，起点前的信号不成交换仓。
+- 起点前一根的收盘信号仍会在起点开盘成交（`close(t) → open(t+1)` 口径），
+  因此不会漏掉起点前一日上穿/下穿造成的建仓/离场。
+- 报告 `start_date`/`end_date` 仍是数据边界；缓存指纹包含 `trade_start`。
+- 未配置时行为与旧版逐位一致。
 
 ### 持仓期止损（引擎级 `stop`）
 

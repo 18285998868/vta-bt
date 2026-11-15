@@ -206,6 +206,9 @@ pub(super) fn params_fingerprint_with_source_and_stop(
     h = fnv_bytes(h, &exec.fee_rate.to_bits().to_le_bytes());
     h = fnv_bytes(h, &exec.slip_rate.to_bits().to_le_bytes());
     h = fnv_bytes(h, &[u8::from(exec.fill_close)]);
+    // 方向开关决定哪些开仓信号被执行: 同一策略同参数下 long_only 与 both 的
+    // 成交序列完全不同, 必须进入缓存身份。
+    h = fnv_bytes(h, exec.direction.as_str().as_bytes());
     // 产出集开关: detail 决定是否写逐笔交易/权益曲线, fixed_curves 决定是否写
     // fixed 曲线(`--pbo` 的唯一输入)。两者都改变落盘的文件集合, 故进指纹。
     h = fnv_bytes(h, &[u8::from(outputs.detail)]);

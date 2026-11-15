@@ -107,6 +107,8 @@ pub const COLUMNS: &[(&str, Unit)] = &[
     ("buy_hold_return", Unit::Ratio),
     ("bars_used", Unit::Count),
     ("status", Unit::Dimensionless),
+    // 方向开关的冻结文本(`both` / `long_only` / `short_only`), 非数值。
+    ("direction", Unit::Dimensionless),
 ];
 
 /// 按**列名**索引 parquet 列。取代原先 40 个魔法列号。
