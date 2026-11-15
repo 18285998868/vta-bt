@@ -15,7 +15,7 @@
 | `crates/vta-cli/tests/golden_signals.rs` | 快照比对 + 变体覆盖兜底 |
 | `crates/vta-cli/examples/parquet_diff.rs` | parquet 逐值比较(schema/行数/f64 bit/Decimal i128) |
 | `scripts/golden_run.sh` | release 冒烟 + 二跑幂等 + 基线比对 |
-| `config.golden.toml` | 1d-only 冒烟负载: sma / bbrk_sma / bbrk_vol / macd |
+| `config/10.golden.toml` | 1d-only 冒烟负载: sma / bbrk_sma / bbrk_vol / macd |
 
 ## 使用
 

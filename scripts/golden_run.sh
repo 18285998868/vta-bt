@@ -34,7 +34,7 @@ case ${1-} in
     *) echo "用法: ${0##*/} [--check|--freeze]" >&2; exit 2 ;;
 esac
 
-_cfg_src=${2:-config.golden.toml}
+_cfg_src=${2:-config/10.golden.toml}
 _base_dir=reports/golden
 _cur_dir=${_base_dir}/current
 _base_file=${_base_dir}/baseline/result.parquet

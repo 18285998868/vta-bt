@@ -33,7 +33,7 @@ period = { start = 5, end = 100, step = 5 } # 范围或单值
 ```
 
 - 未知键拒收；读写/解析失败带文件路径。
-- 全量示例见 `config.example.toml`；`config.ma_all_1h.toml` / `config.sma_100.toml` 为常用组合；`scripts/` 下有定稿配置。
+- 全量示例见 `config/00.example.toml`；`config/31.ma-all-1h.toml` / `config/30.sma-100.toml` 为常用组合；`config/90.crosscheck-vta.toml` 为 vbt 对照定稿配置。
 
 ### 方向开关（引擎级 `direction`）
 

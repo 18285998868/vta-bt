@@ -47,9 +47,9 @@ fn f64_range(start: f64, end: f64, step: f64) -> F64Param {
 #[test]
 fn real_repository_configs_pass_the_uniqueness_check() {
     for name in [
-        "config.sma_100.toml",
-        "config.ma_all_1h.toml",
-        "config.example.toml",
+        "config/30.sma-100.toml",
+        "config/31.ma-all-1h.toml",
+        "config/00.example.toml",
     ] {
         let cfg = load_repo_config(name);
         cfg.validate()
@@ -238,7 +238,7 @@ fn c3_encoding_covers_every_declared_dimension() {
 /// 防止将来扩网格时无意撞值却被漏过。
 #[test]
 fn known_multi_key_encodings_stay_unique_on_realistic_grids() {
-    // BBRK_VOL 等的真实网格形状(取自 config.example.toml 的量级)。
+    // BBRK_VOL 等的真实网格形状(取自 config/00.example.toml 的量级)。
     for sc in [
         StrategyConfig::BbrkVol(vta_strategies::bbrk_vol::BbrkVolConfig {
             sigma: F64Param::Range(vta_strategies::RangeParam {

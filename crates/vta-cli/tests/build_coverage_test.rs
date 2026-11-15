@@ -11,9 +11,9 @@
 fn real_configs_build_all_their_strategies() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     for name in [
-        "config.example.toml",
-        "config.sma_100.toml",
-        "config.ma_all_1h.toml",
+        "config/00.example.toml",
+        "config/30.sma-100.toml",
+        "config/31.ma-all-1h.toml",
     ] {
         let text = std::fs::read_to_string(root.join(name)).expect("配置应可读");
         let cfg: vta::config::Config = toml::from_str(&text).expect("配置应可解析");

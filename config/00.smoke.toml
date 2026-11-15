@@ -1,0 +1,26 @@
+# 最小真实冒烟: 单品种、单周期、3 档 SMA, 输出隔离到 reports/smoke。
+# 首次运行应退出 0; 保留产物再跑一次应全部命中缓存 (overwrite = false)。
+# 大网格 / 全字段示例 / 审查回归见同目录其余配置。
+[data]
+type = "binance"
+market = "futures/um"
+dir = "/data/data"
+symbol = "BTCUSDT"
+timeframe = "1d"
+start_date = "2024-01-01"
+end_date = "2026-09-30"
+
+[backtest]
+initial_balance = 10000.0
+delay_bars = 1
+fee_bps = 2.0
+slippage_bps = 1.0
+
+[output]
+dir = "reports/smoke"
+detail = false
+overwrite = false
+
+[[strategy]]
+type = "sma"
+period = { start = 10, end = 30, step = 10 }

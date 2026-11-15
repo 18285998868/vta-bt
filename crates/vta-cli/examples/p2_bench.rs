@@ -11,9 +11,11 @@ fn bench() {
     // 硬编码绝对路径会让 example 换台机器就失效。
     let root: std::path::PathBuf = match std::env::var("VTA_REPO_ROOT") {
         Ok(dir) => dir.into(),
-        Err(_) => env!("CARGO_MANIFEST_DIR").into(),
+        Err(_) => std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .to_path_buf(),
     };
-    let text = std::fs::read_to_string(root.join("config.ma_all_1h.toml")).unwrap();
+    let text = std::fs::read_to_string(root.join("config/31.ma-all-1h.toml")).unwrap();
     let cfg: Config = toml::from_str(&text).unwrap();
     // 用**带唯一性自检**的构建器: 与生产路径 `app::run` 同源,
     // 免得 benchmark 测的是一个生产永远不会跑的网格。

@@ -12,7 +12,7 @@
 ## 快速开始
 
 ```bash
-cargo run -p vta --release -- -c config.sma_100.toml   # 冒烟
+cargo run -p vta --release -- -c config/00.smoke.toml   # 冒烟
 cargo run -p vta --release -- --pbo reports            # PBO 实算
 ```
 
@@ -82,7 +82,7 @@ cargo check -p vta
 cargo clippy -p vta --all-targets
 cargo test -p vta
 cargo fmt
-cargo run -p vta --release -- -c config.sma_100.toml  # 冒烟
+cargo run -p vta --release -- -c config/00.smoke.toml  # 冒烟
 cargo run -p vta --release -- --pbo /path/to/reports  # PBO 实算
 ```
 
@@ -90,16 +90,18 @@ cargo run -p vta --release -- --pbo /path/to/reports  # PBO 实算
 
 ## 配置
 
-见 `config.example.toml`（全字段）与 `config.sma_100.toml`（冒烟最小集）；字段与止损语义见 `docs/configuration.md`。
+见 `config/00.example.toml`（全字段）与 `config/00.smoke.toml`（最小真实冒烟）；字段与止损语义见 `docs/configuration.md`。
 
-另有两个**审查用冒烟配置**（规模小、覆盖多条关键路径，供回归核对）：
+`config/` 按用途编号：`00` 示例与冒烟、`10` 行为冻结基线、`20` 审查回归、`30` 网格、`90` vbt 对照。
+
+另有四个**审查用回归配置**（规模小、覆盖多条关键路径）：
 
 | 文件 | 覆盖点 |
 |---|---|
-| `config.review_smoke.toml` | 多品种 × 多周期 × 多策略 + `detail` + `fixed_curves` + `--pbo` 全链路 |
-| `config.review_wide.toml` | 本轮审查触及的 16 个策略（`pct_b` 家族 / BB 周期常量化 / `vwap` 长度口径 / 网格封顶 / `ssf` 校验下沉 …） |
-| `config.review_invalid.toml` | 验证「参数不可计算」在报告里显式可见（`status = "invalid"`） |
-| `config.review_bblen.toml` | 验证 `bblen` 成为独立网格维度（σ × BB 周期） |
+| `config/20.review-smoke.toml` | 多品种 × 多周期 × 多策略 + `detail` + `fixed_curves` + `--pbo` 全链路 |
+| `config/21.review-wide.toml` | 本轮审查触及的 16 个策略（`pct_b` 家族 / BB 周期常量化 / `vwap` 长度口径 / 网格封顶 / `ssf` 校验下沉 …） |
+| `config/22.review-invalid.toml` | 验证「参数不可计算」在报告里显式可见（`status = "invalid"`） |
+| `config/23.review-bblen.toml` | 验证 `bblen` 成为独立网格维度（σ × BB 周期） |
 
 这些配置写死了 `data.dir = "/data/data"`，换机器需改；输出目录使用相对路径 `reports/`（已 gitignore），随仓库走。
 
