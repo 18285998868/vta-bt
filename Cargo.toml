@@ -5,13 +5,9 @@
 #   vta-pbo        → {vta-core, vta-report, vta-strategies}
 #   vta-strategies → vta-core
 #   vta-report     → vta-core (dev-dependency: vta-strategies, 复用参数编码测试)
-#
-# `tradingview/` 是独立的 cargo workspace, 必须显式排除, 否则 `cargo metadata`
-# 会把它当成本 workspace 的成员。
 [workspace]
 resolver = "3"
 members = ["crates/*"]
-exclude = ["tradingview"]
 
 [workspace.package]
 version = "0.1.0"

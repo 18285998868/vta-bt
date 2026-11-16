@@ -63,8 +63,6 @@ tests / examples 跟随所属 crate:
   vta-strategies/tests/integration_test.rs
 ```
 
-`tradingview/` 是独立 workspace，已在根 `Cargo.toml` 的 `exclude` 中排除，不参与本 workspace 的构建。
-
 ## 逻辑编排
 
 ```text

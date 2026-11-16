@@ -51,9 +51,6 @@ period = { start = 5, end = 100, step = 5 } # 必填，参数范围；单值可�
 | `crates/` | workspace 成员：core / strategies / report / pbo / analysis / cli，布局见 `docs/architecture.md` |
 | `crates/vta-cli/tests/` | 集成测试与文档一致性测试 |
 | `docs/` | 架构、配置、不变量、PBO、分析与审查记录 |
-| `tradingview/` | TradingView 风格本地研究终端（独立 workspace），见 `tradingview/README.md` |
-
-`tradingview/` 自带 `Cargo.toml` / `Cargo.lock`，与根 crate 互不参与对方的 workspace；在各自目录内执行 `cargo` 命令。
 
 ## 技术选型
 

@@ -10,7 +10,7 @@
 
 | 路径 | 变化 |
 |---|---|
-| `Cargo.toml` | 虚拟清单; `members = ["crates/*"]`; `exclude = ["tradingview"]`; 共享版本与依赖 |
+| `Cargo.toml` | 虚拟清单; `members = ["crates/*"]`; 共享版本与依赖 |
 | `crates/vta-core` | `error/money/engine/signal/bars/types` + `build.rs` 源码哈希 |
 | `crates/vta-strategies` | 81 个策略、`Strategy`/`ParamOutcome`、`config`、`params`、`build` |
 | `crates/vta-report` | Parquet 读写、schema、detail 清单与合并 |
